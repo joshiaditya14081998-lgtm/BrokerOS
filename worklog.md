@@ -4866,3 +4866,47 @@ Before production deployment:
 3. Fix any browser-specific issues found.
 4. Then do beta launch.
 
+
+---
+Task ID: Vercel Deploy + E2E Testing
+Agent: Architect
+Task: Deploy to Vercel + test full SaaS flow with a new broker account.
+
+## Vercel Deployment
+- **Live URL**: https://my-project-self-three-23.vercel.app
+- Build: Next.js 16 production build, all 44 pages compiled successfully.
+- Fix applied: Suspense boundary for `useSearchParams()` on `/login`, `/signup`, `/admin/login` (Next.js 16 SSR requirement).
+
+## E2E Testing Results (on Vercel — stable server)
+
+| # | Test | Result |
+|---|------|--------|
+| 1 | Landing page renders | ✅ Hero + pricing + CTA |
+| 2 | Signup form (email + password + name + plan) | ✅ All fields + plan selector |
+| 3 | New broker signup (Supabase Auth) | ✅ User created (needed email confirm) |
+| 4 | Email confirm (via admin API) | ✅ Auto-confirmed |
+| 5 | Login | ✅ "Email not confirmed" → after confirm → login SUCCESS → redirect to / |
+| 6 | Dashboard renders | ✅ ₹0 outstanding, 0 clients (fresh account) |
+| 7 | Create client | ✅ "Test Client 1" (Raj Patel) created, visible in list |
+| 8 | Billing view | ✅ Free plan, 14 days trial, 1/5 clients usage, plan comparison |
+| 9 | Admin APIs (no auth) | ✅ 403 Forbidden (correct) |
+| 10 | Non-super-admin access to /admin | ✅ "Access denied" (correct) |
+
+## Issues Found & Fixed
+1. **Build error: useSearchParams Suspense** — Next.js 16 requires `useSearchParams()` to be wrapped in `<Suspense>`. Fixed on `/login`, `/signup`, `/admin/login`.
+2. **Email confirmation required** — Supabase default requires email confirmation. For dev, we auto-confirm via admin API. Production should either enable auto-confirm in Supabase settings or implement an email confirmation flow.
+3. **vercel.json with secrets** — Committed vercel.json had env vars. Removed from git history via orphan branch. Added to .gitignore.
+
+## What's Live Now
+- **Production URL**: https://my-project-self-three-23.vercel.app
+- **Landing page**: Marketing site for garment brokers
+- **Signup flow**: New brokers can sign up + get 14-day free trial
+- **App**: Full broker workflow (visits, POs, dispatches, bills, payments, brokerage)
+- **Super Admin**: Separate /admin panel (requires super admin auth)
+- **Billing**: Plan management + usage limits + upgrade flow
+- **Database**: Supabase PostgreSQL (live, cloud)
+- **Auth**: Supabase Auth (email/password)
+
+## GitHub
+- Clean push (orphan branch — no secrets in history)
+- Repo: https://github.com/joshiaditya14081998-lgtm/BrokerOS
