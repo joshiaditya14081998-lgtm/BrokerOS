@@ -1,0 +1,634 @@
+     1→"use client";
+     2→
+     3→import * as React from "react";
+     4→import {
+     5→  Menu, Bell, Search, Coins, Languages, LogOut, User, Settings2,
+     6→  CloudOff, RefreshCw, Loader2, CheckCircle2,
+     7→} from "lucide-react";
+     8→import { toast } from "sonner";
+     9→import { Button } from "@/components/ui/button";
+    10→import { Sheet, SheetContent, SheetTrigger, SheetTitle } from "@/components/ui/sheet";
+    11→import {
+    12→  DropdownMenu, DropdownMenuContent, DropdownMenuItem,
+    13→  DropdownMenuSeparator, DropdownMenuTrigger, DropdownMenuLabel,
+    14→} from "@/components/ui/dropdown-menu";
+    15→import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+    16→import { Sidebar } from "@/components/sidebar";
+    17→import { useUI } from "@/lib/ui-store";
+    18→import { createClient } from "@/lib/supabase/client";
+    19→import { CommandPalette } from "@/components/command-palette";
+    20→import { useNotificationsSocket } from "@/hooks/use-notifications-socket";
+    21→import { useTranslation } from "@/hooks/use-translation";
+    22→import { LOCALE_OPTIONS } from "@/lib/i18n";
+    23→import { DashboardView } from "@/components/views/dashboard-view";
+    24→import { AnalyticsView } from "@/components/views/analytics-view";
+    25→import { DigestView } from "@/components/views/digest-view";
+    26→import { ClientsView } from "@/components/views/clients-view";
+    27→import { SuppliersView } from "@/components/views/suppliers-view";
+    28→import { VisitsView } from "@/components/views/visits-view";
+    29→import { PosView } from "@/components/views/pos-view";
+    30→import { DispatchesView } from "@/components/views/dispatches-view";
+    31→import { BillsView } from "@/components/views/bills-view";
+    32→import { PaymentsView } from "@/components/views/payments-view";
+    33→import { BrokerageView } from "@/components/views/brokerage-view";
+    34→import { PartyLedgerView } from "@/components/views/party-ledger-view";
+    35→import { DisputesView } from "@/components/views/disputes-view";
+    36→import { NotificationsView } from "@/components/views/notifications-view";
+    37→import { AuditView } from "@/components/views/audit-view";
+    38→import { TagsView } from "@/components/views/tags-view";
+    39→import { DataHealthView } from "@/components/views/data-health-view";
+    40→import { SavedViewsView } from "@/components/views/saved-views-view";
+    41→import { ReportBuilderView } from "@/components/views/report-builder-view";
+    42→import { SettingsView } from "@/components/views/settings-view";
+    43→import { PortalView } from "@/components/views/portal-view";
+    44→import { ApiDocsView } from "@/components/views/api-docs-view";
+    45→import { DraftQueueView } from "@/components/views/draft-queue-view";
+    46→import { ClientDetailSheet } from "@/components/views/client-detail-sheet";
+    47→import { SupplierDetailSheet } from "@/components/views/supplier-detail-sheet";
+    48→import { PoDetailSheet } from "@/components/views/po-detail-sheet";
+    49→import { OnboardingWizard } from "@/components/onboarding-wizard";
+    50→import { ShortcutsOverlay } from "@/components/shortcuts-overlay";
+    51→import { ShortcutPrefixIndicator } from "@/components/shortcut-prefix-indicator";
+    52→import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
+    53→import { useCurrencyFormat } from "@/hooks/use-currency";
+    54→import { useOnlineStatus } from "@/hooks/use-online-status";
+    55→import { useOfflineSync } from "@/hooks/use-offline-sync";
+    56→import { GlassCard, SectionHeader, EmptyState } from "@/components/shared";
+    57→import { Badge } from "@/components/ui/badge";
+    58→import { cn } from "@/lib/utils";
+    59→
+    60→type OnboardingState = {
+    61→  needsOnboarding: boolean;
+    62→  clientCount: number;
+    63→  supplierCount: number;
+    64→  hasCompletedOnboarding: boolean;
+    65→};
+    66→
+    67→// View title translation keys — looked up by `useTranslation().t(key)`.
+    68→// Each view maps to a `{key}.title` + `{key}.subtitle` translation entry.
+    69→// Keeping this as a key map (rather than a static English string map)
+    70→// means the header title + subtitle re-render instantly whenever the broker
+    71→// switches the interface language via the Settings picker.
+    72→const VIEW_TITLE_KEYS: Record<string, { titleKey: string; subKey: string }> = {
+    73→  dashboard: { titleKey: "dashboard.title", subKey: "dashboard.subtitle" },
+    74→  analytics: { titleKey: "analytics.title", subKey: "analytics.subtitle" },
+    75→  digest: { titleKey: "digest.title", subKey: "digest.subtitle" },
+    76→  clients: { titleKey: "clients.title", subKey: "clients.subtitle" },
+    77→  suppliers: { titleKey: "suppliers.title", subKey: "suppliers.subtitle" },
+    78→  visits: { titleKey: "visits.title", subKey: "visits.subtitle" },
+    79→  pos: { titleKey: "nav.purchaseOrders", subKey: "pos.subtitle" },
+    80→  dispatches: { titleKey: "dispatches.title", subKey: "dispatches.subtitle" },
+    81→  bills: { titleKey: "bills.title", subKey: "bills.subtitle" },
+    82→  payments: { titleKey: "payments.title", subKey: "payments.subtitle" },
+    83→  brokerage: { titleKey: "brokerage.title", subKey: "brokerage.subtitle" },
+    84→  "party-ledger": { titleKey: "partyLedger.title", subKey: "partyLedger.subtitle" },
+    85→  disputes: { titleKey: "disputes.title", subKey: "disputes.subtitle" },
+    86→  notifications: { titleKey: "notifications.title", subKey: "notifications.subtitle" },
+    87→  audit: { titleKey: "audit.title", subKey: "audit.subtitle" },
+    88→  "data-health": { titleKey: "dataHealth.title", subKey: "dataHealth.subtitle" },
+    89→  tags: { titleKey: "tags.title", subKey: "tags.subtitle" },
+    90→  "saved-views": { titleKey: "savedViews.title", subKey: "savedViews.subtitle" },
+    91→  "report-builder": { titleKey: "nav.reportBuilder", subKey: "reportBuilder.subtitle" },
+    92→  "api-docs": { titleKey: "apiDocs.title", subKey: "apiDocs.subtitle" },
+    93→  settings: { titleKey: "settings.title", subKey: "settings.subtitle" },
+    94→  portal: { titleKey: "portals.title", subKey: "portals.subtitle" },
+    95→  "draft-queue": { titleKey: "draftQueue.title", subKey: "draftQueue.subtitle" },
+    96→  drafts: { titleKey: "draftQueue.title", subKey: "draftQueue.subtitle" },
+    97→};
+    98→
+    99→export default function Page() {
+   100→  const { view, setView, setCmdOpen } = useUI();
+   101→  const [mobileOpen, setMobileOpen] = React.useState(false);
+   102→  const [userEmail, setUserEmail] = React.useState<string | null>(null);
+   103→  const t = useTranslation();
+   104→  const meta = VIEW_TITLE_KEYS[view] ?? VIEW_TITLE_KEYS.dashboard;
+   105→  const metaTitle = t(meta.titleKey);
+   106→  const metaSub = t(meta.subKey);
+   107→  const { count, connected, lastNotification } = useNotificationsSocket();
+   108→  const { symbol, currency } = useCurrencyFormat();
+   109→  const { locale } = useTranslation();
+   110→  const localeBadge = LOCALE_OPTIONS.find((o) => o.code === locale)?.badge ?? locale.toUpperCase();
+   111→
+   112→  // Sprint 4 — online/offline + draft queue status. Powers the header dot /
+   113→  // offline badge + the sync badge + the global offline banner above the
+   114→  // main content. `useOnlineStatus` is SSR-safe (returns `true` on server +
+   115→  // first paint to avoid hydration mismatch); `useOfflineSync` reads the
+   116→  // IndexedDB draft queue (`src/lib/offline-db.ts`) and exposes the pending
+   117→  // count + a manual sync trigger.
+   118→  const { isOnline } = useOnlineStatus();
+   119→  const { pendingCount, syncing } = useOfflineSync();
+   120→
+   121→  // Fetch current user email on mount
+   122→  React.useEffect(() => {
+   123→    const supabase = createClient();
+   124→    supabase.auth.getUser().then(({ data: { user } }) => {
+   125→      setUserEmail(user?.email ?? null);
+   126→    });
+   127→  }, []);
+   128→
+   129→  const handleLogout = async () => {
+   130→    const supabase = createClient();
+   131→    await supabase.auth.signOut();
+   132→    toast.success("Signed out");
+   133→    window.location.href = "/login";
+   134→  };
+   135→
+   136→  const initials = userEmail
+   137→    ? userEmail.split("@")[0].slice(0, 2).toUpperCase()
+   138→    : "?";
+   139→
+   140→  // Global keyboard shortcuts (g-prefix navigation, n-prefix create, ? help,
+   141→  // / search, Esc dismiss). Returns the active prefix mode so we can render
+   142→  // the floating "g —" / "n —" indicator.
+   143→  const { prefixMode } = useKeyboardShortcuts();
+   144→
+   145→  // First-run onboarding gate. On mount we ask the API whether the broker has
+   146→  // completed onboarding (or whether the DB is still empty). If yes, the
+   147→  // wizard overlay opens. After the wizard closes, we re-check + bump
+   148→  // `viewRefreshKey` so the active view re-fetches (the wizard may have added
+   149→  // clients/suppliers or loaded demo data).
+   150→  const [wizardOpen, setWizardOpen] = React.useState(false);
+   151→  const [viewRefreshKey, setViewRefreshKey] = React.useState(0);
+   152→  const didOnboardingCheck = React.useRef(false);
+   153→
+   154→  const refreshOnboarding = React.useCallback(() => {
+   155→    fetch("/api/onboarding")
+   156→      .then((r) => r.json())
+   157→      .then((d: OnboardingState) => {
+   158→        if (d.needsOnboarding) setWizardOpen(true);
+   159→      })
+   160→      .catch(() => {
+   161→        /* non-blocking — if the check fails, skip the wizard */
+   162→      });
+   163→  }, []);
+   164→
+   165→  React.useEffect(() => {
+   166→    if (didOnboardingCheck.current) return;
+   167→    didOnboardingCheck.current = true;
+   168→    refreshOnboarding();
+   169→  }, [refreshOnboarding]);
+   170→
+   171→  const handleWizardClose = React.useCallback(() => {
+   172→    setWizardOpen(false);
+   173→    // Remount the active view so it re-fetches (the wizard may have added
+   174→    // records or loaded demo data).
+   175→    setViewRefreshKey((k) => k + 1);
+   176→  }, []);
+   177→
+   178→  // Fire a toast exactly once per new notification id.
+   179→  const lastShownId = React.useRef<string | null>(null);
+   180→  React.useEffect(() => {
+   181→    if (!lastNotification) return;
+   182→    if (lastShownId.current === lastNotification.id) return;
+   183→    lastShownId.current = lastNotification.id;
+   184→    toast(lastNotification.title, {
+   185→      description: lastNotification.message ?? undefined,
+   186→    });
+   187→  }, [lastNotification]);
+   188→
+   189→  return (
+   190→    <div className="flex min-h-screen flex-col">
+   191→      <div className="flex flex-1">
+   192→        {/* Desktop sidebar */}
+   193→        <div className="sticky top-0 hidden h-screen w-64 shrink-0 lg:block">
+   194→          <Sidebar />
+   195→        </div>
+   196→
+   197→        {/* Mobile sidebar via sheet */}
+   198→        <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+   199→          <SheetContent side="left" className="w-64 p-0">
+   200→            <SheetTitle className="sr-only">Navigation</SheetTitle>
+   201→            <Sidebar />
+   202→          </SheetContent>
+   203→        </Sheet>
+   204→
+   205→        <div className="flex min-w-0 flex-1 flex-col">
+   206→          {/* Top bar */}
+   207→          <header className="glass sticky top-0 z-20 flex items-center gap-3 border-b border-border/60 px-4 py-3 lg:px-8">
+   208→            <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+   209→              <SheetTrigger asChild>
+   210→                <Button variant="ghost" size="icon" className="lg:hidden" aria-label="Open menu">
+   211→                  <Menu className="size-5" />
+   212→                </Button>
+   213→              </SheetTrigger>
+   214→            </Sheet>
+   215→            <div className="min-w-0 flex-1">
+   216→              <h1 className="truncate text-lg font-semibold tracking-tight text-foreground">{metaTitle}</h1>
+   217→              <p className="truncate text-xs text-muted-foreground">{metaSub}</p>
+   218→            </div>
+   219→            {/* Search / command palette trigger.
+   220→                On desktop this is styled to look like an input field (wider,
+   221→                with a subtle border + placeholder text + ⌘K hint) — clicking
+   222→                it opens the full command palette which owns the real search
+   223→                logic (single source of truth). */}
+   224→            <button
+   225→              type="button"
+   226→              onClick={() => setCmdOpen(true)}
+   227→              className="glass hidden h-9 w-full max-w-xs items-center gap-2 rounded-lg border border-border/60 px-3 text-sm text-muted-foreground transition-colors hover:border-border hover:text-foreground sm:flex lg:w-80"
+   228→              aria-label="Open command palette"
+   229→            >
+   230→              <Search className="size-4 shrink-0" />
+   231→              <span className="flex-1 truncate text-left">Search clients, POs, bills, payments…</span>
+   232→              <kbd className="pointer-events-none select-none rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium text-muted-foreground">⌘K</kbd>
+   233→            </button>
+   234→            <Button
+   235→              variant="ghost"
+   236→              size="icon"
+   237→              className="relative sm:hidden"
+   238→              onClick={() => setCmdOpen(true)}
+   239→              aria-label="Open command palette"
+   240→            >
+   241→              <Search className="size-5" />
+   242→            </Button>
+   243→            {/* Display-currency badge — shows the broker's currently selected
+   244→                display currency (symbol + code, e.g. "₹ INR"). Clicking it
+   245→                opens the Settings view, where the currency selector lives.
+   246→                Amounts are stored in INR; this only controls display. */}
+   247→            <button
+   248→              type="button"
+   249→              onClick={() => setView("settings")}
+   250→              className="glass inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-border/60 px-2 py-1 text-xs font-medium text-foreground transition-colors hover:border-emerald-500/40 hover:text-emerald-700 dark:hover:text-emerald-300"
+   251→              aria-label={`Display currency: ${currency}. Click to change in settings.`}
+   252→              title={`Display currency — ${currency}. Amounts are stored in INR.`}
+   253→            >
+   254→              <Coins className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+   255→              <span className="font-mono font-semibold">{symbol}</span>
+   256→              <span className="text-muted-foreground">{currency}</span>
+   257→            </button>
+   258→            {/* Language badge — shows the current interface locale's short
+   259→                glyph (e.g. "EN" / "हि" / "ગુ"). Clicking it opens Settings
+   260→                where the full language picker lives. The badge is compact
+   261→                (text-xs px-2 py-1) and mirrors the currency badge's styling
+   262→                so the two read as a pair. Re-renders instantly on locale
+   263→                change because `locale` flows from the Zustand store. */}
+   264→            <button
+   265→              type="button"
+   266→              onClick={() => setView("settings")}
+   267→              className="glass inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-border/60 px-2 py-1 text-xs font-medium text-foreground transition-colors hover:border-emerald-500/40 hover:text-emerald-700 dark:hover:text-emerald-300"
+   268→              aria-label={`Interface language: ${localeBadge}. Click to change in settings.`}
+   269→              title={`Interface language — ${localeBadge}. Click to open the language picker in Settings.`}
+   270→            >
+   271→              <Languages className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+   272→              <span className="font-semibold">{localeBadge}</span>
+   273→            </button>
+   274→            <Button
+   275→              variant="ghost"
+   276→              size="icon"
+   277→              className="relative"
+   278→              onClick={() => useUI.setState({ view: "notifications" })}
+   279→              aria-label={`Notifications${count && count > 0 ? ` (${count} pending)` : ""}`}
+   280→            >
+   281→              <Bell className="size-5" />
+   282→              {count !== null && count > 0 && (
+   283→                <span className="absolute -right-1 -top-1 grid size-4 place-items-center rounded-full bg-rose-500 text-[10px] font-bold text-white ring-2 ring-background">
+   284→                  {count > 9 ? "9+" : count}
+   285→                </span>
+   286→              )}
+   287→              <span
+   288→                aria-hidden
+   289→                className={
+   290→                  "absolute -bottom-0.5 -right-0.5 size-2 rounded-full ring-2 ring-background " +
+   291→                  (connected ? "bg-emerald-500" : "bg-zinc-400")
+   292→                }
+   293→              />
+   294→              <span className="sr-only">
+   295→                {connected ? "Real-time updates connected" : "Real-time updates offline"}
+   296→              </span>
+   297→            </Button>
+   298→            {/* Online / offline indicator — subtle emerald dot when online,
+   299→                clickable amber "Offline" badge (pulsing) when offline.
+   300→                Clicking the badge opens the Draft Queue so the broker can see
+   301→                what's queued for sync. Sits just before the user avatar so the
+   302→                broker's connectivity state is the rightmost status signal. */}
+   303→            {isOnline ? (
+   304→              <span
+   305→                aria-label="Online"
+   306→                title="Online — changes save to the server immediately"
+   307→                className="inline-block size-2.5 shrink-0 rounded-full bg-emerald-500 ring-2 ring-emerald-500/20"
+   308→              />
+   309→            ) : (
+   310→              <button
+   311→                type="button"
+   312→                onClick={() => setView("drafts")}
+   313→                aria-label="Offline — drafts will sync when you reconnect. Click to open the Draft Queue."
+   314→                title="Offline — drafts will sync when you reconnect. Click to open the Draft Queue."
+   315→                className="glass relative inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-500/15 dark:text-amber-300 dark:hover:bg-amber-500/15"
+   316→              >
+   317→                <span
+   318→                  aria-hidden
+   319→                  className="absolute -left-0.5 -top-0.5 size-2 rounded-full bg-amber-500 animate-pulse"
+   320→                />
+   321→                <CloudOff className="size-3.5" />
+   322→                <span>Offline</span>
+   323→              </button>
+   324→            )}
+   325→            {/* Sync status badge — shown only when there's something to
+   326→                communicate. While a sync pass is running, swaps to a teal
+   327→                "Syncing…" pill with a spinner. When drafts are pending,
+   328→                shows an amber "{N} drafts" badge that opens the Draft Queue.
+   329→                When the queue is empty, renders nothing so the header stays
+   330→                clean for the common online case. */}
+   331→            {syncing ? (
+   332→              <span
+   333→                aria-label="Syncing drafts…"
+   334→                title="Syncing drafts…"
+   335→                className="glass inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-teal-500/40 bg-teal-500/10 px-2.5 py-1 text-xs font-medium text-teal-700 dark:text-teal-300"
+   336→              >
+   337→                <Loader2 className="size-3.5 animate-spin" />
+   338→                <span>Syncing…</span>
+   339→              </span>
+   340→            ) : pendingCount > 0 ? (
+   341→              <button
+   342→                type="button"
+   343→                onClick={() => setView("drafts")}
+   344→                aria-label={`${pendingCount} pending draft${pendingCount === 1 ? "" : "s"}. Click to open the Draft Queue.`}
+   345→                title={`${pendingCount} pending draft${pendingCount === 1 ? "" : "s"}. Click to open the Draft Queue.`}
+   346→                className="glass inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-500/15 dark:text-amber-300 dark:hover:bg-amber-500/15"
+   347→              >
+   348→                <RefreshCw className="size-3.5" />
+   349→                <span>{pendingCount} draft{pendingCount === 1 ? "" : "s"}</span>
+   350→              </button>
+   351→            ) : null}
+   352→            {/* User menu — avatar + email + logout */}
+   353→            <DropdownMenu>
+   354→              <DropdownMenuTrigger asChild>
+   355→                <button
+   356→                  className="glass flex shrink-0 items-center gap-2 rounded-lg border border-border/60 p-1 transition-colors hover:border-emerald-500/40"
+   357→                  aria-label="User menu"
+   358→                >
+   359→                  <Avatar className="size-7">
+   360→                    <AvatarFallback className="bg-primary/15 text-xs font-semibold text-primary">
+   361→                      {initials}
+   362→                    </AvatarFallback>
+   363→                  </Avatar>
+   364→                </button>
+   365→              </DropdownMenuTrigger>
+   366→              <DropdownMenuContent align="end" className="glass-strong w-56">
+   367→                <DropdownMenuLabel className="flex items-center gap-2 text-xs">
+   368→                  <User className="size-3 text-muted-foreground" />
+   369→                  <span className="truncate font-normal text-muted-foreground">
+   370→                    {userEmail ?? "Not signed in"}
+   371→                  </span>
+   372→                </DropdownMenuLabel>
+   373→                <DropdownMenuSeparator />
+   374→                <DropdownMenuItem onClick={() => setView("settings")}>
+   375→                  <Settings2 className="mr-2 size-4" />
+   376→                  Settings
+   377→                </DropdownMenuItem>
+   378→                <DropdownMenuSeparator />
+   379→                <DropdownMenuItem
+   380→                  onClick={handleLogout}
+   381→                  className="text-rose-600 dark:text-rose-400 focus:text-rose-600"
+   382→                >
+   383→                  <LogOut className="mr-2 size-4" />
+   384→                  Sign out
+   385→                </DropdownMenuItem>
+   386→              </DropdownMenuContent>
+   387→            </DropdownMenu>
+   388→          </header>
+   389→
+   390→          {/* Main content */}
+   391→          <main className="flex-1 px-4 py-6 lg:px-8">
+   392→            {/* Offline banner — thin amber strip at the top of the main
+   393→                content. NOT sticky: it scrolls with the page so it only shows
+   394→                once at the top of the current view (per spec). Auto-hides
+   395→                when the browser regains connectivity (`isOnline === true`).
+   396→                CloudOff icon + amber background + emerald body text — the
+   397→                amber signals the disconnected state, the emerald reassures
+   398→                the broker that their changes are still safe (queued locally). */}
+   399→            {!isOnline && (
+   400→              <div className="glass mb-5 flex items-start gap-2.5 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-sm">
+   401→                <CloudOff className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+   402→                <p className="text-emerald-700 dark:text-emerald-300">
+   403→                  You're offline — changes will be saved as drafts and synced automatically when you reconnect.
+   404→                </p>
+   405→              </div>
+   406→            )}
+   407→            <ViewRouter key={viewRefreshKey} view={view} />
+   408→          </main>
+   409→        </div>
+   410→      </div>
+   411→
+   412→      {/* Footer (sticky bottom) */}
+   413→      <footer className="glass mt-auto border-t border-border/60 px-4 py-3 text-center text-xs text-muted-foreground lg:px-8">
+   414→        <span className="font-medium text-foreground/80">{t("footer.brand")}</span> · {t("footer.tagline")} ·
+   415→        <span className="ml-1">{t("footer.builtWith")}</span> ·
+   416→        <span className="ml-1 text-primary">{t("footer.note")}</span>
+   417→      </footer>
+   418→
+   419→      {/* Detail sheets (rendered globally, controlled by ui-store) */}
+   420→      <DetailSheets />
+   421→
+   422→      {/* Global command palette (Cmd+K / Ctrl+K) */}
+   423→      <CommandPalette />
+   424→
+   425→      {/* Keyboard shortcuts help overlay (toggled by "?" key) */}
+   426→      <ShortcutsOverlay />
+   427→
+   428→      {/* Floating "g —" / "n —" indicator shown while a prefix key is active */}
+   429→      <ShortcutPrefixIndicator mode={prefixMode} />
+   430→
+   431→      {/* First-run onboarding wizard (controlled by /api/onboarding) */}
+   432→      <OnboardingWizard open={wizardOpen} onClose={handleWizardClose} />
+   433→    </div>
+   434→  );
+   435→}
+   436→
+   437→function ViewRouter({ view }: { view: string }) {
+   438→  switch (view) {
+   439→    case "dashboard": return <DashboardView />;
+   440→    case "analytics": return <AnalyticsView />;
+   441→    case "digest": return <DigestView />;
+   442→    case "clients": return <ClientsView />;
+   443→    case "suppliers": return <SuppliersView />;
+   444→    case "visits": return <VisitsView />;
+   445→    case "pos": return <PosView />;
+   446→    case "dispatches": return <DispatchesView />;
+   447→    case "bills": return <BillsView />;
+   448→    case "payments": return <PaymentsView />;
+   449→    case "brokerage": return <BrokerageView />;
+   450→    case "party-ledger": return <PartyLedgerView />;
+   451→    case "disputes": return <DisputesView />;
+   452→    case "notifications": return <NotificationsView />;
+   453→    case "audit": return <AuditView />;
+   454→    case "data-health": return <DataHealthView />;
+   455→    case "tags": return <TagsView />;
+   456→    case "saved-views": return <SavedViewsView />;
+   457→    case "report-builder": return <ReportBuilderView />;
+   458→    case "api-docs": return <ApiDocsView />;
+   459→    case "settings": return <SettingsView />;
+   460→    case "portal": return <PortalView />;
+   461→    // Sprint 4 — Draft Queue. S4A's production view renders under both the
+   462→    // `draft-queue` key (sidebar nav + command palette) and the `drafts` key
+   463→    // (S4B's header offline/sync badge + Settings Network Status card
+   464→    // navigate here). Both routes land on the same component so the broker
+   465→    // sees a consistent UX regardless of entry point.
+   466→    case "draft-queue":
+   467→    case "drafts": return <DraftQueueView />;
+   468→    default: return <DashboardView />;
+   469→  }
+   470→}
+   471→
+   472→function DetailSheets() {
+   473→  const { detailType, detailId, closeDetail } = useUI();
+   474→  if (!detailType || !detailId) return null;
+   475→  if (detailType === "Client") return <ClientDetailSheet id={detailId} onClose={closeDetail} />;
+   476→  if (detailType === "Supplier") return <SupplierDetailSheet id={detailId} onClose={closeDetail} />;
+   477→  if (detailType === "PurchaseOrder") return <PoDetailSheet id={detailId} onClose={closeDetail} />;
+   478→  return null;
+   479→}
+   480→
+   481→// ────────────────────────────────────────────────────────────────────────────
+   482→// DraftsViewFallback — minimal Draft Queue shown when the broker navigates
+   483→// to the `drafts` view (via the header offline badge or the Settings Network
+   484→// Status card) before S4A's production `DraftsView` ships. Renders the live
+   485→// pending-count KPI, a manual "Sync now" button, and a list of queued drafts
+   486→// (with type + status + retry count + error). S4A will replace this with a
+   487→// richer component (edit, retry, per-draft discard, filtering) — this stub
+   488→// is intentionally small but functional so the offline UX is end-to-end
+   489→// usable during the parallel-build window.
+   490→// ────────────────────────────────────────────────────────────────────────────
+   491→function DraftsViewFallback() {
+   492→  const { drafts, pendingCount, syncing, lastSync, syncNow, discard } = useOfflineSync();
+   493→  const { isOnline } = useOnlineStatus();
+   494→  const { setView } = useUI();
+   495→  const lastSyncLabel = lastSync
+   496→    ? lastSync.toLocaleString(undefined, {
+   497→        dateStyle: "medium",
+   498→        timeStyle: "short",
+   499→      })
+   500→    : "Never";
+   501→  return (
+   502→    <div className="space-y-6">
+   503→      <SectionHeader
+   504→        title="Draft Queue"
+   505→        description="Offline drafts waiting to sync. New entries appear here when submissions can't reach the server."
+   506→        action={
+   507→          <Button
+   508→            size="sm"
+   509→            onClick={() => void syncNow()}
+   510→            disabled={syncing || pendingCount === 0 || !isOnline}
+   511→          >
+   512→            {syncing ? (
+   513→              <Loader2 className="mr-1.5 size-4 animate-spin" />
+   514→            ) : (
+   515→              <RefreshCw className="mr-1.5 size-4" />
+   516→            )}
+   517→            {syncing ? "Syncing…" : "Sync now"}
+   518→          </Button>
+   519→        }
+   520→      />
+   521→      <GlassCard className="hover-lift p-5">
+   522→        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+   523→          <DraftStat
+   524→            label="Pending"
+   525→            value={String(pendingCount)}
+   526→            tone={pendingCount > 0 ? "amber" : "emerald"}
+   527→            icon={<RefreshCw className="size-3.5" />}
+   528→          />
+   529→          <DraftStat
+   530→            label="Status"
+   531→            value={isOnline ? "Online" : "Offline"}
+   532→            tone={isOnline ? "emerald" : "amber"}
+   533→            icon={isOnline ? <CheckCircle2 className="size-3.5" /> : <CloudOff className="size-3.5" />}
+   534→          />
+   535→          <DraftStat
+   536→            label="Last sync"
+   537→            value={lastSyncLabel}
+   538→            tone="default"
+   539→            icon={<RefreshCw className="size-3.5" />}
+   540→          />
+   541→          <DraftStat
+   542→            label="Total queued"
+   543→            value={String(drafts.length)}
+   544→            tone="default"
+   545→            icon={<RefreshCw className="size-3.5" />}
+   546→          />
+   547→        </div>
+   548→      </GlassCard>
+   549→      {drafts.length === 0 ? (
+   550→        <EmptyState
+   551→          title="No drafts queued"
+   552→          hint="When you submit a booking, dispatch, or payment while offline, it'll appear here and sync automatically once you reconnect."
+   553→          icon={<CheckCircle2 className="size-5 text-emerald-600 dark:text-emerald-400" />}
+   554→        />
+   555→      ) : (
+   556→        <div className="space-y-3">
+   557→          {drafts.map((d) => (
+   558→            <GlassCard key={d.id} className="hover-lift p-4">
+   559→              <div className="flex flex-wrap items-start justify-between gap-3">
+   560→                <div className="min-w-0">
+   561→                  <div className="flex items-center gap-2">
+   562→                    <Badge
+   563→                      variant="outline"
+   564→                      className={cn(
+   565→                        "capitalize",
+   566→                        d.status === "pending" && "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+   567→                        d.status === "syncing" && "border-teal-500/40 bg-teal-500/10 text-teal-700 dark:text-teal-300",
+   568→                        d.status === "failed" && "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-300",
+   569→                        d.status === "synced" && "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+   570→                      )}
+   571→                    >
+   572→                      {d.status}
+   573→                    </Badge>
+   574→                    <Badge variant="outline" className="capitalize">{d.type}</Badge>
+   575→                    {d.retryCount > 0 && (
+   576→                      <span className="text-[11px] text-muted-foreground">
+   577→                        retry {d.retryCount}×
+   578→                      </span>
+   579→                    )}
+   580→                  </div>
+   581→                  <p className="mt-1.5 text-xs text-muted-foreground">
+   582→                    {new Date(d.createdAt).toLocaleString()}
+   583→                  </p>
+   584→                  {d.error && (
+   585→                    <p className="mt-1 text-[11px] text-rose-600 dark:text-rose-400">{d.error}</p>
+   586→                  )}
+   587→                </div>
+   588→                <Button
+   589→                  size="sm"
+   590→                  variant="outline"
+   591→                  onClick={() => void discard(d.id)}
+   592→                  className="border-rose-500/30 text-rose-600 hover:bg-rose-500/10 dark:text-rose-400"
+   593→                >
+   594→                  Discard
+   595→                </Button>
+   596→              </div>
+   597→            </GlassCard>
+   598→          ))}
+   599→        </div>
+   600→      )}
+   601→      <div className="flex justify-end">
+   602→        <Button variant="ghost" size="sm" onClick={() => setView("dashboard")}>
+   603→          Back to dashboard
+   604→        </Button>
+   605→      </div>
+   606→    </div>
+   607→  );
+   608→}
+   609→
+   610→function DraftStat({
+   611→  label, value, tone = "default", icon,
+   612→}: {
+   613→  label: string;
+   614→  value: string;
+   615→  tone?: "default" | "emerald" | "amber";
+   616→  icon?: React.ReactNode;
+   617→}) {
+   618→  const toneClass =
+   619→    tone === "emerald"
+   620→      ? "text-emerald-600 dark:text-emerald-400"
+   621→      : tone === "amber"
+   622→        ? "text-amber-600 dark:text-amber-400"
+   623→        : "text-foreground";
+   624→  return (
+   625→    <div className="glass flex flex-col gap-1 rounded-xl border border-border/50 p-3">
+   626→      <div className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+   627→        {icon}
+   628→        {label}
+   629→      </div>
+   630→      <p className={cn("kpi-num text-sm font-semibold", toneClass)}>{value}</p>
+   631→    </div>
+   632→  );
+   633→}
+   634→

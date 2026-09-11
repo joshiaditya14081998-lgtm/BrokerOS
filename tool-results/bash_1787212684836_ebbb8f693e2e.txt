@@ -1,0 +1,300 @@
+- Left: disabled `GripVertical` icon (`size-8 span`, `cursor-not-allowed`, `text-muted-foreground/50`) — visual cue that drag is off on touch.
+- Center: optional icon in an emerald-tinted `size-7` chip + label (`truncate text-sm font-medium`).
+- Right: Hide (EyeOff, ghost, rose on hover) + Up chevron + Down chevron.
+- Up disabled on `index === 0`; down disabled on `index === items.length - 1`.
+- All three action buttons: `size-8 min-h-11 min-w-11` — `size-8` keeps the visual compact (32px icon container) while `min-h-11 min-w-11` enforces the **WCAG 44px minimum touch target** (the spec's literal "size-8 touch targets (44px minimum for touch)" — both honored).
+- Up/down buttons: emerald (`border-emerald-500/30 bg-emerald-500/5 text-emerald-700 hover:bg-emerald-500/15`).
+
+**Active-card highlight (Task #4):**
+- `activeId` state holds the id of the most recently moved card.
+- `flashActive(id)` sets `activeId` + starts a 300ms `setTimeout` to clear it (timer ref cleared on unmount).
+- When `activeId === item.id`, the row gets `ring-2 ring-emerald-500/70 scale-[1.015] shadow-md` for 300ms — emerald ring + slight scale so the broker sees which card just moved.
+
+**Haptic feedback (Task #5):**
+- `haptic(ms = 10)` calls `navigator.vibrate(ms)` wrapped in `try-catch` with a `typeof navigator.vibrate === "function"` guard.
+- Called on every up/down/hide/show tap.
+- Silent no-op on Safari/Firefox (no vibrate support) — never throws.
+
+**Swap animation (framer-motion):**
+- Each row wrapped in `<motion.div layout initial={{opacity:0, y:-4}} animate={{opacity:1, y:0}} exit={{opacity:0, y:-4}} transition={{layout:{duration:0.22, ease:[0.2,0.8,0.2,1]}, default:{duration:0.18}}}>`.
+- `<AnimatePresence initial={false}>` wraps the list so removed rows animate out.
+- The `layout` prop makes framer-motion animate position changes when items swap — the moved card smoothly slides to its new slot.
+
+**Hidden-cards recovery section (Task #3):**
+- Rendered at the bottom when `hiddenItems?.length > 0`.
+- Header: `Eye` icon + "Hidden cards" uppercase label + count.
+- Body: `flex flex-wrap gap-2` of emerald-outline `Button`s with `Eye` icon + card label → `onShow(id)`.
+- Replaces the desktop "Hidden cards" recovery panel for touch devices.
+
+**Empty state:** when `items.length === 0 && hasHidden`, shows a centered hint card "No visible cards. Re-add one from the Hidden section below."
+
+## 2. Dashboard view wiring (`src/components/views/dashboard-view.tsx` — edited)
+
+**Imports added:**
+- `MobileReorderList` from `@/components/mobile-reorder-list`.
+- `useIsTouchDevice` from `@/hooks/use-is-touch-device` (existing hook from Task 14-b — uses `(pointer: coarse)` media query + `ontouchstart` + `maxTouchPoints`).
+- `Lightbulb` from `lucide-react` (for the Quick Tips card icon).
+
+**Icon map:**
+- New `DASHBOARD_CARD_ICONS: Record<DashboardCardId, React.ReactNode>` constant mapping each of the 9 cards to a small lucide icon: kpiOverview→Wallet, secondaryKpis→Users, actionCenter→AlertCircle, earningsChart→TrendingUp, poStatusChart→FileText, volumeByClient→Factory, dueReminders→Clock, brokeragePosition→BadgePercent, quickTips→Lightbulb.
+
+**Hook call:**
+- `const isTouchDevice = useIsTouchDevice();` added right after the layout-store destructure, with a comment explaining why (long-press drag is awkward on touch; broker is on-site with one hand).
+
+**Customize-mode hint text (touch-aware):**
+- Desktop: "— drag the grip to reorder, eye icon to hide"
+- Touch: "— tap ↑ / ↓ to reorder, eye icon to hide"
+
+**Conditional rendering (the core change):**
+- `customizeMode && isTouchDevice` → render `<MobileReorderList>` with:
+  - `items` = `visibleCards.map(id => ({ id, label: DASHBOARD_CARD_LABELS[id], icon: DASHBOARD_CARD_ICONS[id] }))`
+  - `hiddenItems` = `hiddenCards.map(...)` (same shape)
+  - `onReorder={(newOrder) => setCardOrder(newOrder as DashboardCardId[])}` — persists new order via the layout store (Task 15-a).
+  - `onShow={(id) => toggleCard(id as DashboardCardId)}` — re-adds a hidden card.
+  - `onHide={(id) => toggleCard(id as DashboardCardId)}` — hides a visible card.
+- Else (desktop customize OR normal mode) → render the existing `<DndContext>` + `<SortableContext>` + `<SortableCard>` list + desktop recovery panel + empty-state hint (unchanged from Task 15-a).
+
+**Why no card content in touch customize mode:**
+- The MobileReorderList shows only labels + icons (not the full card content like KPIs/charts). This keeps the list scannable on a small screen — the broker taps "Done" to see the cards in their new order. On touch, customize mode is purely for reordering/hiding.
+
+## 3. Touch detection verification (Task #6)
+
+- `useIsTouchDevice` (Task 14-b) uses `window.matchMedia("(pointer: coarse)")` + `ontouchstart in window` + `navigator.maxTouchPoints > 0`.
+- **Desktop browser (real):** all three checks fail → `false` → dnd-kit drag-and-drop renders (unchanged Task 15-a behavior).
+- **Desktop browser with DevTools touch emulation:** `(pointer: coarse)` matches → `true` → MobileReorderList renders.
+- **Real phone/tablet:** all three checks pass → `true` → MobileReorderList renders.
+- The hook is SSR-safe (returns `false` during server render, updates after hydration) so there's no hydration mismatch.
+
+## Style compliance
+- shadcn/ui: `Button` (`variant="outline"` for up/down + hidden-cards show; `variant="ghost"` for hide).
+- Icons: `ChevronUp`, `ChevronDown`, `Eye`, `EyeOff`, `GripVertical` from `lucide-react`.
+- framer-motion: `motion.div` with `layout` prop + `AnimatePresence` for swap animation.
+- `glass` surfaces on every row.
+- Up/down buttons: emerald. 44px minimum touch targets via `min-h-11 min-w-11`.
+- NO indigo/blue. Emerald accent throughout.
+- Active-card highlight: `ring-2 ring-emerald-500/70 scale-[1.015]` for 300ms.
+- Haptic feedback: `navigator.vibrate?.(10)` in try-catch.
+
+## Verification
+- `bun run lint` on touched files → **0 errors, 0 warnings** (verified with `bunx eslint <files> --max-warnings=0`, exit 0).
+- `bunx tsc --noEmit` on touched files → **0 errors** (filtered output for `mobile-reorder-list`/`dashboard-view`/`use-is-touch` — no matches).
+- Pre-existing lint/tsc errors in OTHER files (`settings-view.tsx` `LanguageCard` undefined; `i18n/hi.ts` key mismatches) are from parallel agents' in-progress work — NOT my responsibility.
+- Did NOT run `bun run build` or the dev server (per task instructions).
+- Dev log shows clean `/api/dashboard` 200s after my changes — no compile errors.
+
+Stage Summary:
+- Files created (1): `src/components/mobile-reorder-list.tsx`.
+- Files edited (1): `src/components/views/dashboard-view.tsx` (imports + `DASHBOARD_CARD_ICONS` map + `useIsTouchDevice` hook + touch-aware customize hint + conditional `MobileReorderList` rendering with `onReorder`/`onShow`/`onHide` wired to the layout store).
+- Lint: 0 errors, 0 warnings on touched files. TypeScript: 0 errors on touched files.
+- Features delivered: (1) `MobileReorderList` component with up/down swap, (2) active-card emerald-ring highlight for 300ms, (3) haptic feedback via `navigator.vibrate(10)` in try-catch, (4) framer-motion `layout` + `AnimatePresence` swap animation, (5) 44px minimum touch targets on all action buttons (`min-h-11 min-w-11`), (6) inline hidden-cards recovery section with Show buttons, (7) disabled grip icon as visual cue that drag is off, (8) touch-aware customize-mode hint text, (9) automatic touch-device detection via `useIsTouchDevice` (no manual toggle), (10) preserves all existing desktop DnD behavior when not on touch.
+- Agent-ctx record: `agent-ctx/18-c-mobile-reorder.md`.
+
+---
+Task ID: 18-a
+Agent: Auto-Fix Engineer (subagent)
+Task: Add one-click auto-fix to the Data Health dashboard. Five issue categories that can be programmatically resolved get an emerald "Fix" button on their issue card; a prominent "Fix all auto-fixable" button runs every safe fix in one shot. Non-fixable issues keep only the "View" navigation button + a "Manual" badge. Every fix writes an AuditLog row.
+
+## Work Log
+
+### 1) Created `src/lib/data-health-fix.ts` (NEW) — shared fix engine
+- `FixType` union + `ALL_FIX_TYPES` array (5 entries) + `FIX_TYPE_LABELS` map + `isFixType()` type guard.
+- `runFix(fixType, entityId)` — single dispatcher that runs one fix by type. `entityId = null` means "fix all matching records"; a string restricts to one record.
+- `logFix(fixType, count, entityIds, extra)` — helper that writes a single AuditLog row with `entityType: "DataHealthFix"`, `entityId: fixType`, `action: "auto_fix"`, `after: JSON.stringify({ fixType, count, entityIds, ...extra })`, `reason: "Auto-fix from Data Health"`. Best-effort — never fails a fix because the audit log write failed.
+- Five idempotent fix implementations:
+  - **`fixCreateBrokerage`** — finds bills with no `brokerage` relation (optionally filtered by `entityId`), rebuilds the missing Brokerage rows using the PO snapshot `commissionRate` + bill `baseAmount` (`brokerageAmount = round(base × rate / 100)`), `eligible: false`, `payoutStatus: "accrued"`. Returns `totalBrokerageAmount` in details.
+  - **`fixGenerateThumbnails`** — finds Photo rows with `thumbnailUrl = null`, reads the original file via `sharp`, generates a 400px-wide JPEG q80 thumbnail at `/uploads/thumb_<id>.jpg`, updates the row. Best-effort per photo (failures collected into a `failed` array in details, fix continues).
+  - **`fixDismissStaleNotifications`** — bulk `updateMany` to status `"dismissed"` for notifications `pending` with `createdAt < now - 30 days`. Single round-trip.
+  - **`fixCloseForgottenVisits`** — bulk `updateMany` to status `"no_show"` for visits `scheduled` with `plannedDate < now - 7 days`. Single round-trip.
+  - **`fixSetDefaultCommission`** — reads the system default from `SystemSetting.default_commission_rate` (fallback 5.0), bulk `updateMany` to that rate for suppliers with `defaultCommissionRate <= 0`.
+- Exhaustiveness guard in the dispatcher `switch` ensures a new `FixType` added to the union without a corresponding case fails to compile.
+
+### 2) Created `src/app/api/data-health/fix/route.ts` (NEW)
+- `POST /api/data-health/fix` with body `{ fixType: string, entityId?: string | null }`.
+- Validates `fixType` against `isFixType()`; rejects with 400 + a helpful error message listing the 5 valid types.
+- Accepts `entityId` as omitted, null, or a non-empty string. Anything else → 400.
+- Calls `runFix(fixType, resolvedEntityId)`; returns `{ fixed: N, fixType, details: { ... } }` on success or `{ error, fixType }` 500 on failure.
+
+### 3) Created `src/app/api/data-health/fix-all/route.ts` (NEW)
+- `POST /api/data-health/fix-all` — runs all 5 fix types in sequence (sequential `for-of` loop, NOT `Promise.all`, so DB writes don't contend and audit-log ordering matches fix ordering).
+- Each fix is independently try/caught; a failure in one doesn't abort the others — the error is recorded against that fix and the loop continues.
+- Returns `{ results: [{ fixType, fixed } | { fixType, fixed: 0, error }], totalFixed: N }`.
+
+### 4) Edited `src/app/api/data-health/route.ts`
+- Added `fixable: boolean` and `fixType: string | null` to the `DataHealthIssue` type.
+- Added `canFixAll: boolean` and `lastFixedAt: string | null` to `DataHealthResponse`.
+- Added a `FIX_TYPE_BY_ISSUE` map (single source of truth for "which issues are auto-fixable"): 5 entries mapping issue id → fix type. Issues not in the map are non-fixable.
+- Refactored the issue-building section: declared an internal `IssueSeed = Omit<DataHealthIssue, "fixable" | "fixType">` type so the 10 `issues.push({...})` call sites stay terse (no per-literal `fixable: false, fixType: null` boilerplate).
+- After sorting issues by severity, a `.map()` stamps each seed with `fixable`/`fixType` derived from `FIX_TYPE_BY_ISSUE` and produces the final `DataHealthIssue[]`.
+- Added a `findFirst` query for the most recent AuditLog row with `entityType: "DataHealthFix"` + `action: "auto_fix"` to populate `lastFixedAt`. Single-row, ordered by `createdAt desc` — cheap to do on every GET.
+- `canFixAll = stampedIssues.some((i) => i.fixable)`.
+
+### 5) Edited `src/components/views/data-health-view.tsx`
+- Updated `DataHealthIssue` type: added `fixable: boolean`, `fixType: string | null`.
+- Updated `DataHealthResponse` type: added `canFixAll: boolean`, `lastFixedAt: string | null`.
+- New imports: `toast` from `sonner`, `api` from `@/lib/api`, `AlertDialog` family from `@/components/ui/alert-dialog`, `Zap` + `ScrollText` icons.
+- New state (declared above the loading early-return to satisfy rules-of-hooks): `fixAllOpen`, `fixAllBusy`, `fixingId` (tracks which issue is being fixed so its button can show "Fixing…").
+- Header `action` slot now includes a "Last auto-fix: {time}" emerald badge (Wrench icon) — only shown when `lastFixedAt` is non-null. Hidden state = "No auto-fixes run yet".
+- `fixableTotalCount = sum of fixable issues' counts` — drives the prominent "Fix all auto-fixable" button's count badge.
+- **"Fix all auto-fixable" button** (emerald, large, Zap icon, count badge) — only rendered when `canFixAll` is true. Opens an `AlertDialog` confirm: "Fix all N auto-fixable issue(s)? This will automatically resolve N issues across M categories: create missing brokerage, generate thumbnails, dismiss stale notifications, close forgotten visits, and set default commission rates. Every change is logged in the Audit Trail. Continue?" Action button is emerald "Fix all N". Calls `runFixAll()` which POSTs `/api/data-health/fix-all` and toasts a summary like "Fixed N issues total" with a description listing each fixType that did work.
+- **Per-issue "Fix" button** (emerald, Wrench icon, h-7) — only rendered when `issue.fixable`. On click: if `issue.count > 1`, opens a per-card `AlertDialog` confirm "Fix all N {entityType}s?"; if `count === 1`, calls `onFix` directly. While fixing, button text becomes "Fixing…" and is disabled. On success: toast "Fixed N {entityType}(s)" + `refresh()`.
+- **"View" button** (outline, h-7) — replaces the old "Fix now" button (which navigated to `actionView`). Same behaviour, clearer label now that there's also a "Fix" button.
+- **"Manual" badge** (zinc/muted) — replaces the Fix button slot for non-fixable issues. Paired with the audit-trail note (below) to explain why.
+- **Audit trail note** at the bottom of the Issues section: a muted strip with `ScrollText` icon explaining "Auto-fixable issues can be resolved in one click. Issues marked Manual require a decision (entering a GST number, uploading a photo, recording a payment). All auto-fixes are logged in the Audit Trail." — "Audit Trail" is a clickable emerald link that calls `setView("audit")`.
+- Loading skeleton unchanged.
+
+### 6) No Prisma schema changes
+- All 5 fixes operate on existing columns (`Brokerage`, `Photo.thumbnailUrl`, `Notification.status`, `Visit.status`, `Supplier.defaultCommissionRate`). No `db:push` needed.
+
+## Verification
+- `bun run lint` → **0 errors, 0 warnings** (EXIT=0).
+- `bunx tsc --noEmit` (filtered to `data-health|fix-all|fix/route|lib/data-health`) → 0 errors. Pre-existing 4 errors in untouched files (`examples/websocket/server.ts`, `skills/image-edit/scripts/image-edit.ts`, `skills/stock-analysis-skill/src/analyzer.ts`, `src/app/api/bookings/route.ts`) remain unchanged.
+- Dev log: ongoing `GET /api/data-health 200` responses with no compile errors after the file edits.
+- Did NOT run `bun run build`, `bun run db:push`, or start the dev server (per task instructions — dev server was already running on port 3000).
+
+## Stage Summary
+- **Files created (3):** `src/lib/data-health-fix.ts`, `src/app/api/data-health/fix/route.ts`, `src/app/api/data-health/fix-all/route.ts`.
+- **Files edited (2):** `src/app/api/data-health/route.ts`, `src/components/views/data-health-view.tsx`.
+- **Lint:** 0 errors, 0 warnings. **TypeScript:** 0 errors in touched files.
+- **5 auto-fix types delivered:** (1) `create_brokerage` — rebuilds missing Brokerage rows from PO snapshot; (2) `generate_thumbnails` — sharp-based 400px JPEG q80 thumbnail backfill; (3) `dismiss_stale_notifications` — bulk-dismiss pending >30d; (4) `close_forgotten_visits` — bulk no_show scheduled >7d; (5) `set_default_commission` — bulk-apply system default commission rate to suppliers missing one.
+- **UI surfaces:** (1) per-issue emerald "Fix" button with Wrench icon, confirm dialog for count>1, "Fixing…" loading state, toast on success; (2) per-issue "View" navigation button (replaces old "Fix now"); (3) muted "Manual" badge for non-fixable issues; (4) prominent "Fix all auto-fixable" emerald button with count badge + AlertDialog confirm at the top of the Issues section; (5) "Last auto-fix: {time}" emerald badge in the page header; (6) audit-trail note at the bottom of the Issues section with inline link to the Audit Trail view.
+- **Auto-fix issue mapping:** 5 fixable (`bills-no-brokerage`, `photos-no-thumbnails`, `stale-notifications`, `forgotten-visits`, `suppliers-no-commission`); 5 manual (`stuck-bills`, `forgotten-pos`, `clients-no-gst`, `dispatches-no-photos`, `stale-disputes`).
+- **Audit trail:** every fix writes a `DataHealthFix`/`auto_fix` AuditLog row with `after: JSON.stringify({ fixType, count, entityIds, ...extra })`. `lastFixedAt` surfaced in the Data Health view header.
+- **Agent-ctx record:** `agent-ctx/18-a-data-health-auto-fix.md`.
+
+---
+Task ID: 18-b
+Agent: i18n Foundation Builder (subagent)
+Task: Build the i18n foundation for the Garment Broker OS — translation files for 3 languages (English, Hindi, Gujarati), a persisted locale store, a useTranslation hook, a language selector in Settings, a language badge in the header, and translation wiring into the Sidebar + Dashboard + 3 list views (Clients, Suppliers, Bills). Foundation only — not every string needs translating, but the infrastructure + key strings should be in place.
+
+## Work Log
+
+### 1. Created `src/lib/i18n/` translation files (4 files)
+- **`en.ts`** — English source-of-truth dictionary with **101 keys** in a flat dot-notation namespace (`group.key`). Coverage: nav group headers (6), nav item labels (19), common buttons/labels (19), dashboard KPIs + section headers + brokerage position tiles + mini-stats (25), clients view (4), suppliers view (4), bills view (3), settings card titles + language card (9), language picker labels (3), sidebar footer/theme/scheduler/health (9).
+  - Defines `TranslationDict = { [K in keyof typeof en]: string }` — a widened type so Hindi/Gujarati can supply any string value while still enforcing the EXACT same key set as English (a missing or mistyped key is a compile error).
+  - **Important design note:** the original `as const` on `en` was removed because it made every value a literal type (e.g. `"Overview"`) which broke Hindi/Gujarati string assignments. The widened `{ [K in keyof typeof en]: string }` mapping preserves the strict key union while allowing any string value.
+- **`hi.ts`** — Hindi translations, mirror of the English key set. Uses Devanagari script for common nouns, English trade terms transliterated (Dashboard, Brokerage, GST, PO, Dispatch) where they're the de-facto industry term brokers actually use. Typed as `TranslationDict` for compile-time key parity.
+- **`gu.ts`** — Gujarati translations, same key set, Gujarati script. Same transliteration policy.
+- **`index.ts`** — barrel that exports `translations: Record<Locale, TranslationDict>`, the `Locale` union type (`"en" | "hi" | "gu"`), `defaultLocale = "en"`, and a `LOCALE_OPTIONS` array (code + nativeName + badge glyph) consumed by the Settings picker and the header badge.
+
+### 2. Created `src/lib/locale-store.ts` (Zustand persisted)
+- `useLocale` Zustand store: `{ locale: Locale; setLocale: (l) => void }`, default `"en"`.
+- Persisted to `localStorage` key `broker-os:locale` via `persist` middleware with `createJSONStorage`.
+- **`skipHydration: true`** + explicit `rehydrate()` call from the hook avoids SSR/Next.js hydration mismatches — server-rendered HTML always uses `defaultLocale` ("en"), then the client swaps to the saved locale after mount. Mirrors the existing `currency-store.ts` pattern.
+- `partialize` strips the `setLocale` function so only `{ locale }` is persisted.
+
+### 3. Created `src/hooks/use-translation.ts`
+- `"use client"` hook returning `{ t, locale, setLocale }`.
+- `t(key)` lookup order: (1) current locale's dictionary → (2) English source of truth → (3) the key itself. The 3-level fallback guarantees a missing translation never crashes a downstream `text-truncate` (returns the raw key, which is loud but visible in the UI for debugging).
+- Reads `locale` from `useLocale` Zustand store; calls `useLocale.persist?.rehydrate?.()` once on mount so the saved locale applies without a server/client hydration mismatch.
+- `t` is wrapped in `useCallback` keyed on `locale` so it stays stable across renders of the same locale.
+
+### 4. Wired language selector into `settings-view.tsx`
+- Added a new `LanguageCard` component rendered right after the existing `DisplayCurrencyCard`. Card header uses the `Languages` lucide icon (emerald accent, same styling as the currency card). Body is a shadcn `Select` with the 3 locale options (`English / हिन्दी / ગુજરાતી`) shown in their **native script** so a Hindi/Gujarati-speaking broker can find their language without parsing an English label.
+- Selecting a locale calls `setLocale(code)` — the entire UI re-renders **instantly** (no page reload) because every translated component reads `locale` from Zustand.
+- Includes a "Live preview" row that shows the translated `settings.title` + `common.saveChanges` strings + a `locale.toUpperCase()` badge, mirroring the currency card's live-preview pattern. The broker can verify the language actually took effect before navigating away.
+- Notes the device-local nature: "Language preference is saved on this device." (also stored in `t("settings.languageHint")`).
+- Also wired `t()` into the existing settings strings: SectionHeader title/subtitle, "Save changes" / "Saving…" button labels, "System defaults" / "Business rules reference" / "Display currency" / "Data management" card titles.
+
+### 5. Added language badge to the header in `page.tsx`
+- New compact badge (`text-xs px-2 py-1`) in the top header, immediately after the currency badge. Uses the `Languages` lucide icon + the current locale's short glyph from `LOCALE_OPTIONS` (e.g. `EN` / `हि` / `ગુ`).
+- Clicking the badge navigates to Settings (`setView("settings")`) where the full language picker lives — same pattern as the currency badge.
+- Re-renders instantly on locale change because `locale` flows from the Zustand store via `useTranslation()`.
+- Emerald accent on hover (`hover:border-emerald-500/40 hover:text-emerald-700`), matches the currency badge styling so the two read as a pair.
+
+### 6. Wired translations into `sidebar.tsx`
+- This is the most visible i18n change — the sidebar switches languages instantly when the broker changes the locale.
+- Refactored the `NAV` array: each item now carries `labelKey` + `groupKey` (dot-notation translation keys) instead of the raw `label` + `group` strings.
+- Sidebar component calls `useTranslation()` and renders `t(groupKey)` for the group headers and `t(item.labelKey)` for each nav item label.
+- `ThemeToggle`, `SchedulerIndicator`, `HealthIndicator` all wired up too — `Light mode` / `Dark mode` / `Scheduler: Running` / `Health: X%` etc. all translate.
+- Removed the previously-unused `Link` import (it was dead code from an earlier iteration).
+
+### 7. Wired translations into `dashboard-view.tsx`
+- Replaced all prominent strings with `t()` calls:
+  - KPI card labels: "Outstanding Receivable", "Brokerage Earned", "Pending (not eligible)", "Active POs / Disputes".
+  - Secondary mini-stat labels: "Clients", "Suppliers", "Bills", "Open Disputes".
+  - Section headers: "Brokerage Earnings Trend", "PO Status", "Business Volume by Client", "Due Reminders", "Brokerage Position".
+  - Brokerage position tiles: all 4 labels ("Pending (not eligible)", "Accrued", "Scheduled", "Paid out") + their hints ("Bill not fully paid", "Eligible, awaiting payout", "In a payout batch", "Settled to broker").
+  - Action buttons: "View all" (common.viewAll), "Manage brokerage" (dashboard.manageBrokerage).
+
+### 8. Wired translations into 3 list views
+- **`clients-view.tsx`** — SectionHeader title "Clients" + subtitle, "Export CSV" button, "New client" button, search placeholder.
+- **`suppliers-view.tsx`** — SectionHeader title "Suppliers" + subtitle, "Export CSV" button, "New supplier" button, search placeholder.
+- **`bills-view.tsx`** — SectionHeader title "Bills" + subtitle, "Export CSV" button, "Generate bill" button.
+
+## Style adherence (per task spec)
+- Language badge in header is compact (`text-xs px-2 py-1`).
+- shadcn/ui `Select` for the language picker (consistent with the DisplayCurrencyCard pattern).
+- NO indigo/blue. Emerald accent throughout (`text-emerald-600 dark:text-emerald-400`, `bg-emerald-500/15`, `border-emerald-500/30`).
+- Locale switch is instant — Zustand triggers re-render of every translated component (sidebar, dashboard, list views, header badge) with no page reload.
+- Translation lookup is fail-safe: missing key → English fallback → raw key (visible in UI, never crashes).
+
+## Verification
+- `bun run lint` → **0 errors, 0 warnings** (EXIT=0).
+- `bunx tsc --noEmit` → 4 errors, ALL pre-existing in untouched files (`examples/websocket/server.ts`, `skills/image-edit/scripts/image-edit.ts`, `skills/stock-analysis-skill/src/analyzer.ts`, `src/app/api/bookings/route.ts`). Zero errors in any i18n or wired file.
+- Dev server log shows clean compiles after each edit (`✓ Compiled in 167ms` / `972ms` / `675ms` / `351ms` / `437ms` / `194ms`), no runtime errors.
+- Did NOT run `bun run build` (per task instructions).
+
+## Stage Summary
+- **Files created (6):** `src/lib/i18n/en.ts`, `src/lib/i18n/hi.ts`, `src/lib/i18n/gu.ts`, `src/lib/i18n/index.ts`, `src/lib/locale-store.ts`, `src/hooks/use-translation.ts`.
+- **Files edited (7):** `src/components/views/settings-view.tsx` (LanguageCard + section title translations), `src/app/page.tsx` (header language badge), `src/components/sidebar.tsx` (nav labels + footer indicators), `src/components/views/dashboard-view.tsx` (KPIs + section headers + brokerage tiles), `src/components/views/clients-view.tsx`, `src/components/views/suppliers-view.tsx`, `src/components/views/bills-view.tsx`.
+- **Lint:** 0 errors, 0 warnings. **TypeScript:** 0 errors in touched files.
+- **3 languages delivered:** English (`en`), Hindi (`hi` — Devanagari), Gujarati (`gu` — Gujarati script).
+- **101 translation keys** per locale (nav: 25, common: 19, dashboard: 25, clients/suppliers/bills: 11, settings: 9, language picker: 3, sidebar footer: 9).
+- **i18n features delivered:** (1) Translation dictionary with strict key parity (compile-time safety); (2) persisted Zustand locale store with skipHydration to avoid SSR mismatch; (3) `useTranslation` hook with 3-level fallback (locale → English → raw key); (4) Language picker in Settings (native-script options, live preview); (5) compact header badge with locale glyph (instant re-render, click → Settings); (6) Sidebar nav fully translated — the most visible i18n surface; (7) Dashboard KPIs + section headers translated; (8) Clients/Suppliers/Bills list view SectionHeaders + buttons translated.
+- **Agent-ctx record:** `agent-ctx/18-b-i18n-foundation.md`.
+
+---
+Task ID: 18 (QA + Feature Round 11)
+Agent: Architect (cron review round 11)
+Task: Assess project status, QA via agent-browser, add new features (data health auto-fix, i18n foundation, mobile dashboard reorder).
+
+## Current Project Status Assessment
+- Lint clean (0 errors, 0 warnings). Main dev server + 2 mini-services (notify:3003, scheduler:3004) all running.
+- No runtime bugs found this round — all 16 views render with 0 console errors, 0 warnings.
+- Foundation is stable; proceeded with the worklog's top 3 priorities.
+
+## Completed Modifications
+
+### New Features (3 parallel subagents)
+1. **Data Health Auto-Fix** (Task 18-a):
+   - `POST /api/data-health/fix { fixType, entityId? }` + `POST /api/data-health/fix-all` endpoints.
+   - 5 auto-fix types: `create_brokerage` (bills without brokerage), `generate_thumbnails` (photos via sharp), `dismiss_stale_notifications` (>30d pending), `close_forgotten_visits` (>7d scheduled → no_show), `set_default_commission` (suppliers with rate ≤0).
+   - Shared `data-health-fix.ts` engine: idempotent fixes + audit-logged per fix.
+   - Data Health API: each issue now has `fixable` + `fixType`; response has `canFixAll` + `lastFixedAt`.
+   - Data Health view: per-issue "Fix" button (emerald, Wrench) with confirm dialog when count>1; "Manual" badge for non-fixable; prominent "Fix all auto-fixable" button with count + AlertDialog; "Last auto-fix" badge; audit-trail note.
+   - Verified: API returns 2 issues (1 fixable: photos without thumbnails), fix-all endpoint runs all 5 fixes sequentially.
+2. **i18n Foundation** (Task 18-b):
+   - 3 languages: English (en), Hindi (hi, Devanagari), Gujarati (gu, Gujarati script). ~101 translation keys per locale (nav, common, dashboard, clients/suppliers/bills, settings).
+   - `locale-store.ts` Zustand (persisted, `broker-os:locale`, skipHydration for SSR safety). `useTranslation()` hook with 3-level fallback (locale → English → raw key).
+   - TypeScript strict key parity: `TranslationDict = { [K in keyof typeof en]: string }` — missing keys are compile errors.
+   - Settings: Language card with Select (English/हिन्दी/ગુજરાતી) + live preview. Header: compact language badge.
+   - Wired into: sidebar (all group + nav labels), dashboard (KPIs + section headers + buttons), clients/suppliers/bills views (titles + buttons).
+   - Verified: switched to Hindi → sidebar instantly shows डैशबोर्ड, क्लाइंट्स, सप्लायर्स; switched back to English.
+3. **Mobile Dashboard Reorder** (Task 18-c):
+   - `MobileReorderList` component: vertical card list with up/down chevron buttons (44px touch targets), hide/show via eye-off, framer-motion layout animations, emerald ring + scale on move, `navigator.vibrate(10)` haptic feedback.
+   - Dashboard: uses `useIsTouchDevice` (pointer: coarse media query) to conditionally render MobileReorderList instead of dnd-kit drag-and-drop in customize mode.
+   - Hidden cards recovery section at bottom of the list.
+   - Desktop behavior unchanged (dnd-kit preserved).
+   - Verified: set device to iPhone 14 → customize mode shows up/down chevron buttons (39 buttons), mobile reorder list renders.
+
+## Verification Results
+- `bun run lint` → **0 errors, 0 warnings** (fully clean).
+- agent-browser QA: all 16 views render with **0 console errors, 0 warnings**.
+- Data Health: fixable issue detection + Fix buttons + Fix-all endpoint verified.
+- i18n: Hindi sidebar translation verified (डैशबोर्ड, क्लाइंट्स, सप्लायर्स); English revert works.
+- Mobile reorder: iPhone 14 emulation → up/down chevron buttons render in customize mode.
+- Screenshots: `broker-os-hindi-sidebar.png`, `broker-os-mobile-reorder.png`, `broker-os-data-health-fix.png`.
+
+## Unresolved Issues / Risks + Next Phase Recommendations
+1. **Multi-broker/agent support** — data model supports it; UI needs auth + scoping.
+2. **Server-side pagination** — for very large datasets.
+3. **Report scheduling/email** — requires SMTP.
+4. **URL persistence for filters** — deep-linkable saved views.
+5. **Auto-backup daily trigger** — currently just a toggle.
+6. **Real-time exchange rates** — currently static.
+7. **i18n expansion** — translate more views (currently sidebar + dashboard + 3 list views; visits/dispatches/disputes/payments/brokerage still English).
+8. **i18n for API responses** — notification messages, audit log reasons currently English.
+9. **Multi-broker data scoping** — filter all queries by brokerId.
+10. **Custom report builder** — let brokers define their own report templates.
+
+Priority for next round: **Multi-broker support** (scalability) + **i18n expansion** (translate remaining views) + **URL persistence for filters** (deep links).

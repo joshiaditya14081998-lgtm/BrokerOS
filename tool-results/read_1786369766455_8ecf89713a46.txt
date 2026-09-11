@@ -1,0 +1,929 @@
+     1→"use client";
+     2→
+     3→import * as React from "react";
+     4→import {
+     5→  Award, TrendingUp, Clock, BarChart3,
+     6→  Factory, Users, Wallet, ArrowDownRight,
+     7→  Calendar, Star, Zap, AlertCircle,
+     8→} from "lucide-react";
+     9→import {
+    10→  ResponsiveContainer, BarChart, Bar, AreaChart, Area, XAxis, YAxis,
+    11→  Tooltip, CartesianGrid, Cell, ComposedChart, Line, ReferenceLine,
+    12→} from "recharts";
+    13→import { useApi } from "@/lib/api";
+    14→import { formatCurrency, formatNumber, formatDate, daysBetween } from "@/lib/format";
+    15→import { GlassCard, KpiCard, SectionHeader, EmptyState } from "@/components/shared";
+    16→import { Skeleton } from "@/components/ui/skeleton";
+    17→import { Badge } from "@/components/ui/badge";
+    18→import {
+    19→  Table, TableHeader, TableBody, TableHead, TableRow, TableCell,
+    20→} from "@/components/ui/table";
+    21→
+    22→// ─────────────────────────────────────────────────────────────────────────────
+    23→// Types — match the API response shape exactly.
+    24→// ─────────────────────────────────────────────────────────────────────────────
+    25→type Tier = "excellent" | "good" | "average" | "needs attention";
+    26→
+    27→type SupplierScore = {
+    28→  supplierId: string;
+    29→  name: string;
+    30→  score: number;
+    31→  fulfillment: number;
+    32→  onTimeRate: number;
+    33→  shortShipmentRate: number;
+    34→  disputeRate: number;
+    35→  dispatchCount: number;
+    36→  totalSupplied: number;
+    37→  tier: Tier;
+    38→};
+    39→
+    40→type ClientExposure = {
+    41→  clientId: string;
+    42→  name: string;
+    43→  outstanding: number;
+    44→  exposureTrend: { month: string; value: number }[];
+    45→  avgPaymentDelay: number;
+    46→  returnRate: number;
+    47→  billCount: number;
+    48→};
+    49→
+    50→type BrokerageForecast = {
+    51→  pendingTotal: number;
+    52→  eligibleUnpaidTotal: number;
+    53→  projectedByMonth: { month: string; amount: number }[];
+    54→  byCadence: { immediate: number; "4_month": number; "12_month": number };
+    55→};
+    56→
+    57→type VolumeTrends = {
+    58→  monthlyBilled: { month: string; value: number }[];
+    59→  monthlyDispatched: { month: string; value: number }[];
+    60→  topPairs: { clientName: string; supplierName: string; value: number }[];
+    61→};
+    62→
+    63→type SeasonKey = "festive" | "wedding" | "summer" | "winter" | "normal";
+    64→
+    65→type Brokerage6MonthPoint = { month: string; projected: number; upper: number; lower: number };
+    66→
+    67→type SeasonalTrendPoint = {
+    68→  month: string;
+    69→  value: number;
+    70→  growthRate: number;
+    71→  seasonLabel: string;
+    72→  seasonKey: SeasonKey;
+    73→  isPeak: boolean;
+    74→  isLow: boolean;
+    75→};
+    76→
+    77→type ClientVelocityPoint = {
+    78→  clientId: string;
+    79→  name: string;
+    80→  lastOrderDate: string | null;
+    81→  avgDaysBetweenOrders: number;
+    82→  predictedNextOrderDate: string | null;
+    83→  orderCount: number;
+    84→};
+    85→
+    86→type SupplierCapacityPoint = {
+    87→  supplierId: string;
+    88→  name: string;
+    89→  avgLeadTimeDays: number;
+    90→  pendingPOs: number;
+    91→  monthlyAvgPOs: number;
+    92→  status: "normal" | "high" | "overloaded";
+    93→};
+    94→
+    95→type Forecast = {
+    96→  brokerage6Month: Brokerage6MonthPoint[];
+    97→  seasonalTrends: SeasonalTrendPoint[];
+    98→  clientVelocity: ClientVelocityPoint[];
+    99→  supplierCapacity: SupplierCapacityPoint[];
+   100→};
+   101→
+   102→type AnalyticsData = {
+   103→  suppliers: SupplierScore[];
+   104→  clients: ClientExposure[];
+   105→  brokerage: BrokerageForecast;
+   106→  volume: VolumeTrends;
+   107→  forecast: Forecast;
+   108→};
+   109→
+   110→// ─────────────────────────────────────────────────────────────────────────────
+   111→// Chart palette — emerald / teal / amber / rose / plum (no indigo / blue).
+   112→// ─────────────────────────────────────────────────────────────────────────────
+   113→const COLORS = {
+   114→  emerald: "oklch(0.7 0.15 162)",
+   115→  teal: "oklch(0.65 0.12 200)",
+   116→  amber: "oklch(0.78 0.14 85)",
+   117→  rose: "oklch(0.65 0.2 27)",
+   118→  plum: "oklch(0.62 0.15 340)",
+   119→};
+   120→
+   121→const TIER_STYLES: Record<Tier, { badge: string; label: string }> = {
+   122→  excellent: { badge: "border-emerald-500/30 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300", label: "Excellent" },
+   123→  good: { badge: "border-teal-500/30 bg-teal-500/15 text-teal-700 dark:text-teal-300", label: "Good" },
+   124→  average: { badge: "border-amber-500/30 bg-amber-500/15 text-amber-700 dark:text-amber-300", label: "Average" },
+   125→  "needs attention": { badge: "border-rose-500/30 bg-rose-500/15 text-rose-700 dark:text-rose-300", label: "Needs attention" },
+   126→};
+   127→
+   128→// ─────────────────────────────────────────────────────────────────────────────
+   129→// Season palette — Indian garment-industry mapping.
+   130→//   festive → emerald (Oct–Nov, Dussehra/Diwali)
+   131→//   wedding → rose    (Dec–Jan)
+   132→//   summer  → amber   (Apr–May)
+   133→//   winter  → teal    (Aug–Sep)
+   134→//   normal  → muted
+   135→// ─────────────────────────────────────────────────────────────────────────────
+   136→const SEASON_STYLES: Record<SeasonKey, { color: string; badge: string; label: string }> = {
+   137→  festive: { color: COLORS.emerald, badge: "border-emerald-500/30 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300", label: "Festive" },
+   138→  wedding: { color: COLORS.rose, badge: "border-rose-500/30 bg-rose-500/15 text-rose-700 dark:text-rose-300", label: "Wedding" },
+   139→  summer: { color: COLORS.amber, badge: "border-amber-500/30 bg-amber-500/15 text-amber-700 dark:text-amber-300", label: "Summer" },
+   140→  winter: { color: COLORS.teal, badge: "border-teal-500/30 bg-teal-500/15 text-teal-700 dark:text-teal-300", label: "Winter" },
+   141→  normal: { color: "oklch(0.7 0.02 165)", badge: "border-zinc-500/30 bg-zinc-500/15 text-zinc-600 dark:text-zinc-300", label: "Regular" },
+   142→};
+   143→
+   144→const SUPPLIER_STATUS_STYLES: Record<SupplierCapacityPoint["status"], { badge: string; label: string; dot: string }> = {
+   145→  normal: { badge: "border-emerald-500/30 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300", label: "Normal", dot: COLORS.emerald },
+   146→  high: { badge: "border-amber-500/30 bg-amber-500/15 text-amber-700 dark:text-amber-300", label: "High load", dot: COLORS.amber },
+   147→  overloaded: { badge: "border-rose-500/30 bg-rose-500/15 text-rose-700 dark:text-rose-300", label: "Overloaded", dot: COLORS.rose },
+   148→};
+   149→
+   150→// ─────────────────────────────────────────────────────────────────────────────
+   151→// ScoreRing — circular SVG progress for the supplier reliability score.
+   152→// ─────────────────────────────────────────────────────────────────────────────
+   153→function ScoreRing({ score, size = 48 }: { score: number; size?: number }) {
+   154→  const radius = (size - 8) / 2;
+   155→  const circumference = 2 * Math.PI * radius;
+   156→  const offset = circumference - (score / 100) * circumference;
+   157→  const color = score >= 85 ? COLORS.emerald
+   158→    : score >= 70 ? COLORS.teal
+   159→    : score >= 55 ? COLORS.amber
+   160→    : COLORS.rose;
+   161→  return (
+   162→    <div className="relative" style={{ width: size, height: size }}>
+   163→      <svg width={size} height={size} className="-rotate-90">
+   164→        <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="oklch(0.7 0.02 160 / 0.2)" strokeWidth={4} />
+   165→        <circle
+   166→          cx={size / 2}
+   167→          cy={size / 2}
+   168→          r={radius}
+   169→          fill="none"
+   170→          stroke={color}
+   171→          strokeWidth={4}
+   172→          strokeDasharray={circumference}
+   173→          strokeDashoffset={offset}
+   174→          strokeLinecap="round"
+   175→          className="transition-all duration-500"
+   176→        />
+   177→      </svg>
+   178→      <span className="absolute inset-0 grid place-items-center text-xs font-semibold kpi-num" style={{ color }}>
+   179→        {score}
+   180→      </span>
+   181→    </div>
+   182→  );
+   183→}
+   184→
+   185→// ─────────────────────────────────────────────────────────────────────────────
+   186→// Main view
+   187→// ─────────────────────────────────────────────────────────────────────────────
+   188→export function AnalyticsView() {
+   189→  const { data, loading } = useApi<AnalyticsData>("/api/analytics");
+   190→
+   191→  if (loading || !data) {
+   192→    return (
+   193→      <div className="space-y-6">
+   194→        <Skeleton className="h-10 w-full max-w-md rounded-lg" />
+   195→        <Skeleton className="h-64 rounded-2xl" />
+   196→        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+   197→          {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-2xl" />)}
+   198→        </div>
+   199→        <Skeleton className="h-72 rounded-2xl" />
+   200→        <Skeleton className="h-72 rounded-2xl" />
+   201→        <Skeleton className="h-72 rounded-2xl" />
+   202→      </div>
+   203→    );
+   204→  }
+   205→
+   206→  const { suppliers, clients, brokerage, volume, forecast } = data;
+   207→
+   208→  // KPI mini-cards for brokerage forecast
+   209→  const projected3moTotal = brokerage.projectedByMonth.reduce((s, m) => s + m.amount, 0);
+   210→
+   211→  // Outstanding-by-client bar data (top 6)
+   212→  const outstandingByClient = clients.slice(0, 6).map((c) => ({ name: c.name, value: c.outstanding }));
+   213→
+   214→  // Combined volume area chart data
+   215→  const volumeCombined = volume.monthlyBilled.map((b, i) => ({
+   216→    month: b.month,
+   217→    billed: b.value,
+   218→    dispatched: volume.monthlyDispatched[i]?.value ?? 0,
+   219→  }));
+   220→
+   221→  return (
+   222→    <div className="space-y-6">
+   223→      <SectionHeader title="Analytics" description="Performance insights & forecasting" />
+   224→
+   225→      {/* ──────────────────────────────────────────────────────────────────── */}
+   226→      {/* (a) Supplier Reliability                                            */}
+   227→      {/* ──────────────────────────────────────────────────────────────────── */}
+   228→      <GlassCard className="p-5">
+   229→        <SectionHeader
+   230→          title="Supplier Reliability"
+   231→          description="Composite score from fulfillment · on-time dispatch · short-ship · dispute rates"
+   232→          action={
+   233→            <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+   234→              <Award className="size-3" />
+   235→              {suppliers.length} suppliers
+   236→            </Badge>
+   237→          }
+   238→        />
+   239→        <div className="mt-4">
+   240→          {suppliers.length === 0 ? (
+   241→            <EmptyState title="No suppliers yet" hint="Add suppliers to compute reliability scores." icon={<Factory className="size-5" />} />
+   242→          ) : (
+   243→            <Table>
+   244→              <TableHeader>
+   245→                <TableRow>
+   246→                  <TableHead className="min-w-[160px]">Supplier</TableHead>
+   247→                  <TableHead>Score</TableHead>
+   248→                  <TableHead>Tier</TableHead>
+   249→                  <TableHead className="text-right">Fulfillment</TableHead>
+   250→                  <TableHead className="text-right">On-time</TableHead>
+   251→                  <TableHead className="text-right">Short-ship</TableHead>
+   252→                  <TableHead className="text-right">Disputes</TableHead>
+   253→                  <TableHead className="text-right">Dispatches</TableHead>
+   254→                  <TableHead className="text-right">Supplied</TableHead>
+   255→                </TableRow>
+   256→              </TableHeader>
+   257→              <TableBody>
+   258→                {suppliers.map((s) => (
+   259→                  <TableRow key={s.supplierId} className="hover-lift">
+   260→                    <TableCell className="font-medium text-foreground">{s.name}</TableCell>
+   261→                    <TableCell>
+   262→                      <div className="flex items-center gap-2">
+   263→                        <ScoreRing score={s.score} />
+   264→                      </div>
+   265→                    </TableCell>
+   266→                    <TableCell>
+   267→                      <Badge variant="outline" className={TIER_STYLES[s.tier].badge}>
+   268→                        {TIER_STYLES[s.tier].label}
+   269→                      </Badge>
+   270→                    </TableCell>
+   271→                    <TableCell className="text-right kpi-num">
+   272→                      <span className={s.fulfillment >= 85 ? "text-emerald-600 dark:text-emerald-400" : s.fulfillment >= 70 ? "" : "text-amber-600 dark:text-amber-400"}>
+   273→                        {s.fulfillment}%
+   274→                      </span>
+   275→                    </TableCell>
+   276→                    <TableCell className="text-right kpi-num">
+   277→                      <span className={s.onTimeRate >= 85 ? "text-emerald-600 dark:text-emerald-400" : s.onTimeRate < 60 ? "text-rose-600 dark:text-rose-400" : ""}>
+   278→                        {s.onTimeRate}%
+   279→                      </span>
+   280→                    </TableCell>
+   281→                    <TableCell className="text-right kpi-num">
+   282→                      <span className={s.shortShipmentRate === 0 ? "text-emerald-600 dark:text-emerald-400" : s.shortShipmentRate >= 20 ? "text-rose-600 dark:text-rose-400" : "text-amber-600 dark:text-amber-400"}>
+   283→                        {s.shortShipmentRate}%
+   284→                      </span>
+   285→                    </TableCell>
+   286→                    <TableCell className="text-right kpi-num">
+   287→                      <span className={s.disputeRate === 0 ? "text-emerald-600 dark:text-emerald-400" : s.disputeRate >= 30 ? "text-rose-600 dark:text-rose-400" : "text-amber-600 dark:text-amber-400"}>
+   288→                        {s.disputeRate}%
+   289→                      </span>
+   290→                    </TableCell>
+   291→                    <TableCell className="text-right kpi-num text-muted-foreground">{formatNumber(s.dispatchCount)}</TableCell>
+   292→                    <TableCell className="text-right kpi-num text-muted-foreground">{formatCurrency(s.totalSupplied, { compact: true })}</TableCell>
+   293→                  </TableRow>
+   294→                ))}
+   295→              </TableBody>
+   296→            </Table>
+   297→          )}
+   298→        </div>
+   299→      </GlassCard>
+   300→
+   301→      {/* ──────────────────────────────────────────────────────────────────── */}
+   302→      {/* (b) Client Credit Exposure                                          */}
+   303→      {/* ──────────────────────────────────────────────────────────────────── */}
+   304→      <div className="grid gap-4 lg:grid-cols-5">
+   305→        <GlassCard className="p-5 lg:col-span-3">
+   306→          <SectionHeader
+   307→            title="Client Credit Exposure"
+   308→            description="Outstanding receivables · payment delays · return rates"
+   309→            action={
+   310→              <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300">
+   311→                <Wallet className="size-3" />
+   312→                {formatCurrency(clients.reduce((s, c) => s + c.outstanding, 0), { compact: true })}
+   313→              </Badge>
+   314→            }
+   315→          />
+   316→          <div className="mt-4">
+   317→            {clients.length === 0 ? (
+   318→              <EmptyState title="No clients yet" hint="Add clients to see credit exposure." icon={<Users className="size-5" />} />
+   319→            ) : (
+   320→              <Table>
+   321→                <TableHeader>
+   322→                  <TableRow>
+   323→                    <TableHead className="min-w-[160px]">Client</TableHead>
+   324→                    <TableHead className="text-right">Outstanding</TableHead>
+   325→                    <TableHead className="text-right">Avg delay</TableHead>
+   326→                    <TableHead className="text-right">Return rate</TableHead>
+   327→                    <TableHead className="text-right">Bills</TableHead>
+   328→                  </TableRow>
+   329→                </TableHeader>
+   330→                <TableBody>
+   331→                  {clients.map((c) => {
+   332→                    const tone = c.outstanding > 100000
+   333→                      ? "text-rose-600 dark:text-rose-400"
+   334→                      : c.outstanding > 50000
+   335→                        ? "text-amber-600 dark:text-amber-400"
+   336→                        : "text-foreground";
+   337→                    return (
+   338→                      <TableRow key={c.clientId} className="hover-lift">
+   339→                        <TableCell className="font-medium text-foreground">{c.name}</TableCell>
+   340→                        <TableCell className={`text-right kpi-num ${tone}`}>{formatCurrency(c.outstanding, { compact: true })}</TableCell>
+   341→                        <TableCell className="text-right kpi-num">
+   342→                          <span className={c.avgPaymentDelay > 120 ? "text-rose-600 dark:text-rose-400" : c.avgPaymentDelay > 60 ? "text-amber-600 dark:text-amber-400" : ""}>
+   343→                            {c.avgPaymentDelay > 0 ? `${c.avgPaymentDelay}d` : "—"}
+   344→                          </span>
+   345→                        </TableCell>
+   346→                        <TableCell className="text-right kpi-num">
+   347→                          <span className={c.returnRate === 0 ? "text-emerald-600 dark:text-emerald-400" : c.returnRate >= 10 ? "text-rose-600 dark:text-rose-400" : "text-amber-600 dark:text-amber-400"}>
+   348→                            {c.returnRate}%
+   349→                          </span>
+   350→                        </TableCell>
+   351→                        <TableCell className="text-right kpi-num text-muted-foreground">{formatNumber(c.billCount)}</TableCell>
+   352→                      </TableRow>
+   353→                    );
+   354→                  })}
+   355→                </TableBody>
+   356→              </Table>
+   357→            )}
+   358→          </div>
+   359→        </GlassCard>
+   360→
+   361→        <GlassCard className="p-5 lg:col-span-2">
+   362→          <SectionHeader title="Outstanding by Client" description="Top 6 by outstanding balance" />
+   363→          <div className="mt-4 h-64 w-full">
+   364→            {outstandingByClient.length === 0 || outstandingByClient.every((d) => d.value === 0) ? (
+   365→              <EmptyState title="No outstanding receivables" hint="All client bills are fully paid." icon={<Wallet className="size-5" />} />
+   366→            ) : (
+   367→              <ResponsiveContainer width="100%" height="100%">
+   368→                <BarChart data={outstandingByClient} layout="vertical" margin={{ top: 0, right: 16, bottom: 0, left: 8 }}>
+   369→                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.7 0.02 160 / 0.2)" horizontal={false} />
+   370→                  <XAxis type="number" tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCurrency(v as number, { compact: true })} />
+   371→                  <YAxis type="category" dataKey="name" tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} width={110} />
+   372→                  <Tooltip
+   373→                    cursor={{ fill: "oklch(0.7 0.02 160 / 0.08)" }}
+   374→                    contentStyle={{ background: "oklch(0.16 0.012 170 / 0.92)", border: "1px solid oklch(1 0 0 / 0.12)", borderRadius: 12, color: "white" }}
+   375→                    formatter={(v: number) => formatCurrency(v)}
+   376→                  />
+   377→                  <Bar dataKey="value" name="Outstanding" radius={[0, 6, 6, 0]}>
+   378→                    {outstandingByClient.map((d, i) => (
+   379→                      <Cell
+   380→                        key={i}
+   381→                        fill={d.value > 100000 ? COLORS.rose : d.value > 50000 ? COLORS.amber : COLORS.emerald}
+   382→                        stroke="none"
+   383→                      />
+   384→                    ))}
+   385→                  </Bar>
+   386→                </BarChart>
+   387→              </ResponsiveContainer>
+   388→            )}
+   389→          </div>
+   390→        </GlassCard>
+   391→      </div>
+   392→
+   393→      {/* ──────────────────────────────────────────────────────────────────── */}
+   394→      {/* (c) Brokerage Forecast                                              */}
+   395→      {/* ──────────────────────────────────────────────────────────────────── */}
+   396→      <GlassCard className="p-5">
+   397→        <SectionHeader
+   398→          title="Brokerage Forecast"
+   399→          description="Pending eligibility · eligible unpaid · projected payouts by client cadence"
+   400→          action={
+   401→            <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+   402→              <TrendingUp className="size-3" />
+   403→              Next 3 mo: {formatCurrency(projected3moTotal, { compact: true })}
+   404→            </Badge>
+   405→          }
+   406→        />
+   407→
+   408→        {/* KPI mini-cards */}
+   409→        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+   410→          <KpiCard
+   411→            label="Pending (not eligible)"
+   412→            value={formatCurrency(brokerage.pendingTotal, { compact: true })}
+   413→            sub="Will accrue once bills are fully paid"
+   414→            icon={<Clock className="size-5" />}
+   415→            accent="rose"
+   416→          />
+   417→          <KpiCard
+   418→            label="Eligible unpaid"
+   419→            value={formatCurrency(brokerage.eligibleUnpaidTotal, { compact: true })}
+   420→            sub="Awaiting payout batch"
+   421→            icon={<Wallet className="size-5" />}
+   422→            accent="amber"
+   423→          />
+   424→          <KpiCard
+   425→            label="Projected next 3 mo"
+   426→            value={formatCurrency(projected3moTotal, { compact: true })}
+   427→            sub="Spread by client cadence"
+   428→            icon={<TrendingUp className="size-5" />}
+   429→            accent="emerald"
+   430→          />
+   431→        </div>
+   432→
+   433→        {/* Projected payout chart + cadence breakdown */}
+   434→        <div className="mt-4 grid gap-4 lg:grid-cols-5">
+   435→          <div className="lg:col-span-3">
+   436→            <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">Projected monthly payouts (next 3 months)</p>
+   437→            <div className="h-56 w-full">
+   438→              <ResponsiveContainer width="100%" height="100%">
+   439→                <BarChart data={brokerage.projectedByMonth} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+   440→                  <defs>
+   441→                    <linearGradient id="gPayout" x1="0" y1="0" x2="0" y2="1">
+   442→                      <stop offset="0%" stopColor={COLORS.emerald} stopOpacity={0.9} />
+   443→                      <stop offset="100%" stopColor={COLORS.emerald} stopOpacity={0.55} />
+   444→                    </linearGradient>
+   445→                  </defs>
+   446→                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.7 0.02 160 / 0.2)" vertical={false} />
+   447→                  <XAxis dataKey="month" tick={{ fontSize: 12, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} />
+   448→                  <YAxis tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCurrency(v as number, { compact: true })} width={50} />
+   449→                  <Tooltip
+   450→                    cursor={{ fill: "oklch(0.7 0.02 160 / 0.08)" }}
+   451→                    contentStyle={{ background: "oklch(0.16 0.012 170 / 0.92)", border: "1px solid oklch(1 0 0 / 0.12)", borderRadius: 12, color: "white" }}
+   452→                    formatter={(v: number) => formatCurrency(v)}
+   453→                  />
+   454→                  <Bar dataKey="amount" name="Projected payout" fill="url(#gPayout)" radius={[6, 6, 0, 0]} />
+   455→                </BarChart>
+   456→              </ResponsiveContainer>
+   457→            </div>
+   458→          </div>
+   459→
+   460→          <div className="lg:col-span-2">
+   461→            <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">Breakdown by cadence (eligible unpaid)</p>
+   462→            <div className="space-y-2.5">
+   463→              <CadenceRow
+   464→                label="Immediate"
+   465→                hint="Paid on bill settlement"
+   466→                amount={brokerage.byCadence.immediate}
+   467→                color={COLORS.emerald}
+   468→              />
+   469→              <CadenceRow
+   470→                label="4-month cumulative"
+   471→                hint="Quarterly payout batches"
+   472→                amount={brokerage.byCadence["4_month"]}
+   473→                color={COLORS.teal}
+   474→              />
+   475→              <CadenceRow
+   476→                label="12-month cumulative"
+   477→                hint="Annual payout batches"
+   478→                amount={brokerage.byCadence["12_month"]}
+   479→                color={COLORS.plum}
+   480→              />
+   481→            </div>
+   482→          </div>
+   483→        </div>
+   484→      </GlassCard>
+   485→
+   486→      {/* ──────────────────────────────────────────────────────────────────── */}
+   487→      {/* (e) Forecasting — deep 6-mo brokerage w/ confidence interval,        */}
+   488→      {/*     12-mo seasonal trends, client velocity, supplier capacity.       */}
+   489→      {/* ──────────────────────────────────────────────────────────────────── */}
+   490→      <ForecastingSection forecast={forecast} />
+   491→
+   492→      {/* ──────────────────────────────────────────────────────────────────── */}
+   493→      {/* (d) Business Volume Trends                                          */}
+   494→      {/* ──────────────────────────────────────────────────────────────────── */}
+   495→      <div className="grid gap-4 lg:grid-cols-5">
+   496→        <GlassCard className="p-5 lg:col-span-3">
+   497→          <SectionHeader
+   498→            title="Volume Trends"
+   499→            description="Last 12 months — billed vs. dispatched value"
+   500→            action={
+   501→              <div className="hidden items-center gap-3 text-xs sm:flex">
+   502→                <span className="flex items-center gap-1.5 text-muted-foreground">
+   503→                  <span className="size-2.5 rounded-full" style={{ background: COLORS.emerald }} />
+   504→                  Billed
+   505→                </span>
+   506→                <span className="flex items-center gap-1.5 text-muted-foreground">
+   507→                  <span className="size-2.5 rounded-full" style={{ background: COLORS.teal }} />
+   508→                  Dispatched
+   509→                </span>
+   510→              </div>
+   511→            }
+   512→          />
+   513→          <div className="mt-4 h-64 w-full">
+   514→            {volumeCombined.every((d) => d.billed === 0 && d.dispatched === 0) ? (
+   515→              <EmptyState title="No volume in the last 12 months" hint="Bills and dispatches will appear here." icon={<BarChart3 className="size-5" />} />
+   516→            ) : (
+   517→              <ResponsiveContainer width="100%" height="100%">
+   518→                <AreaChart data={volumeCombined} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+   519→                  <defs>
+   520→                    <linearGradient id="gBilled" x1="0" y1="0" x2="0" y2="1">
+   521→                      <stop offset="0%" stopColor={COLORS.emerald} stopOpacity={0.5} />
+   522→                      <stop offset="100%" stopColor={COLORS.emerald} stopOpacity={0.02} />
+   523→                    </linearGradient>
+   524→                    <linearGradient id="gDispatched" x1="0" y1="0" x2="0" y2="1">
+   525→                      <stop offset="0%" stopColor={COLORS.teal} stopOpacity={0.5} />
+   526→                      <stop offset="100%" stopColor={COLORS.teal} stopOpacity={0.02} />
+   527→                    </linearGradient>
+   528→                  </defs>
+   529→                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.7 0.02 160 / 0.2)" />
+   530→                  <XAxis dataKey="month" tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} interval={Math.max(0, Math.floor(volumeCombined.length / 8))} minTickGap={4} />
+   531→                  <YAxis tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCurrency(v as number, { compact: true })} width={50} />
+   532→                  <Tooltip
+   533→                    contentStyle={{ background: "oklch(0.16 0.012 170 / 0.92)", border: "1px solid oklch(1 0 0 / 0.12)", borderRadius: 12, color: "white", backdropFilter: "blur(12px)" }}
+   534→                    formatter={(v: number) => formatCurrency(v)}
+   535→                  />
+   536→                  <Area type="monotone" dataKey="billed" name="Billed" stroke={COLORS.emerald} strokeWidth={2} fill="url(#gBilled)" />
+   537→                  <Area type="monotone" dataKey="dispatched" name="Dispatched" stroke={COLORS.teal} strokeWidth={2} fill="url(#gDispatched)" />
+   538→                </AreaChart>
+   539→              </ResponsiveContainer>
+   540→            )}
+   541→          </div>
+   542→        </GlassCard>
+   543→
+   544→        <GlassCard className="p-5 lg:col-span-2">
+   545→          <SectionHeader title="Top Client–Supplier Pairs" description="By total billed value" />
+   546→          <div className="mt-4">
+   547→            {volume.topPairs.length === 0 ? (
+   548→              <EmptyState title="No paired activity yet" hint="Bills will surface top client–supplier relationships." icon={<Users className="size-5" />} />
+   549→            ) : (
+   550→              <div className="space-y-2.5">
+   551→                {volume.topPairs.map((p, i) => {
+   552→                  const max = volume.topPairs[0]?.value || 1;
+   553→                  const pct = Math.max(6, Math.round((p.value / max) * 100));
+   554→                  return (
+   555→                    <div key={`${p.clientName}-${p.supplierName}-${i}`} className="rounded-xl border border-border/50 bg-card/40 p-3">
+   556→                      <div className="flex items-center justify-between gap-2">
+   557→                        <div className="min-w-0">
+   558→                          <p className="truncate text-sm font-medium text-foreground">{p.clientName}</p>
+   559→                          <p className="truncate text-xs text-muted-foreground">
+   560→                            <ArrowDownRight className="mr-0.5 inline size-3 text-muted-foreground/70" />
+   561→                            {p.supplierName}
+   562→                          </p>
+   563→                        </div>
+   564→                        <p className="kpi-num shrink-0 text-sm font-medium text-foreground">{formatCurrency(p.value, { compact: true })}</p>
+   565→                      </div>
+   566→                      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+   567→                        <div
+   568→                          className="h-full rounded-full transition-all duration-500"
+   569→                          style={{ width: `${pct}%`, background: i === 0 ? COLORS.emerald : i === 1 ? COLORS.teal : i === 2 ? COLORS.amber : i === 3 ? COLORS.plum : COLORS.rose }}
+   570→                        />
+   571→                      </div>
+   572→                    </div>
+   573→                  );
+   574→                })}
+   575→              </div>
+   576→            )}
+   577→          </div>
+   578→        </GlassCard>
+   579→      </div>
+   580→    </div>
+   581→  );
+   582→}
+   583→
+   584→// ─────────────────────────────────────────────────────────────────────────────
+   585→// CadenceRow — breakdown row for brokerage forecast by client payout cadence.
+   586→// ─────────────────────────────────────────────────────────────────────────────
+   587→function CadenceRow({ label, hint, amount, color }: { label: string; hint: string; amount: number; color: string }) {
+   588→  return (
+   589→    <div className="rounded-xl border border-border/50 bg-card/40 p-3">
+   590→      <div className="flex items-center justify-between gap-2">
+   591→        <div className="flex items-center gap-2">
+   592→          <span className="size-2.5 shrink-0 rounded-full" style={{ background: color }} />
+   593→          <div>
+   594→            <p className="text-sm font-medium text-foreground">{label}</p>
+   595→            <p className="text-[11px] text-muted-foreground">{hint}</p>
+   596→          </div>
+   597→        </div>
+   598→        <p className="kpi-num text-sm font-medium text-foreground">{formatCurrency(amount, { compact: true })}</p>
+   599→      </div>
+   600→    </div>
+   601→  );
+   602→}
+   603→
+   604→// ─────────────────────────────────────────────────────────────────────────────
+   605→// ForecastingSection — 6-mo brokerage forecast with confidence interval,
+   606→// 12-mo seasonal trends with growth-rate overlay, client velocity, supplier
+   607→// capacity. The four deep-forecast sub-features requested by the broker.
+   608→// ─────────────────────────────────────────────────────────────────────────────
+   609→function ForecastingSection({ forecast }: { forecast: Forecast }) {
+   610→  const { brokerage6Month, seasonalTrends, clientVelocity, supplierCapacity } = forecast;
+   611→
+   612→  // Insight card #1 — projected next-month brokerage + confidence range
+   613→  const nextMonth = brokerage6Month[0];
+   614→  const projectedNextMonth = nextMonth?.projected ?? 0;
+   615→  const lowerNext = nextMonth?.lower ?? 0;
+   616→  const upperNext = nextMonth?.upper ?? 0;
+   617→
+   618→  // Insight card #2 — peak season (highest-value month + its season label)
+   619→  const peakMonth = seasonalTrends
+   620→    .slice()
+   621→    .sort((a, b) => b.value - a.value)
+   622→    .find((m) => m.value > 0);
+   623→  const peakLabel = peakMonth ? `${peakMonth.month} · ${peakMonth.seasonLabel}` : "—";
+   624→
+   625→  // Insight card #3 — next expected client order (closest predicted date)
+   626→  const nextClient = clientVelocity
+   627→    .filter((c) => c.predictedNextOrderDate)
+   628→    .map((c) => ({
+   629→      ...c,
+   630→      daysOut: Math.max(0, daysBetween(new Date(c.predictedNextOrderDate as string), new Date())),
+   631→    }))
+   632→    .sort((a, b) => a.daysOut - b.daysOut)[0];
+   633→
+   634→  return (
+   635→    <GlassCard className="p-5">
+   636→      <SectionHeader
+   637→        title="Forecasting"
+   638→        description="6-month brokerage projection · seasonal trends · client velocity · supplier capacity"
+   639→        action={
+   640→          <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+   641→            <Zap className="size-3" />
+   642→            Deep forecast
+   643→          </Badge>
+   644→        }
+   645→      />
+   646→
+   647→      {/* ── Insight cards (3) ─────────────────────────────────────────────── */}
+   648→      <div className="mt-4 grid gap-3 sm:grid-cols-3">
+   649→        <KpiCard
+   650→          label="Projected next month brokerage"
+   651→          value={formatCurrency(projectedNextMonth, { compact: true })}
+   652→          sub={`Range: ${formatCurrency(lowerNext, { compact: true })} – ${formatCurrency(upperNext, { compact: true })}`}
+   653→          icon={<TrendingUp className="size-5" />}
+   654→          accent="emerald"
+   655→        />
+   656→        <KpiCard
+   657→          label="Peak season"
+   658→          value={<span className="text-xl font-medium">{peakLabel}</span>}
+   659→          sub={peakMonth ? `Highest billing month (last 12 mo)` : "No billing data yet"}
+   660→          icon={<Star className="size-5" />}
+   661→          accent="amber"
+   662→        />
+   663→        <KpiCard
+   664→          label="Next expected client order"
+   665→          value={
+   666→            nextClient ? (
+   667→              <span className="text-xl font-medium">
+   668→                {nextClient.name}
+   669→                <span className="ml-1 text-sm font-normal text-muted-foreground">in {nextClient.daysOut}d</span>
+   670→              </span>
+   671→            ) : "—"
+   672→          }
+   673→          sub={nextClient?.predictedNextOrderDate ? `Predicted ${formatDate(nextClient.predictedNextOrderDate)}` : "No predictable cadence yet"}
+   674→          icon={<Calendar className="size-5" />}
+   675→          accent="teal"
+   676→        />
+   677→      </div>
+   678→
+   679→      {/* ── 6-Month Brokerage Forecast with Confidence Interval ──────────── */}
+   680→      <div className="mt-6">
+   681→        <div className="mb-2 flex items-center justify-between gap-2">
+   682→          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+   683→            6-Month Brokerage Forecast with Confidence Interval
+   684→          </p>
+   685→          <div className="hidden items-center gap-3 text-xs sm:flex">
+   686→            <span className="flex items-center gap-1.5 text-muted-foreground">
+   687→              <span className="size-2.5 rounded-full" style={{ background: COLORS.emerald }} />
+   688→              Projected
+   689→            </span>
+   690→            <span className="flex items-center gap-1.5 text-muted-foreground">
+   691→              <span className="size-2.5 rounded-full" style={{ background: COLORS.teal }} />
+   692→              Upper bound
+   693→            </span>
+   694→            <span className="flex items-center gap-1.5 text-muted-foreground">
+   695→              <span className="size-2.5 rounded-full" style={{ background: COLORS.amber }} />
+   696→              Lower bound
+   697→            </span>
+   698→          </div>
+   699→        </div>
+   700→        <div className="h-64 w-full">
+   701→          {brokerage6Month.every((d) => d.projected === 0 && d.upper === 0 && d.lower === 0) ? (
+   702→            <EmptyState title="No forecast data yet" hint="Brokerage projections will appear once bills and brokerages are recorded." icon={<TrendingUp className="size-5" />} />
+   703→          ) : (
+   704→            <ResponsiveContainer width="100%" height="100%">
+   705→              <AreaChart data={brokerage6Month} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+   706→                <defs>
+   707→                  <linearGradient id="gUpper" x1="0" y1="0" x2="0" y2="1">
+   708→                    <stop offset="0%" stopColor={COLORS.teal} stopOpacity={0.25} />
+   709→                    <stop offset="100%" stopColor={COLORS.teal} stopOpacity={0.02} />
+   710→                  </linearGradient>
+   711→                  <linearGradient id="gProjected" x1="0" y1="0" x2="0" y2="1">
+   712→                    <stop offset="0%" stopColor={COLORS.emerald} stopOpacity={0.5} />
+   713→                    <stop offset="100%" stopColor={COLORS.emerald} stopOpacity={0.05} />
+   714→                  </linearGradient>
+   715→                  <linearGradient id="gLower" x1="0" y1="0" x2="0" y2="1">
+   716→                    <stop offset="0%" stopColor={COLORS.amber} stopOpacity={0.35} />
+   717→                    <stop offset="100%" stopColor={COLORS.amber} stopOpacity={0.02} />
+   718→                  </linearGradient>
+   719→                </defs>
+   720→                <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.7 0.02 160 / 0.2)" vertical={false} />
+   721→                <XAxis dataKey="month" tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} />
+   722→                <YAxis tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCurrency(v as number, { compact: true })} width={50} />
+   723→                <Tooltip
+   724→                  contentStyle={{ background: "oklch(0.16 0.012 170 / 0.92)", border: "1px solid oklch(1 0 0 / 0.12)", borderRadius: 12, color: "white", backdropFilter: "blur(12px)" }}
+   725→                  formatter={(v: number) => formatCurrency(v)}
+   726→                />
+   727→                <Area type="monotone" dataKey="upper" name="Upper bound" stroke={COLORS.teal} strokeWidth={1.5} strokeDasharray="4 4" fill="url(#gUpper)" />
+   728→                <Area type="monotone" dataKey="projected" name="Projected" stroke={COLORS.emerald} strokeWidth={2.5} fill="url(#gProjected)" />
+   729→                <Area type="monotone" dataKey="lower" name="Lower bound" stroke={COLORS.amber} strokeWidth={1.5} strokeDasharray="4 4" fill="url(#gLower)" />
+   730→              </AreaChart>
+   731→            </ResponsiveContainer>
+   732→          )}
+   733→        </div>
+   734→      </div>
+   735→
+   736→      {/* ── Seasonal Trends (12-mo bar + growth-rate line overlay) ────────── */}
+   737→      <div className="mt-6">
+   738→        <div className="mb-2 flex items-center justify-between gap-2">
+   739→          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+   740→            Seasonal Trends — last 12 months · color-coded by garment-industry season
+   741→          </p>
+   742→          <div className="hidden items-center gap-3 text-xs sm:flex">
+   743→            <span className="flex items-center gap-1.5 text-muted-foreground">
+   744→              <Star className="size-3 text-amber-500" />
+   745→              Peak month
+   746→            </span>
+   747→            <span className="flex items-center gap-1.5 text-muted-foreground">
+   748→              <span className="size-2.5 rounded-full" style={{ background: COLORS.rose }} />
+   749→              Growth rate
+   750→            </span>
+   751→          </div>
+   752→        </div>
+   753→        <div className="h-72 w-full">
+   754→          {seasonalTrends.every((d) => d.value === 0) ? (
+   755→            <EmptyState title="No billing in the last 12 months" hint="Monthly billed value will surface here with season context." icon={<BarChart3 className="size-5" />} />
+   756→          ) : (
+   757→            <ResponsiveContainer width="100%" height="100%">
+   758→              <ComposedChart data={seasonalTrends} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+   759→                <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.7 0.02 160 / 0.2)" vertical={false} />
+   760→                <XAxis dataKey="month" tick={{ fontSize: 10, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} interval={0} angle={-30} textAnchor="end" height={50} />
+   761→                <YAxis yAxisId="left" tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCurrency(v as number, { compact: true })} width={50} />
+   762→                <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} tickFormatter={(v) => `${v}%`} width={42} />
+   763→                <Tooltip
+   764→                  cursor={{ fill: "oklch(0.7 0.02 160 / 0.08)" }}
+   765→                  contentStyle={{ background: "oklch(0.16 0.012 170 / 0.92)", border: "1px solid oklch(1 0 0 / 0.12)", borderRadius: 12, color: "white", backdropFilter: "blur(12px)" }}
+   766→                  formatter={(v: number, name: string) => name === "Growth" ? `${v}%` : formatCurrency(v)}
+   767→                />
+   768→                <ReferenceLine y={0} yAxisId="right" stroke="oklch(0.7 0.02 165 / 0.4)" />
+   769→                <Bar yAxisId="left" dataKey="value" name="Billed" radius={[4, 4, 0, 0]}>
+   770→                  {seasonalTrends.map((d, i) => (
+   771→                    <Cell
+   772→                      key={i}
+   773→                      fill={SEASON_STYLES[d.seasonKey].color}
+   774→                      fillOpacity={d.isPeak ? 0.95 : d.isLow ? 0.55 : 0.75}
+   775→                      stroke={d.isPeak ? COLORS.amber : "none"}
+   776→                      strokeWidth={d.isPeak ? 2 : 0}
+   777→                    />
+   778→                  ))}
+   779→                </Bar>
+   780→                <Line yAxisId="right" type="monotone" dataKey="growthRate" name="Growth" stroke={COLORS.rose} strokeWidth={2} dot={{ r: 2.5, fill: COLORS.rose }} activeDot={{ r: 4 }} />
+   781→              </ComposedChart>
+   782→            </ResponsiveContainer>
+   783→          )}
+   784→        </div>
+   785→
+   786→        {/* Season legend + peak-month annotations */}
+   787→        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
+   788→          <span className="flex items-center gap-1.5">
+   789→            <span className="size-2.5 rounded-full" style={{ background: SEASON_STYLES.festive.color }} />
+   790→            Festive Season (Oct–Nov)
+   791→          </span>
+   792→          <span className="flex items-center gap-1.5">
+   793→            <span className="size-2.5 rounded-full" style={{ background: SEASON_STYLES.wedding.color }} />
+   794→            Wedding Season (Dec–Jan)
+   795→          </span>
+   796→          <span className="flex items-center gap-1.5">
+   797→            <span className="size-2.5 rounded-full" style={{ background: SEASON_STYLES.summer.color }} />
+   798→            Summer Transition (Apr–May)
+   799→          </span>
+   800→          <span className="flex items-center gap-1.5">
+   801→            <span className="size-2.5 rounded-full" style={{ background: SEASON_STYLES.winter.color }} />
+   802→            Winter Stock (Aug–Sep)
+   803→          </span>
+   804→        </div>
+   805→        {seasonalTrends.filter((m) => m.isPeak).length > 0 && (
+   806→          <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
+   807→            <span className="text-muted-foreground">Peak months:</span>
+   808→            {seasonalTrends.filter((m) => m.isPeak).map((m) => (
+   809→              <Badge key={m.month} variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300">
+   810→                <Star className="size-3" />
+   811→                {m.month} — {m.seasonLabel}
+   812→              </Badge>
+   813→            ))}
+   814→          </div>
+   815→        )}
+   816→      </div>
+   817→
+   818→      {/* ── Client Velocity + Supplier Capacity (side-by-side on large) ──── */}
+   819→      <div className="mt-6 grid gap-4 lg:grid-cols-2">
+   820→        {/* Client velocity table */}
+   821→        <div>
+   822→          <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+   823→            Client Velocity — predicted next order
+   824→          </p>
+   825→          {clientVelocity.length === 0 ? (
+   826→            <EmptyState title="No client orders yet" hint="POs will surface predicted reorder dates." icon={<Users className="size-5" />} />
+   827→          ) : (
+   828→            <div className="overflow-x-auto rounded-xl border border-border/50">
+   829→              <Table>
+   830→                <TableHeader>
+   831→                  <TableRow>
+   832→                    <TableHead className="min-w-[140px]">Client</TableHead>
+   833→                    <TableHead className="text-right">Last order</TableHead>
+   834→                    <TableHead className="text-right">Avg gap</TableHead>
+   835→                    <TableHead className="text-right">Predicted next</TableHead>
+   836→                  </TableRow>
+   837→                </TableHeader>
+   838→                <TableBody>
+   839→                  {clientVelocity.map((c) => {
+   840→                    const daysOut = c.predictedNextOrderDate
+   841→                      ? Math.max(0, daysBetween(new Date(c.predictedNextOrderDate), new Date()))
+   842→                      : null;
+   843→                    const tone = daysOut === null
+   844→                      ? "text-muted-foreground"
+   845→                      : daysOut <= 14
+   846→                        ? "text-emerald-600 dark:text-emerald-400"
+   847→                        : daysOut <= 45
+   848→                          ? "text-amber-600 dark:text-amber-400"
+   849→                          : "text-muted-foreground";
+   850→                    return (
+   851→                      <TableRow key={c.clientId} className="hover-lift">
+   852→                        <TableCell className="font-medium text-foreground">{c.name}</TableCell>
+   853→                        <TableCell className="text-right kpi-num text-muted-foreground">
+   854→                          {c.lastOrderDate ? formatDate(c.lastOrderDate) : "—"}
+   855→                        </TableCell>
+   856→                        <TableCell className="text-right kpi-num">
+   857→                          {c.avgDaysBetweenOrders > 0 ? `${c.avgDaysBetweenOrders}d` : "—"}
+   858→                        </TableCell>
+   859→                        <TableCell className="text-right kpi-num">
+   860→                          <span className={`inline-flex items-center gap-1.5 ${tone}`}>
+   861→                            {daysOut !== null && daysOut <= 14 && (
+   862→                              <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0 text-[10px] text-emerald-700 dark:text-emerald-300">
+   863→                                Expected
+   864→                              </Badge>
+   865→                            )}
+   866→                            {c.predictedNextOrderDate ? formatDate(c.predictedNextOrderDate) : "—"}
+   867→                          </span>
+   868→                        </TableCell>
+   869→                      </TableRow>
+   870→                    );
+   871→                  })}
+   872→                </TableBody>
+   873→              </Table>
+   874→            </div>
+   875→          )}
+   876→        </div>
+   877→
+   878→        {/* Supplier capacity table */}
+   879→        <div>
+   880→          <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+   881→            Supplier Capacity — current load vs. historical avg
+   882→          </p>
+   883→          {supplierCapacity.length === 0 ? (
+   884→            <EmptyState title="No suppliers yet" hint="Add suppliers to compute capacity utilisation." icon={<Factory className="size-5" />} />
+   885→          ) : (
+   886→            <div className="overflow-x-auto rounded-xl border border-border/50">
+   887→              <Table>
+   888→                <TableHeader>
+   889→                  <TableRow>
+   890→                    <TableHead className="min-w-[140px]">Supplier</TableHead>
+   891→                    <TableHead className="text-right">Avg lead</TableHead>
+   892→                    <TableHead className="text-right">Pending POs</TableHead>
+   893→                    <TableHead className="text-right">Status</TableHead>
+   894→                  </TableRow>
+   895→                </TableHeader>
+   896→                <TableBody>
+   897→                  {supplierCapacity.map((s) => {
+   898→                    const sty = SUPPLIER_STATUS_STYLES[s.status];
+   899→                    return (
+   900→                      <TableRow key={s.supplierId} className="hover-lift">
+   901→                        <TableCell className="font-medium text-foreground">{s.name}</TableCell>
+   902→                        <TableCell className="text-right kpi-num text-muted-foreground">
+   903→                          {s.avgLeadTimeDays > 0 ? `${s.avgLeadTimeDays}d` : "—"}
+   904→                        </TableCell>
+   905→                        <TableCell className="text-right kpi-num">
+   906→                          <span className={s.pendingPOs >= 5 ? "text-rose-600 dark:text-rose-400" : s.pendingPOs >= 3 ? "text-amber-600 dark:text-amber-400" : "text-foreground"}>
+   907→                            {formatNumber(s.pendingPOs)}
+   908→                          </span>
+   909→                          <span className="ml-1 text-[11px] text-muted-foreground">/ {s.monthlyAvgPOs}/mo avg</span>
+   910→                        </TableCell>
+   911→                        <TableCell className="text-right">
+   912→                          <Badge variant="outline" className={sty.badge}>
+   913→                            {s.status === "overloaded" && <AlertCircle className="size-3" />}
+   914→                            {sty.label}
+   915→                          </Badge>
+   916→                        </TableCell>
+   917→                      </TableRow>
+   918→                    );
+   919→                  })}
+   920→                </TableBody>
+   921→              </Table>
+   922→            </div>
+   923→          )}
+   924→        </div>
+   925→      </div>
+   926→    </GlassCard>
+   927→  );
+   928→}
+   929→

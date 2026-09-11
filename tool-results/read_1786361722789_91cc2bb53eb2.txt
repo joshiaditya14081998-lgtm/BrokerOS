@@ -1,0 +1,654 @@
+     1→     1→"use client";
+     2→     2→
+     3→     3→import * as React from "react";
+     4→     4→import {
+     5→     5→  Receipt, BadgePercent, Truck, CalendarDays, Banknote, AlertTriangle,
+     6→     6→  ArrowRight, Clock, Package, IndianRupee, ChevronRight, Info,
+     7→     7→} from "lucide-react";
+     8→     8→import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
+     9→     9→import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+    10→    10→import { useApi } from "@/lib/api";
+    11→    11→import {
+    12→    12→  formatCurrency, formatDate, formatDateTime, titleCase, safeParse,
+    13→    13→} from "@/lib/format";
+    14→    14→import { StatusChip, EmptyState, GlassCard } from "@/components/shared";
+    15→    15→import { Skeleton } from "@/components/ui/skeleton";
+    16→    16→import { Progress } from "@/components/ui/progress";
+    17→    17→import {
+    18→    18→  Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
+    19→    19→} from "@/components/ui/table";
+    20→    20→import { PhotoUpload } from "@/components/photo-upload";
+    21→    21→
+    22→    22→type LineItem = {
+    23→    23→  styleName: string;
+    24→    24→  color: string | null;
+    25→    25→  setQty: number;
+    26→    26→  unitPrice: number;
+    27→    27→  lineTotal: number;
+    28→    28→};
+    29→    29→
+    30→    30→type DispatchItem = {
+    31→    31→  styleName: string;
+    32→    32→  color: string | null;
+    33→    33→  qty: number;
+    34→    34→};
+    35→    35→
+    36→    36→type DispatchDateLog = {
+    37→    37→  id: string;
+    38→    38→  oldDate: string | null;
+    39→    39→  newDate: string | null;
+    40→    40→  reason: string | null;
+    41→    41→  createdAt: string;
+    42→    42→};
+    43→    43→
+    44→    44→type Dispatch = {
+    45→    45→  id: string;
+    46→    46→  dispatchDate: string;
+    47→    47→  itemsJson: string;
+    48→    48→  dispatchedQty: number;
+    49→    49→  status: string;
+    50→    50→  notes: string | null;
+    51→    51→  photos: { id: string; url: string; caption: string | null }[];
+    52→    52→  disputes: {
+    53→    53→    id: string; type: string; description: string | null;
+    54→    54→    quantityAffected: number; valueAffected: number; status: string; resolution: string | null;
+    55→    55→    createdAt: string;
+    56→    56→  }[];
+    57→    57→};
+    58→    58→
+    59→    59→type Payment = {
+    60→    60→  id: string;
+    61→    61→  amount: number;
+    62→    62→  date: string;
+    63→    63→  mode: string;
+    64→    64→  reference: string | null;
+    65→    65→  notes: string | null;
+    66→    66→};
+    67→    67→
+    68→    68→type Brokerage = {
+    69→    69→  id: string;
+    70→    70→  commissionRate: number;
+    71→    71→  baseAmount: number;
+    72→    72→  brokerageAmount: number;
+    73→    73→  eligible: boolean;
+    74→    74→  forceEligible: boolean;
+    75→    75→  forceReason: string | null;
+    76→    76→  eligibleAt: string | null;
+    77→    77→  payoutStatus: string;
+    78→    78→  payout: { id: string; status: string; paidAt: string | null; cadence: string } | null;
+    79→    79→};
+    80→    80→
+    81→    81→type Bill = {
+    82→    82→  id: string;
+    83→    83→  billNumber: string;
+    84→    84→  status: string;
+    85→    85→  baseAmount: number;
+    86→    86→  gstRate: number;
+    87→    87→  gstAmount: number;
+    88→    88→  finalAmount: number;
+    89→    89→  paidAmount: number;
+    90→    90→  notes: string | null;
+    91→    91→  createdAt: string;
+    92→    92→  payments: Payment[];
+    93→    93→  brokerage: Brokerage | null;
+    94→    94→};
+    95→    95→
+    96→    96→type Dispute = {
+    97→    97→  id: string;
+    98→    98→  type: string;
+    99→    99→  description: string | null;
+   100→   100→  quantityAffected: number;
+   101→   101→  valueAffected: number;
+   102→   102→  status: string;
+   103→   103→  resolution: string | null;
+   104→   104→  createdAt: string;
+   105→   105→};
+   106→   106→
+   107→   107→type PoDetail = {
+   108→   108→  id: string;
+   109→   109→  poNumber: string;
+   110→   110→  totalValue: number;
+   111→   111→  commissionRate: number;
+   112→   112→  gstRate: number;
+   113→   113→  status: string;
+   114→   114→  expectedDispatchDate: string | null;
+   115→   115→  revisedDispatchDate: string | null;
+   116→   116→  createdAt: string;
+   117→   117→  client: { id: string; name: string };
+   118→   118→  supplier: { id: string; name: string };
+   119→   119→  booking: {
+   120→   120→    id: string;
+   121→   121→    bookingDate: string;
+   122→   122→    notes: string | null;
+   123→   123→    visit: { id: string; plannedDate: string; status: string };
+   124→   124→    lineItems: { id: string; styleName: string; color: string | null; setQty: number; unitPrice: number }[];
+   125→   125→  };
+   126→   126→  dispatches: Dispatch[];
+   127→   127→  dispatchDateLogs: DispatchDateLog[];
+   128→   128→  bill: Bill | null;
+   129→   129→  disputes: Dispute[];
+   130→   130→  lineItems: LineItem[];
+   131→   131→  orderedQty: number;
+   132→   132→  dispatchedQty: number;
+   133→   133→  fulfillment: number;
+   134→   134→};
+   135→   135→
+   136→   136→export function PoDetailSheet({ id, onClose }: { id: string; onClose: () => void }) {
+   137→   137→  const { data, loading } = useApi<{ po: PoDetail }>(`/api/purchase-orders/${id}`);
+   138→   138→  const po = data?.po;
+   139→   139→
+   140→   140→  return (
+   141→   141→    <Sheet open onOpenChange={(o) => { if (!o) onClose(); }}>
+   142→   142→      <SheetContent className="glass-strong w-full overflow-y-auto sm:max-w-2xl">
+   143→   143→        <SheetHeader className="text-left">
+   144→   144→          <SheetTitle className="text-lg">
+   145→   145→            {loading || !po ? "Loading…" : po.poNumber}
+   146→   146→          </SheetTitle>
+   147→   147→          <SheetDescription className="sr-only">Purchase order detail</SheetDescription>
+   148→   148→        </SheetHeader>
+   149→   149→
+   150→   150→        {loading || !po ? (
+   151→   151→          <div className="space-y-3 p-4">
+   152→   152→            {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-16 rounded-xl" />)}
+   153→   153→          </div>
+   154→   154→        ) : (
+   155→   155→          <PoDetailBody po={po} />
+   156→   156→        )}
+   157→   157→      </SheetContent>
+   158→   158→    </Sheet>
+   159→   159→  );
+   160→   160→}
+   161→   161→
+   162→   162→function PoDetailBody({ po }: { po: PoDetail }) {
+   163→   163→  return (
+   164→   164→    <div className="space-y-4 px-4 pb-8">
+   165→   165→      {/* Header strip */}
+   166→   166→      <div className="glass rounded-xl p-4">
+   167→   167→        <div className="flex flex-wrap items-center gap-2">
+   168→   168→          <h2 className="kpi-num text-2xl font-semibold">{po.poNumber}</h2>
+   169→   169→          <StatusChip status={po.status} />
+   170→   170→        </div>
+   171→   171→        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+   172→   172→          <span className="inline-flex items-center gap-1">
+   173→   173→            <span className="font-medium text-foreground">{po.client.name}</span>
+   174→   174→            <ArrowRight className="size-3" />
+   175→   175→            <span className="font-medium text-foreground">{po.supplier.name}</span>
+   176→   176→          </span>
+   177→   177→          <span className="inline-flex items-center gap-1">
+   178→   178→            <CalendarDays className="size-3" />Booked: {formatDate(po.booking.bookingDate)}
+   179→   179→          </span>
+   180→   180→          {po.expectedDispatchDate ? (
+   181→   181→            <span className="inline-flex items-center gap-1">
+   182→   182→              <Truck className="size-3" />Expected: {formatDate(po.expectedDispatchDate)}
+   183→   183→            </span>
+   184→   184→          ) : null}
+   185→   185→          {po.revisedDispatchDate ? (
+   186→   186→            <span className="inline-flex items-center gap-1">
+   187→   187→              <Clock className="size-3 text-amber-500" />Revised: {formatDate(po.revisedDispatchDate)}
+   188→   188→            </span>
+   189→   189→          ) : null}
+   190→   190→        </div>
+   191→   191→        <div className="mt-3">
+   192→   192→          <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+   193→   193→            <span>Fulfillment</span>
+   194→   194→            <span>{po.dispatchedQty}/{po.orderedQty} sets · {po.fulfillment}%</span>
+   195→   195→          </div>
+   196→   196→          <Progress value={po.fulfillment} className="mt-1 h-1.5" />
+   197→   197→        </div>
+   198→   198→      </div>
+   199→   199→
+   200→   200→      {/* Top stats */}
+   201→   201→      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+   202→   202→        <Stat icon={<IndianRupee className="size-4" />} label="Total value" value={formatCurrency(po.totalValue, { compact: true })} />
+   203→   203→        <Stat icon={<BadgePercent className="size-4" />} label="Commission" value={`${po.commissionRate}%`} tone="emerald" />
+   204→   204→        <Stat icon={<Receipt className="size-4" />} label="GST rate" value={`${po.gstRate}%`} />
+   205→   205→        <Stat icon={<Package className="size-4" />} label="Ordered qty" value={`${po.orderedQty}`} />
+   206→   206→        <Stat icon={<Truck className="size-4" />} label="Dispatched qty" value={`${po.dispatchedQty}`} tone="amber" />
+   207→   207→        <Stat icon={<Clock className="size-4" />} label="Fulfillment" value={`${po.fulfillment}%`} tone={po.fulfillment === 100 ? "emerald" : "default"} />
+   208→   208→      </div>
+   209→   209→
+   210→   210→      {/* Hint for open POs with no dispatches */}
+   211→   211→      {po.status === "open" && po.dispatches.length === 0 ? (
+   212→   212→        <div className="glass flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-300">
+   213→   213→          <Info className="mt-0.5 size-4 shrink-0" />
+   214→   214→          <span>Record a dispatch from the Dispatch Tracking view to start fulfillment on this PO.</span>
+   215→   215→        </div>
+   216→   216→      ) : null}
+   217→   217→
+   218→   218→      <Tabs defaultValue="items" className="w-full">
+   219→   219→        <TabsList className="grid w-full grid-cols-4">
+   220→   220→          <TabsTrigger value="items">Line Items</TabsTrigger>
+   221→   221→          <TabsTrigger value="dispatches">Dispatches</TabsTrigger>
+   222→   222→          <TabsTrigger value="billing">Billing</TabsTrigger>
+   223→   223→          <TabsTrigger value="timeline">Timeline</TabsTrigger>
+   224→   224→        </TabsList>
+   225→   225→
+   226→   226→        <TabsContent value="items" className="mt-3 space-y-3">
+   227→   227→          <LineItemsTab items={po.lineItems} total={po.totalValue} />
+   228→   228→          <PhotoUpload
+   229→   229→            entityType="Booking"
+   230→   230→            entityId={po.booking.id}
+   231→   231→            stage="booking"
+   232→   232→            label="Booking photos"
+   233→   233→            hint="Style samples, order sheet, swatches — anything captured at booking stage."
+   234→   234→          />
+   235→   235→        </TabsContent>
+   236→   236→
+   237→   237→        <TabsContent value="dispatches" className="mt-3 space-y-2">
+   238→   238→          <DispatchesTab dispatches={po.dispatches} logs={po.dispatchDateLogs} />
+   239→   239→        </TabsContent>
+   240→   240→
+   241→   241→        <TabsContent value="billing" className="mt-3">
+   242→   242→          <BillingTab bill={po.bill} disputes={po.disputes} />
+   243→   243→        </TabsContent>
+   244→   244→
+   245→   245→        <TabsContent value="timeline" className="mt-3">
+   246→   246→          <TimelineTab po={po} />
+   247→   247→        </TabsContent>
+   248→   248→      </Tabs>
+   249→   249→    </div>
+   250→   250→  );
+   251→   251→}
+   252→   252→
+   253→   253→function LineItemsTab({ items, total }: { items: LineItem[]; total: number }) {
+   254→   254→  if (items.length === 0) return <EmptyState title="No line items" />;
+   255→   255→  return (
+   256→   256→    <div className="glass overflow-hidden rounded-xl">
+   257→   257→      <div className="overflow-x-auto">
+   258→   258→        <Table>
+   259→   259→          <TableHeader>
+   260→   260→            <TableRow className="border-border/40 hover:bg-transparent">
+   261→   261→              <TableHead className="pl-4">Style</TableHead>
+   262→   262→              <TableHead>Color</TableHead>
+   263→   263→              <TableHead className="text-right">Sets</TableHead>
+   264→   264→              <TableHead className="text-right">Unit ₹</TableHead>
+   265→   265→              <TableHead className="pr-4 text-right">Line total</TableHead>
+   266→   266→            </TableRow>
+   267→   267→          </TableHeader>
+   268→   268→          <TableBody>
+   269→   269→            {items.map((it, i) => (
+   270→   270→              <TableRow key={i} className="border-border/40">
+   271→   271→                <TableCell className="pl-4 font-medium">{it.styleName}</TableCell>
+   272→   272→                <TableCell className="text-muted-foreground">{it.color || "—"}</TableCell>
+   273→   273→                <TableCell className="text-right">{it.setQty}</TableCell>
+   274→   274→                <TableCell className="text-right text-muted-foreground">{formatCurrency(it.unitPrice)}</TableCell>
+   275→   275→                <TableCell className="pr-4 text-right font-semibold">{formatCurrency(it.lineTotal)}</TableCell>
+   276→   276→              </TableRow>
+   277→   277→            ))}
+   278→   278→          </TableBody>
+   279→   279→        </Table>
+   280→   280→      </div>
+   281→   281→      <div className="flex items-center justify-between border-t border-border/40 bg-muted/30 px-4 py-2 text-xs">
+   282→   282→        <span className="text-muted-foreground">Booking total</span>
+   283→   283→        <span className="kpi-num font-semibold text-emerald-600 dark:text-emerald-400">{formatCurrency(total)}</span>
+   284→   284→      </div>
+   285→   285→    </div>
+   286→   286→  );
+   287→   287→}
+   288→   288→
+   289→   289→function DispatchesTab({ dispatches, logs }: { dispatches: Dispatch[]; logs: DispatchDateLog[] }) {
+   290→   290→  if (dispatches.length === 0 && logs.length === 0) {
+   291→   291→    return <EmptyState title="No dispatches yet" hint="Shipments will appear here once recorded." />;
+   292→   292→  }
+   293→   293→  return (
+   294→   294→    <>
+   295→   295→      {dispatches.length === 0 ? null : dispatches.map((d) => {
+   296→   296→        const items = safeParse<DispatchItem[]>(d.itemsJson, []);
+   297→   297→        return (
+   298→   298→          <div key={d.id} className="glass rounded-xl p-4">
+   299→   299→            <div className="flex items-start justify-between gap-2">
+   300→   300→              <div>
+   301→   301→                <p className="text-sm font-semibold">{formatDate(d.dispatchDate)}</p>
+   302→   302→                <p className="text-xs text-muted-foreground">
+   303→   303→                  Dispatched {d.dispatchedQty} sets · {d.photos.length} photo{d.photos.length === 1 ? "" : "s"}
+   304→   304→                </p>
+   305→   305→              </div>
+   306→   306→              <StatusChip status={d.status} />
+   307→   307→            </div>
+   308→   308→            {items.length > 0 ? (
+   309→   309→              <div className="mt-2 grid grid-cols-1 gap-1 sm:grid-cols-2">
+   310→   310→                {items.map((it, i) => (
+   311→   311→                  <div key={i} className="flex items-center justify-between rounded-lg bg-card/40 px-2 py-1 text-xs">
+   312→   312→                    <span className="truncate">
+   313→   313→                      <span className="font-medium">{it.styleName}</span>
+   314→   314→                      {it.color ? <span className="ml-1 text-muted-foreground">· {it.color}</span> : null}
+   315→   315→                    </span>
+   316→   316→                    <span className="ml-2 shrink-0 font-semibold">{it.qty}</span>
+   317→   317→                  </div>
+   318→   318→                ))}
+   319→   319→              </div>
+   320→   320→            ) : null}
+   321→   321→            {d.notes ? <p className="mt-2 text-xs text-muted-foreground">“{d.notes}”</p> : null}
+   322→   322→            {d.disputes.length > 0 ? (
+   323→   323→              <div className="mt-2 space-y-1 border-t border-border/40 pt-2">
+   324→   324→                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Disputes</p>
+   325→   325→                {d.disputes.map((dis) => (
+   326→   326→                  <div key={dis.id} className="flex items-center justify-between text-[11px]">
+   327→   327→                    <span className="inline-flex items-center gap-1 text-muted-foreground">
+   328→   328→                      <AlertTriangle className="size-3 text-rose-500" />
+   329→   329→                      {titleCase(dis.type)} · {dis.quantityAffected} affected
+   330→   330→                    </span>
+   331→   331→                    <StatusChip status={dis.status} />
+   332→   332→                  </div>
+   333→   333→                ))}
+   334→   334→              </div>
+   335→   335→            ) : null}
+   336→   336→            <div className="mt-3">
+   337→   337→              <PhotoUpload
+   338→   338→                entityType="Dispatch"
+   339→   339→                entityId={d.id}
+   340→   340→                stage="dispatch"
+   341→   341→                label="Dispatch photos"
+   342→   342→                hint="Loading bay, bale counts, vehicle number, delivery challan."
+   343→   343→              />
+   344→   344→            </div>
+   345→   345→          </div>
+   346→   346→        );
+   347→   347→      })}
+   348→   348→
+   349→   349→      {logs.length > 0 ? (
+   350→   350→        <div className="glass rounded-xl p-4">
+   351→   351→          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Dispatch date revisions</p>
+   352→   352→          <div className="mt-2 space-y-2">
+   353→   353→            {logs.map((l) => (
+   354→   354→              <div key={l.id} className="flex items-start gap-2 text-xs">
+   355→   355→                <Clock className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
+   356→   356→                <div className="min-w-0 flex-1">
+   357→   357→                  <div className="flex flex-wrap items-center gap-1.5">
+   358→   358→                    <span className="text-muted-foreground line-through">{formatDate(l.oldDate)}</span>
+   359→   359→                    <ChevronRight className="size-3 text-muted-foreground" />
+   360→   360→                    <span className="font-medium">{formatDate(l.newDate)}</span>
+   361→   361→                    <span className="text-muted-foreground">· {formatDateTime(l.createdAt)}</span>
+   362→   362→                  </div>
+   363→   363→                  {l.reason ? <p className="mt-0.5 text-muted-foreground">{l.reason}</p> : null}
+   364→   364→                </div>
+   365→   365→              </div>
+   366→   366→            ))}
+   367→   367→          </div>
+   368→   368→        </div>
+   369→   369→      ) : null}
+   370→   370→    </>
+   371→   371→  );
+   372→   372→}
+   373→   373→
+   374→   374→function BillingTab({ bill, disputes }: { bill: Bill | null; disputes: Dispute[] }) {
+   375→   375→  return (
+   376→   376→    <div className="space-y-3">
+   377→   377→      {bill ? <BillingCard bill={bill} /> : (
+   378→   378→        <GlassCard className="p-8">
+   379→   379→          <EmptyState
+   380→   380→            title="No bill generated yet"
+   381→   381→            hint="A bill is generated once dispatches are recorded and billing is initiated."
+   382→   382→            icon={<Receipt className="size-5" />}
+   383→   383→          />
+   384→   384→        </GlassCard>
+   385→   385→      )}
+   386→   386→
+   387→   387→      {disputes.length > 0 ? (
+   388→   388→        <div className="glass rounded-xl p-4">
+   389→   389→          <div className="mb-2 flex items-center gap-1.5">
+   390→   390→            <AlertTriangle className="size-4 text-rose-500" />
+   391→   391→            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+   392→   392→              Disputes · {disputes.length}
+   393→   393→            </p>
+   394→   394→          </div>
+   395→   395→          <div className="space-y-3">
+   396→   396→            {disputes.map((d) => (
+   397→   397→              <div key={d.id} className="rounded-lg border border-border/50 bg-card/30 p-3">
+   398→   398→                <div className="flex items-start justify-between gap-2">
+   399→   399→                  <div className="min-w-0">
+   400→   400→                    <p className="text-xs font-medium">
+   401→   401→                      {titleCase(d.type)} · {d.quantityAffected} affected
+   402→   402→                    </p>
+   403→   403→                    {d.description ? (
+   404→   404→                      <p className="mt-0.5 text-[11px] text-muted-foreground">{d.description}</p>
+   405→   405→                    ) : null}
+   406→   406→                  </div>
+   407→   407→                  <StatusChip status={d.status} />
+   408→   408→                </div>
+   409→   409→                {d.resolution ? (
+   410→   410→                  <p className="mt-1.5 rounded bg-muted/40 px-2 py-1 text-[11px] text-foreground/80">
+   411→   411→                    {d.resolution}
+   412→   412→                  </p>
+   413→   413→                ) : null}
+   414→   414→                <div className="mt-2">
+   415→   415→                  <PhotoUpload
+   416→   416→                    entityType="Dispute"
+   417→   417→                    entityId={d.id}
+   418→   418→                    stage="dispute"
+   419→   419→                    label="Dispute evidence"
+   420→   420→                    hint="Defect close-ups, shortage photos, return acknowledgement, debit note."
+   421→   421→                  />
+   422→   422→                </div>
+   423→   423→              </div>
+   424→   424→            ))}
+   425→   425→          </div>
+   426→   426→        </div>
+   427→   427→      ) : null}
+   428→   428→    </div>
+   429→   429→  );
+   430→   430→}
+   431→   431→
+   432→   432→function BillingCard({ bill }: { bill: Bill }) {
+   433→   433→  const due = bill.finalAmount - bill.paidAmount;
+   434→   434→  return (
+   435→   435→    <>
+   436→   436→      <div className="glass rounded-xl p-4">
+   437→   437→        <div className="flex items-start justify-between gap-2">
+   438→   438→          <div>
+   439→   439→            <p className="text-base font-semibold">{bill.billNumber}</p>
+   440→   440→            <p className="text-xs text-muted-foreground">Billed: {formatDate(bill.createdAt)}</p>
+   441→   441→          </div>
+   442→   442→          <StatusChip status={bill.status} />
+   443→   443→        </div>
+   444→   444→        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+   445→   445→          <KV label="Base amount" value={formatCurrency(bill.baseAmount)} />
+   446→   446→          <KV label={`GST (${bill.gstRate}%)`} value={formatCurrency(bill.gstAmount)} />
+   447→   447→          <KV label="Final" value={formatCurrency(bill.finalAmount)} tone="emerald" />
+   448→   448→          <KV label="Paid" value={formatCurrency(bill.paidAmount)} tone="emerald" />
+   449→   449→          <KV label="Due" value={formatCurrency(due)} tone={due > 0 ? "amber" : "default"} />
+   450→   450→          <KV label="GST rate" value={`${bill.gstRate}%`} />
+   451→   451→        </div>
+   452→   452→        {bill.notes ? <p className="mt-2 text-xs text-muted-foreground">“{bill.notes}”</p> : null}
+   453→   453→      </div>
+   454→   454→
+   455→   455→      {bill.payments.length > 0 ? (
+   456→   456→        <div className="glass rounded-xl p-4">
+   457→   457→          <div className="mb-2 flex items-center gap-1.5">
+   458→   458→            <Banknote className="size-4 text-emerald-500" />
+   459→   459→            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Payments · {bill.payments.length}</p>
+   460→   460→          </div>
+   461→   461→          <div className="space-y-1.5">
+   462→   462→            {bill.payments.map((p) => (
+   463→   463→              <div key={p.id} className="flex items-center justify-between gap-2 rounded-lg bg-card/40 px-3 py-2 text-xs">
+   464→   464→                <div className="min-w-0">
+   465→   465→                  <p className="font-medium">{formatDate(p.date)} · <span className="text-muted-foreground">{titleCase(p.mode)}</span></p>
+   466→   466→                  {p.reference ? <p className="truncate text-[11px] text-muted-foreground">Ref: {p.reference}</p> : null}
+   467→   467→                </div>
+   468→   468→                <span className="kpi-num shrink-0 font-semibold text-emerald-600 dark:text-emerald-400">{formatCurrency(p.amount)}</span>
+   469→   469→              </div>
+   470→   470→            ))}
+   471→   471→          </div>
+   472→   472→        </div>
+   473→   473→      ) : null}
+   474→   474→
+   475→   475→      {bill.brokerage ? (
+   476→   476→        <BrokerageCard brokerage={bill.brokerage} />
+   477→   477→      ) : null}
+   478→   478→    </>
+   479→   479→  );
+   480→   480→}
+   481→   481→
+   482→   482→function BrokerageCard({ brokerage }: { brokerage: Brokerage }) {
+   483→   483→  return (
+   484→   484→    <div className="glass rounded-xl p-4">
+   485→   485→      <div className="mb-2 flex items-center gap-1.5">
+   486→   486→        <BadgePercent className="size-4 text-emerald-500" />
+   487→   487→        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Brokerage</p>
+   488→   488→      </div>
+   489→   489→      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+   490→   490→        <KV label="Commission" value={`${brokerage.commissionRate}%`} />
+   491→   491→        <KV label="Base (excl GST)" value={formatCurrency(brokerage.baseAmount)} />
+   492→   492→        <KV label="Brokerage amt" value={formatCurrency(brokerage.brokerageAmount)} tone="emerald" />
+   493→   493→        <KV label="Eligible" value={brokerage.eligible ? "Yes" : "No"} tone={brokerage.eligible ? "emerald" : "default"} />
+   494→   494→        <KV label="Payout status" value={titleCase(brokerage.payoutStatus)} tone={brokerage.payoutStatus === "paid" ? "emerald" : "default"} />
+   495→   495→        {brokerage.eligibleAt ? <KV label="Eligible since" value={formatDate(brokerage.eligibleAt)} /> : null}
+   496→   496→      </div>
+   497→   497→      {brokerage.forceEligible && brokerage.forceReason ? (
+   498→   498→        <p className="mt-2 rounded-lg bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-700 dark:text-amber-300">
+   499→   499→          Force-eligible: {brokerage.forceReason}
+   500→   500→        </p>
+   501→   501→      ) : null}
+   502→   502→      {brokerage.payout ? (
+   503→   503→        <p className="mt-2 text-[11px] text-muted-foreground">
+   504→   504→          Payout: {titleCase(brokerage.payout.status)} · {titleCase(brokerage.payout.cadence)}
+   505→   505→          {brokerage.payout.paidAt ? ` · paid ${formatDate(brokerage.payout.paidAt)}` : ""}
+   506→   506→        </p>
+   507→   507→      ) : null}
+   508→   508→    </div>
+   509→   509→  );
+   510→   510→}
+   511→   511→
+   512→   512→type TimelineEntry = {
+   513→   513→  id: string;
+   514→   514→  date: string;
+   515→   515→  kind: "log" | "payment" | "dispute" | "bill";
+   516→   516→  title: string;
+   517→   517→  detail: string | null;
+   518→   518→};
+   519→   519→
+   520→   520→function TimelineTab({ po }: { po: PoDetail }) {
+   521→   521→  const entries: TimelineEntry[] = React.useMemo(() => {
+   522→   522→    const list: TimelineEntry[] = [];
+   523→   523→    for (const l of po.dispatchDateLogs) {
+   524→   524→      list.push({
+   525→   525→        id: l.id, date: l.createdAt, kind: "log",
+   526→   526→        title: `Dispatch date revised → ${formatDate(l.newDate)}`,
+   527→   527→        detail: l.reason || (l.oldDate ? `from ${formatDate(l.oldDate)}` : null),
+   528→   528→      });
+   529→   529→    }
+   530→   530→    if (po.bill) {
+   531→   531→      list.push({
+   532→   532→        id: `bill-${po.bill.id}`, date: po.bill.createdAt, kind: "bill",
+   533→   533→        title: `Bill ${po.bill.billNumber} generated`,
+   534→   534→        detail: `Final: ${formatCurrency(po.bill.finalAmount)} · status: ${titleCase(po.bill.status)}`,
+   535→   535→      });
+   536→   536→      for (const p of po.bill.payments) {
+   537→   537→        list.push({
+   538→   538→          id: `pay-${p.id}`, date: p.date, kind: "payment",
+   539→   539→          title: `Payment · ${titleCase(p.mode)}`,
+   540→   540→          detail: `${formatCurrency(p.amount)}${p.reference ? ` · ref ${p.reference}` : ""}`,
+   541→   541→        });
+   542→   542→      }
+   543→   543→      if (po.bill.brokerage) {
+   544→   544→        const b = po.bill.brokerage;
+   545→   545→        list.push({
+   546→   546→          id: `brok-${b.id}`, date: b.eligibleAt ?? po.bill.createdAt, kind: "bill",
+   547→   547→          title: `Brokerage ${b.eligible ? "eligible" : "accrued"}`,
+   548→   548→          detail: `${formatCurrency(b.brokerageAmount)} · ${titleCase(b.payoutStatus)}`,
+   549→   549→        });
+   550→   550→      }
+   551→   551→    }
+   552→   552→    for (const d of po.disputes) {
+   553→   553→      list.push({
+   554→   554→        id: `disp-${d.id}`, date: d.createdAt, kind: "dispute",
+   555→   555→        title: `Dispute · ${titleCase(d.type)}`,
+   556→   556→        detail: d.description || `${d.quantityAffected} units · ${formatCurrency(d.valueAffected)}`,
+   557→   557→      });
+   558→   558→    }
+   559→   559→    return list.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+   560→   560→  }, [po]);
+   561→   561→
+   562→   562→  if (entries.length === 0) {
+   563→   563→    return (
+   564→   564→      <GlassCard className="p-8">
+   565→   565→        <EmptyState title="No timeline events" hint="Dispatches, payments, and disputes will appear here." icon={<Clock className="size-5" />} />
+   566→   566→      </GlassCard>
+   567→   567→    );
+   568→   568→  }
+   569→   569→
+   570→   570→  return (
+   571→   571→    <div className="glass rounded-xl p-4">
+   572→   572→      <ol className="relative space-y-4 border-l border-border/60 pl-4">
+   573→   573→        {entries.map((e) => (
+   574→   574→          <li key={e.id} className="relative">
+   575→   575→            <span className={`absolute -left-[1.41rem] top-1 grid size-3.5 place-items-center rounded-full border-2 border-background ${kindClass(e.kind)}`}>
+   576→   576→              <span className="size-1.5 rounded-full bg-current opacity-80" />
+   577→   577→            </span>
+   578→   578→            <div className="flex flex-wrap items-center gap-1.5">
+   579→   579→              <span className="text-sm font-medium">{e.title}</span>
+   580→   580→              <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+   581→   581→                {kindLabel(e.kind)}
+   582→   582→              </span>
+   583→   583→            </div>
+   584→   584→            <p className="text-xs text-muted-foreground">{formatDateTime(e.date)}</p>
+   585→   585→            {e.detail ? <p className="mt-0.5 text-xs text-foreground/80">{e.detail}</p> : null}
+   586→   586→          </li>
+   587→   587→        ))}
+   588→   588→      </ol>
+   589→   589→    </div>
+   590→   590→  );
+   591→   591→}
+   592→   592→
+   593→   593→function kindClass(kind: TimelineEntry["kind"]): string {
+   594→   594→  switch (kind) {
+   595→   595→    case "payment": return "bg-emerald-500/20 text-emerald-600 dark:text-emerald-400";
+   596→   596→    case "log": return "bg-amber-500/20 text-amber-600 dark:text-amber-400";
+   597→   597→    case "dispute": return "bg-rose-500/20 text-rose-600 dark:text-rose-400";
+   598→   598→    default: return "bg-teal-500/20 text-teal-600 dark:text-teal-400";
+   599→   599→  }
+   600→   600→}
+   601→   601→
+   602→   602→function kindLabel(kind: TimelineEntry["kind"]): string {
+   603→   603→  switch (kind) {
+   604→   604→    case "payment": return "Payment";
+   605→   605→    case "log": return "Revision";
+   606→   606→    case "dispute": return "Dispute";
+   607→   607→    default: return "Billing";
+   608→   608→  }
+   609→   609→}
+   610→   610→
+   611→   611→function Stat({
+   612→   612→  icon, label, value, tone = "default",
+   613→   613→}: {
+   614→   614→  icon: React.ReactNode;
+   615→   615→  label: string;
+   616→   616→  value: string;
+   617→   617→  tone?: "default" | "emerald" | "amber";
+   618→   618→}) {
+   619→   619→  const toneClass = tone === "emerald"
+   620→   620→    ? "text-emerald-600 dark:text-emerald-400"
+   621→   621→    : tone === "amber"
+   622→   622→      ? "text-amber-600 dark:text-amber-400"
+   623→   623→      : "text-foreground";
+   624→   624→  return (
+   625→   625→    <div className="rounded-xl border border-border/40 bg-card/40 p-3">
+   626→   626→      <div className="flex items-center gap-1.5 text-muted-foreground">
+   627→   627→        {icon}
+   628→   628→        <span className="text-[10px] uppercase tracking-wider">{label}</span>
+   629→   629→      </div>
+   630→   630→      <p className={`kpi-num mt-1 text-base font-semibold ${toneClass}`}>{value}</p>
+   631→   631→    </div>
+   632→   632→  );
+   633→   633→}
+   634→   634→
+   635→   635→function KV({
+   636→   636→  label, value, tone = "default",
+   637→   637→}: {
+   638→   638→  label: string;
+   639→   639→  value: string;
+   640→   640→  tone?: "default" | "emerald" | "amber";
+   641→   641→}) {
+   642→   642→  const toneClass = tone === "emerald"
+   643→   643→    ? "text-emerald-600 dark:text-emerald-400"
+   644→   644→    : tone === "amber"
+   645→   645→      ? "text-amber-600 dark:text-amber-400"
+   646→   646→      : "text-foreground";
+   647→   647→  return (
+   648→   648→    <div>
+   649→   649→      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p>
+   650→   650→      <p className={`text-sm font-medium ${toneClass}`}>{value}</p>
+   651→   651→    </div>
+   652→   652→  );
+   653→   653→}
+   654→   654→

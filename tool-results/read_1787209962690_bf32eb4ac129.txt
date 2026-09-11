@@ -1,0 +1,875 @@
+     1→"use client";
+     2→
+     3→import * as React from "react";
+     4→import {
+     5→  Users, Factory, FileText, AlertTriangle, Wallet, BadgePercent,
+     6→  TrendingUp, Clock, ArrowUpRight, Calendar, Loader2, HardDrive, X,
+     7→  GripVertical, Eye, EyeOff, RotateCcw, Settings2, Check, Mail, AlertCircle,
+     8→} from "lucide-react";
+     9→import {
+    10→  ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid,
+    11→  BarChart, Bar, PieChart, Pie, Cell, Legend,
+    12→} from "recharts";
+    13→import {
+    14→  DndContext, PointerSensor, KeyboardSensor, closestCenter,
+    15→  useSensor, useSensors,
+    16→  type DragEndEvent,
+    17→} from "@dnd-kit/core";
+    18→import {
+    19→  SortableContext, useSortable, verticalListSortingStrategy, arrayMove,
+    20→  sortableKeyboardCoordinates,
+    21→} from "@dnd-kit/sortable";
+    22→import { CSS } from "@dnd-kit/utilities";
+    23→import { useApi, api } from "@/lib/api";
+    24→import { formatNumber, formatDate, formatDateShort, titleCase, statusChipClass } from "@/lib/format";
+    25→import { useCurrencyFormat } from "@/hooks/use-currency";
+    26→import { GlassCard, KpiCard, SectionHeader, EmptyState } from "@/components/shared";
+    27→import { Button } from "@/components/ui/button";
+    28→import { Skeleton } from "@/components/ui/skeleton";
+    29→import { Badge } from "@/components/ui/badge";
+    30→import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+    31→import { useUI } from "@/lib/ui-store";
+    32→import { toast } from "sonner";
+    33→import { ActionCenter } from "@/components/action-center";
+    34→import { QuickTipsCard } from "@/components/quick-tips-card";
+    35→import {
+    36→  useDashboardLayout,
+    37→  isLayoutCustomized,
+    38→  DASHBOARD_CARD_LABELS,
+    39→  type DashboardCardId,
+    40→} from "@/lib/dashboard-layout-store";
+    41→import { cn } from "@/lib/utils";
+    42→
+    43→type SettingsResponse = {
+    44→  defaults: {
+    45→    autoBackupEnabled: boolean;
+    46→    lastBackupAt: string | null;
+    47→  };
+    48→};
+    49→
+    50→const BACKUP_REMINDER_KEY = "broker-os:backup-reminder-dismissed";
+    51→const BACKUP_STALE_DAYS = 7;
+    52→
+    53→// localStorage key + sentinel for the data-health error banner dismissal.
+    54→// Dismissal is keyed by the *error count* at dismiss time, so the banner
+    55→// re-appears whenever the error count increases (e.g., dismissed at 2 errors,
+    56→// re-appears when a 3rd error appears). A count of 0 is never stored.
+    57→const HEALTH_BANNER_KEY = "broker-os:data-health-banner-dismissed";
+    58→
+    59→function backupAgeDays(iso: string | null): number | null {
+    60→  if (!iso) return null;
+    61→  const t = new Date(iso).getTime();
+    62→  if (Number.isNaN(t)) return null;
+    63→  return Math.floor((Date.now() - t) / (24 * 60 * 60 * 1000));
+    64→}
+    65→
+    66→type Range = "month" | "quarter" | "year" | "all";
+    67→
+    68→type DashboardData = {
+    69→  range: Range;
+    70→  rangeStart: string | null;
+    71→  rangeEnd: string;
+    72→  outstandingIsAllTime?: boolean;
+    73→  kpis: {
+    74→    clients: number; suppliers: number; activePOs: number; openDisputes: number;
+    75→    outstandingReceivable: number; brokerageAccrued: number; brokerageScheduled: number;
+    76→    brokeragePaid: number; brokeragePending: number;
+    77→  };
+    78→  charts: {
+    79→    earningsTrend: { label: string; earned: number; paid: number }[];
+    80→    volumeByClient: { id: string; name: string; value: number }[];
+    81→    poStatus: { name: string; value: number }[];
+    82→  };
+    83→  notifications: {
+    84→    id: string; type: string; title: string; message: string | null;
+    85→    dueDate: string; status: string; entityType: string | null; entityId: string | null;
+    86→  }[];
+    87→  counts: { visits: number; bills: number; payments: number; payouts: number };
+    88→};
+    89→
+    90→const PO_STATUS_COLORS: Record<string, string> = {
+    91→  open: "oklch(0.7 0.15 162)",
+    92→  partially_delivered: "oklch(0.78 0.14 85)",
+    93→  fully_delivered: "oklch(0.6 0.12 200)",
+    94→  closed: "oklch(0.55 0.02 165)",
+    95→};
+    96→
+    97→const RANGE_OPTIONS: { value: Range; short: string; long: string }[] = [
+    98→  { value: "month", short: "Month", long: "This Month" },
+    99→  { value: "quarter", short: "Quarter", long: "This Quarter" },
+   100→  { value: "year", short: "Year", long: "This Year" },
+   101→  { value: "all", short: "All", long: "All Time" },
+   102→];
+   103→
+   104→function earningsDescription(range: Range): string {
+   105→  switch (range) {
+   106→    case "month": return "Last 30 days (daily) — earned vs. paid out";
+   107→    case "quarter": return "This quarter (weekly) — earned vs. paid out";
+   108→    case "year": return "This year (monthly) — earned vs. paid out";
+   109→    case "all":
+   110→    default: return "Last 6 months — earned vs. paid out";
+   111→  }
+   112→}
+   113→
+   114→export function DashboardView() {
+   115→  const [range, setRange] = React.useState<Range>("all");
+   116→  const { format: fmtCurrency } = useCurrencyFormat();
+   117→  const { data, loading, refresh } = useApi<DashboardData>(
+   118→    `/api/dashboard?range=${range}`,
+   119→    { refreshKey: range },
+   120→  );
+   121→  const { data: settingsData } = useApi<SettingsResponse>("/api/settings");
+   122→  const { setView, openDetail, drillTo } = useUI();
+   123→
+   124→  // ─────────────────────────────────────────────────────────────────────────
+   125→  // Dashboard layout store — card visibility + order, persisted to localStorage.
+   126→  // `hydrate()` runs once on mount to read the saved layout (and merge in any
+   127→  // newly-added cards at the end). Until hydration completes we render the
+   128→  // default order; since `data` is also loading at that point (useApi returns
+   129→  // null on first render), the user sees the skeleton — no flash of the
+   130→  // default order before the saved layout kicks in.
+   131→  // ─────────────────────────────────────────────────────────────────────────
+   132→  const {
+   133→    cardOrder,
+   134→    hiddenCards,
+   135→    customizeMode,
+   136→    hydrated,
+   137→    setCardOrder,
+   138→    toggleCard,
+   139→    resetLayout,
+   140→    setCustomizeMode,
+   141→    hydrate,
+   142→  } = useDashboardLayout();
+   143→
+   144→  React.useEffect(() => {
+   145→    if (!hydrated) hydrate();
+   146→  }, [hydrated, hydrate]);
+   147→
+   148→  // dnd-kit sensors. PointerSensor covers mouse + touch + pen; the 6px
+   149→  // activation constraint lets taps/clicks through without starting a drag.
+   150→  // KeyboardSensor gives keyboard users arrow-key reordering (focus the grip,
+   151→  // press Space to pick up, arrows to move, Space to drop).
+   152→  const sensors = useSensors(
+   153→    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+   154→    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+   155→  );
+   156→
+   157→  const onDragEnd = React.useCallback((event: DragEndEvent) => {
+   158→    const { active, over } = event;
+   159→    if (!over || active.id === over.id) return;
+   160→    const oldIdx = cardOrder.indexOf(active.id as DashboardCardId);
+   161→    const newIdx = cardOrder.indexOf(over.id as DashboardCardId);
+   162→    if (oldIdx === -1 || newIdx === -1) return;
+   163→    setCardOrder(arrayMove(cardOrder, oldIdx, newIdx));
+   164→  }, [cardOrder, setCardOrder]);
+   165→
+   166→  const handleReset = () => {
+   167→    resetLayout();
+   168→    toast.success("Layout reset to default");
+   169→  };
+   170→
+   171→  // ─────────────────────────────────────────────────────────────────────────
+   172→  // Backup-age reminder — dismissible via localStorage so it doesn't nag
+   173→  // after the broker has seen it. Re-appears if the last backup gets even
+   174→  // staler than when they dismissed it (so a 14-day dismissal re-appears
+   175→  // at 30 days).
+   176→  // ─────────────────────────────────────────────────────────────────────────
+   177→  const [backupReminderDismissed, setBackupReminderDismissed] = React.useState<number>(0);
+   178→  React.useEffect(() => {
+   179→    try {
+   180→      const raw = localStorage.getItem(BACKUP_REMINDER_KEY);
+   181→      if (raw) {
+   182→        const n = parseInt(raw, 10);
+   183→        if (Number.isFinite(n)) setBackupReminderDismissed(n);
+   184→      }
+   185→    } catch {
+   186→      /* localStorage unavailable — ignore */
+   187→    }
+   188→  }, []);
+   189→
+   190→  const backupAge = backupAgeDays(settingsData?.defaults.lastBackupAt ?? null);
+   191→  const backupIsStale = backupAge === null || backupAge > BACKUP_STALE_DAYS;
+   192→  // Dismissal is keyed by the age at dismiss time, so the reminder re-appears
+   193→  // if the backup gets even staler (e.g., dismissed at 10d, reappears at 30d).
+   194→  // For the "never backed up" case (null), we use a large sentinel so a single
+   195→  // dismissal is sticky until a real backup happens.
+   196→  const effectiveAgeForDismiss = backupAge ?? 9999;
+   197→  const showBackupReminder =
+   198→    backupIsStale && effectiveAgeForDismiss > backupReminderDismissed;
+   199→
+   200→  const dismissBackupReminder = () => {
+   201→    setBackupReminderDismissed(effectiveAgeForDismiss);
+   202→    try {
+   203→      localStorage.setItem(BACKUP_REMINDER_KEY, String(effectiveAgeForDismiss));
+   204→    } catch {
+   205→      /* localStorage unavailable — state-only dismissal still works for this session */
+   206→    }
+   207→  };
+   208→
+   209→  // ─────────────────────────────────────────────────────────────────────────
+   210→  // Data-health error banner — surfaces "error" severity issues from
+   211→  // /api/data-health at the top of the dashboard. Dismissible via localStorage,
+   212→  // keyed by the error count at dismiss time so it re-appears if the count
+   213→  // goes up (e.g., dismissed at 2 → re-appears at 3). Non-blocking: failures
+   214→  // are swallowed silently so the dashboard still loads even if the health
+   215→  // API is down.
+   216→  // ─────────────────────────────────────────────────────────────────────────
+   217→  const [healthErrorCount, setHealthErrorCount] = React.useState<number>(0);
+   218→  const [healthDismissedAt, setHealthDismissedAt] = React.useState<number>(0);
+   219→  React.useEffect(() => {
+   220→    try {
+   221→      const raw = localStorage.getItem(HEALTH_BANNER_KEY);
+   222→      if (raw) {
+   223→        const n = parseInt(raw, 10);
+   224→        if (Number.isFinite(n)) setHealthDismissedAt(n);
+   225→      }
+   226→    } catch {
+   227→      /* localStorage unavailable — ignore */
+   228→    }
+   229→    let cancelled = false;
+   230→    void fetch("/api/data-health", { cache: "no-store" })
+   231→      .then((r) => (r.ok ? r.json() : null))
+   232→      .then((d: { issues?: { severity: string }[] } | null) => {
+   233→        if (cancelled || !d) return;
+   234→        const errs = (d.issues ?? []).filter((i) => i.severity === "error").length;
+   235→        setHealthErrorCount(errs);
+   236→      })
+   237→      .catch(() => {
+   238→        /* silent — non-blocking */
+   239→      });
+   240→    return () => { cancelled = true; };
+   241→  }, []);
+   242→
+   243→  const showHealthBanner = healthErrorCount > 0 && healthErrorCount > healthDismissedAt;
+   244→  const dismissHealthBanner = () => {
+   245→    setHealthDismissedAt(healthErrorCount);
+   246→    try {
+   247→      localStorage.setItem(HEALTH_BANNER_KEY, String(healthErrorCount));
+   248→    } catch {
+   249→      /* localStorage unavailable — state-only dismissal still works for this session */
+   250→    }
+   251→  };
+   252→
+   253→  const dismissNotif = async (id: string) => {
+   254→    await api("/api/notifications", { method: "PATCH", body: JSON.stringify({ id, status: "done" }) });
+   255→    toast.success("Notification dismissed");
+   256→    refresh();
+   257→  };
+   258→
+   259→  // Fire-and-forget reminder auto-generation on mount. The POST route reads
+   260→  // the `auto_generate_notifications` setting and no-ops (returns
+   261→  // `{ generated: 0, skipped: true }`) when disabled, so this is always safe.
+   262→  // Silent (no toast); we just refresh the dashboard so any newly-generated
+   263→  // reminders appear in the "Due Reminders" panel.
+   264→  const didAutoGen = React.useRef(false);
+   265→  React.useEffect(() => {
+   266→    if (didAutoGen.current) return;
+   267→    didAutoGen.current = true;
+   268→    void api("/api/notifications/generate", { method: "POST" })
+   269→      .then(() => refresh())
+   270→      .catch(() => {
+   271→        /* silent — non-blocking background job */
+   272→      });
+   273→  }, []);
+   274→
+   275→  // First-load skeleton (no data yet)
+   276→  if (!data) {
+   277→    return (
+   278→      <div className="space-y-6">
+   279→        <Skeleton className="h-10 w-full max-w-md rounded-lg" />
+   280→        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+   281→          {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-2xl" />)}
+   282→          <Skeleton className="h-72 rounded-2xl sm:col-span-2" />
+   283→          <Skeleton className="h-72 rounded-2xl" />
+   284→        </div>
+   285→      </div>
+   286→    );
+   287→  }
+   288→
+   289→  const { kpis, charts, notifications } = data;
+   290→  const isAllTime = range === "all";
+   291→  const rangeSubtitle = isAllTime
+   292→    ? "Showing all-time data"
+   293→    : `Showing data from ${formatDate(data.rangeStart)} to ${formatDate(data.rangeEnd)}`;
+   294→
+   295→  const visibleCards = cardOrder.filter((id) => !hiddenCards.includes(id));
+   296→  const customized = isLayoutCustomized({ cardOrder, hiddenCards });
+   297→
+   298→  // Per-card content. Each SortableCard renders its content via this switch.
+   299→  // The content is built fresh from `data` on every render — no memoization
+   300→  // needed since the parent re-renders whenever `data` or `cardOrder` changes.
+   301→  const renderCard = (id: DashboardCardId): React.ReactNode => {
+   302→    switch (id) {
+   303→      case "kpiOverview":
+   304→        return (
+   305→          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+   306→            <KpiCard
+   307→              label="Outstanding Receivable"
+   308→              value={fmtCurrency(kpis.outstandingReceivable, { compact: true })}
+   309→              sub={`${kpis.clients} active clients · all-time snapshot`}
+   310→              icon={<Wallet className="size-5" />}
+   311→              accent="amber"
+   312→              onClick={() => drillTo("bills", "due")}
+   313→            />
+   314→            <KpiCard
+   315→              label="Brokerage Earned"
+   316→              value={fmtCurrency(kpis.brokeragePaid + kpis.brokerageScheduled + kpis.brokerageAccrued, { compact: true })}
+   317→              sub={`${fmtCurrency(kpis.brokeragePaid, { compact: true })} paid · ${fmtCurrency(kpis.brokerageAccrued + kpis.brokerageScheduled, { compact: true })} due`}
+   318→              icon={<BadgePercent className="size-5" />}
+   319→              accent="emerald"
+   320→              onClick={() => drillTo("brokerage", "eligible")}
+   321→            />
+   322→            <KpiCard
+   323→              label="Pending (not eligible)"
+   324→              value={fmtCurrency(kpis.brokeragePending, { compact: true })}
+   325→              sub="Awaiting full bill payment"
+   326→              icon={<Clock className="size-5" />}
+   327→              accent="rose"
+   328→              onClick={() => drillTo("brokerage", "pending")}
+   329→            />
+   330→            <KpiCard
+   331→              label="Active POs / Disputes"
+   332→              value={formatNumber(kpis.activePOs)}
+   333→              sub={`${kpis.openDisputes} open disputes`}
+   334→              icon={<FileText className="size-5" />}
+   335→              accent="teal"
+   336→              onClick={() => drillTo("disputes", "open")}
+   337→            />
+   338→          </div>
+   339→        );
+   340→
+   341→      case "secondaryKpis":
+   342→        return (
+   343→          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+   344→            <MiniStat icon={<Users className="size-4" />} label="Clients" value={kpis.clients} onClick={() => setView("clients")} />
+   345→            <MiniStat icon={<Factory className="size-4" />} label="Suppliers" value={kpis.suppliers} onClick={() => setView("suppliers")} />
+   346→            <MiniStat icon={<TrendingUp className="size-4" />} label="Bills" value={data.counts.bills} onClick={() => setView("bills")} />
+   347→            <MiniStat icon={<AlertTriangle className="size-4" />} label="Open Disputes" value={kpis.openDisputes} onClick={() => setView("disputes")} />
+   348→          </div>
+   349→        );
+   350→
+   351→      case "actionCenter":
+   352→        return <ActionCenter />;
+   353→
+   354→      case "earningsChart":
+   355→        return (
+   356→          <GlassCard className="p-5">
+   357→            <SectionHeader title="Brokerage Earnings Trend" description={earningsDescription(range)} />
+   358→            <div className="mt-4 h-64 w-full">
+   359→              <ResponsiveContainer width="100%" height="100%">
+   360→                <AreaChart data={charts.earningsTrend} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+   361→                  <defs>
+   362→                    <linearGradient id="gEarned" x1="0" y1="0" x2="0" y2="1">
+   363→                      <stop offset="0%" stopColor="oklch(0.7 0.15 162)" stopOpacity={0.5} />
+   364→                      <stop offset="100%" stopColor="oklch(0.7 0.15 162)" stopOpacity={0.02} />
+   365→                    </linearGradient>
+   366→                    <linearGradient id="gPaid" x1="0" y1="0" x2="0" y2="1">
+   367→                      <stop offset="0%" stopColor="oklch(0.6 0.12 200)" stopOpacity={0.5} />
+   368→                      <stop offset="100%" stopColor="oklch(0.6 0.12 200)" stopOpacity={0.02} />
+   369→                    </linearGradient>
+   370→                  </defs>
+   371→                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.7 0.02 160 / 0.2)" />
+   372→                  <XAxis
+   373→                    dataKey="label"
+   374→                    tick={{ fontSize: 12, fill: "oklch(0.5 0.02 165)" }}
+   375→                    axisLine={false}
+   376→                    tickLine={false}
+   377→                    interval={Math.max(0, Math.floor(charts.earningsTrend.length / 8))}
+   378→                    minTickGap={4}
+   379→                  />
+   380→                  <YAxis tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} tickFormatter={(v) => fmtCurrency(v as number, { compact: true })} width={50} />
+   381→                  <Tooltip
+   382→                    contentStyle={{ background: "oklch(0.16 0.012 170 / 0.92)", border: "1px solid oklch(1 0 0 / 0.12)", borderRadius: 12, color: "white", backdropFilter: "blur(12px)" }}
+   383→                    formatter={(v: number) => fmtCurrency(v)}
+   384→                  />
+   385→                  <Area type="monotone" dataKey="earned" name="Earned" stroke="oklch(0.7 0.15 162)" strokeWidth={2} fill="url(#gEarned)" />
+   386→                  <Area type="monotone" dataKey="paid" name="Paid out" stroke="oklch(0.6 0.12 200)" strokeWidth={2} fill="url(#gPaid)" />
+   387→                </AreaChart>
+   388→              </ResponsiveContainer>
+   389→            </div>
+   390→          </GlassCard>
+   391→        );
+   392→
+   393→      case "poStatusChart":
+   394→        return (
+   395→          <GlassCard className="p-5">
+   396→            <SectionHeader title="PO Status" description={isAllTime ? "All-time open vs. delivered" : `POs created in selected range`} />
+   397→            <div className="mt-4 h-64 w-full">
+   398→              {charts.poStatus.length === 0 ? (
+   399→                <EmptyState title="No POs in range" hint="Try a wider date range." icon={<FileText className="size-5" />} />
+   400→              ) : (
+   401→                <ResponsiveContainer width="100%" height="100%">
+   402→                  <PieChart>
+   403→                    <Pie
+   404→                      data={charts.poStatus}
+   405→                      dataKey="value"
+   406→                      nameKey="name"
+   407→                      innerRadius={50}
+   408→                      outerRadius={80}
+   409→                      paddingAngle={3}
+   410→                      onClick={(payload: { name?: string }) => {
+   411→                        if (payload && typeof payload === "object" && "name" in payload && payload.name) {
+   412→                          drillTo("pos", String(payload.name));
+   413→                        }
+   414→                      }}
+   415→                    >
+   416→                      {charts.poStatus.map((entry, i) => (
+   417→                        <Cell key={i} fill={PO_STATUS_COLORS[entry.name] ?? "oklch(0.6 0.02 165)"} stroke="none" className="cursor-pointer" />
+   418→                      ))}
+   419→                    </Pie>
+   420→                    <Tooltip
+   421→                      contentStyle={{ background: "oklch(0.16 0.012 170 / 0.92)", border: "1px solid oklch(1 0 0 / 0.12)", borderRadius: 12, color: "white" }}
+   422→                      formatter={(v: number, n: string) => [`${v} POs`, titleCase(n)]}
+   423→                    />
+   424→                    <Legend formatter={(v) => titleCase(v)} wrapperStyle={{ fontSize: 12 }} />
+   425→                  </PieChart>
+   426→                </ResponsiveContainer>
+   427→              )}
+   428→            </div>
+   429→          </GlassCard>
+   430→        );
+   431→
+   432→      case "volumeByClient":
+   433→        return (
+   434→          <GlassCard className="p-5">
+   435→            <SectionHeader title="Business Volume by Client" description={isAllTime ? "Final billed amount (₹) — all-time" : "Final billed amount (₹) — bills raised in range"} />
+   436→            <div className="mt-4 h-56 w-full">
+   437→              {charts.volumeByClient.length === 0 ? (
+   438→                <EmptyState title="No bills in range" hint="No bills were raised during this period." icon={<TrendingUp className="size-5" />} />
+   439→              ) : (
+   440→                <ResponsiveContainer width="100%" height="100%">
+   441→                  <BarChart data={charts.volumeByClient} layout="vertical" margin={{ top: 0, right: 16, bottom: 0, left: 8 }}>
+   442→                    <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.7 0.02 160 / 0.2)" horizontal={false} />
+   443→                    <XAxis type="number" tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} tickFormatter={(v) => fmtCurrency(v as number, { compact: true })} />
+   444→                    <YAxis type="category" dataKey="name" tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} width={120} />
+   445→                    <Tooltip
+   446→                      cursor={{ fill: "oklch(0.7 0.02 160 / 0.08)" }}
+   447→                      contentStyle={{ background: "oklch(0.16 0.012 170 / 0.92)", border: "1px solid oklch(1 0 0 / 0.12)", borderRadius: 12, color: "white" }}
+   448→                      formatter={(v: number) => fmtCurrency(v)}
+   449→                    />
+   450→                    <Bar
+   451→                      dataKey="value"
+   452→                      name="Volume"
+   453→                      fill="oklch(0.65 0.13 162)"
+   454→                      radius={[0, 6, 6, 0]}
+   455→                      className="cursor-pointer"
+   456→                      onClick={(payload: { id?: string }) => {
+   457→                        if (payload && typeof payload === "object" && "id" in payload && payload.id) {
+   458→                          openDetail("Client", String(payload.id));
+   459→                        }
+   460→                      }}
+   461→                    />
+   462→                  </BarChart>
+   463→                </ResponsiveContainer>
+   464→              )}
+   465→            </div>
+   466→          </GlassCard>
+   467→        );
+   468→
+   469→      case "dueReminders":
+   470→        return (
+   471→          <GlassCard className="p-5">
+   472→            <SectionHeader title="Due Reminders" description={`${notifications.length} pending`} action={<Button variant="ghost" size="sm" onClick={() => setView("notifications")}>View all</Button>} />
+   473→            <div className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
+   474→              {notifications.length === 0 ? (
+   475→                <EmptyState title="All caught up" hint="No pending reminders." icon={<Clock className="size-5" />} />
+   476→              ) : notifications.map((n) => (
+   477→                <div key={n.id} className="group rounded-xl border border-border/50 bg-card/40 p-3 transition-colors hover:bg-card/70">
+   478→                  <div className="flex items-start justify-between gap-2">
+   479→                    <p className="text-sm font-medium text-foreground">{n.title}</p>
+   480→                    <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium ${statusChipClass(n.type === "brokerage_due" ? "overdue" : "pending")}`}>
+   481→                      {titleCase(n.type.replace(/_/g, " "))}
+   482→                    </span>
+   483→                  </div>
+   484→                  {n.message ? <p className="mt-1 text-xs text-muted-foreground">{n.message}</p> : null}
+   485→                  <div className="mt-2 flex items-center justify-between">
+   486→                    <span className="text-[11px] text-muted-foreground">Due {formatDate(n.dueDate)}</span>
+   487→                    <Button variant="ghost" size="sm" className="h-6 px-2 text-[11px] opacity-0 group-hover:opacity-100" onClick={() => dismissNotif(n.id)}>Dismiss</Button>
+   488→                  </div>
+   489→                </div>
+   490→              ))}
+   491→            </div>
+   492→          </GlassCard>
+   493→        );
+   494→
+   495→      case "brokeragePosition":
+   496→        return (
+   497→          <GlassCard className="p-5">
+   498→            <SectionHeader title="Brokerage Position" description={isAllTime ? "Eligibility & payout status — all-time" : "Eligibility & payout status — range-filtered"} action={<Button variant="outline" size="sm" onClick={() => setView("brokerage")}>Manage brokerage <ArrowUpRight className="ml-1 size-3.5" /></Button>} />
+   499→            <div className="mt-4 grid gap-3 sm:grid-cols-4">
+   500→              <BrokerageTile label="Pending (not eligible)" value={kpis.brokeragePending} hint="Bill not fully paid" tone="rose" />
+   501→              <BrokerageTile label="Accrued" value={kpis.brokerageAccrued} hint="Eligible, awaiting payout" tone="amber" />
+   502→              <BrokerageTile label="Scheduled" value={kpis.brokerageScheduled} hint="In a payout batch" tone="teal" />
+   503→              <BrokerageTile label="Paid out" value={kpis.brokeragePaid} hint="Settled to broker" tone="emerald" />
+   504→            </div>
+   505→          </GlassCard>
+   506→        );
+   507→
+   508→      case "quickTips":
+   509→        return <QuickTipsCard />;
+   510→
+   511→      default:
+   512→        return null;
+   513→    }
+   514→  };
+   515→
+   516→  return (
+   517→    <div className="space-y-6">
+   518→      {/* Data-health error banner — appears when /api/data-health reports any
+   519→          "error" severity issue (stuck bills, forgotten POs). Dismissible via
+   520→          localStorage; re-appears when the error count increases. */}
+   521→      {showHealthBanner && (
+   522→        <div className="flex items-start gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-rose-800 dark:text-rose-200">
+   523→          <div className="grid size-7 shrink-0 place-items-center rounded-lg bg-rose-500/20 text-rose-700 dark:text-rose-300">
+   524→            <AlertCircle className="size-4" />
+   525→          </div>
+   526→          <div className="min-w-0 flex-1">
+   527→            <p className="text-sm font-medium">
+   528→              ⚠ {healthErrorCount} data issue{healthErrorCount === 1 ? "" : "s"} need{healthErrorCount === 1 ? "s" : ""} attention — View Data Health
+   529→            </p>
+   530→            <p className="mt-0.5 text-[11px] text-rose-700/80 dark:text-rose-300/80">
+   531→              Critical data quality problems detected (e.g., stuck bills with no payments, forgotten POs past their dispatch date). Open Data Health to see details and fix them.
+   532→            </p>
+   533→          </div>
+   534→          <div className="flex shrink-0 items-center gap-2">
+   535→            <Button
+   536→              size="sm"
+   537→              variant="outline"
+   538→              className="h-7 border-rose-500/40 bg-rose-500/10 px-2.5 text-[11px] text-rose-800 hover:bg-rose-500/20 dark:text-rose-200"
+   539→              onClick={() => setView("data-health")}
+   540→            >
+   541→              View Data Health
+   542→            </Button>
+   543→            <button
+   544→              type="button"
+   545→              onClick={dismissHealthBanner}
+   546→              aria-label="Dismiss data health warning"
+   547→              className="grid size-7 place-items-center rounded-lg text-rose-700/70 transition-colors hover:bg-rose-500/20 hover:text-rose-800 dark:text-rose-300/70 dark:hover:text-rose-200"
+   548→            >
+   549→              <X className="size-3.5" />
+   550→            </button>
+   551→          </div>
+   552→        </div>
+   553→      )}
+   554→
+   555→      {/* Backup-age reminder — appears when last backup is >7 days old (or never) */}
+   556→      {showBackupReminder && (
+   557→        <div className="flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-amber-800 dark:text-amber-200">
+   558→          <div className="grid size-7 shrink-0 place-items-center rounded-lg bg-amber-500/20 text-amber-700 dark:text-amber-300">
+   559→            <HardDrive className="size-4" />
+   560→          </div>
+   561→          <div className="min-w-0 flex-1">
+   562→            <p className="text-sm font-medium">
+   563→              {backupAge === null
+   564→                ? "No backup has ever been taken — consider backing up your data."
+   565→                : `Last backup was ${backupAge} day${backupAge === 1 ? "" : "s"} ago — consider backing up your data.`}
+   566→            </p>
+   567→            <p className="mt-0.5 text-[11px] text-amber-700/80 dark:text-amber-300/80">
+   568→              Backups protect against accidental data loss. Open Settings → Backup &amp; Restore to download a full JSON snapshot.
+   569→            </p>
+   570→          </div>
+   571→          <div className="flex shrink-0 items-center gap-2">
+   572→            <Button
+   573→              size="sm"
+   574→              variant="outline"
+   575→              className="h-7 border-amber-500/40 bg-amber-500/10 px-2.5 text-[11px] text-amber-800 hover:bg-amber-500/20 dark:text-amber-200"
+   576→              onClick={() => setView("settings")}
+   577→            >
+   578→              Open Settings
+   579→            </Button>
+   580→            <button
+   581→              type="button"
+   582→              onClick={dismissBackupReminder}
+   583→              aria-label="Dismiss backup reminder"
+   584→              className="grid size-7 place-items-center rounded-lg text-amber-700/70 transition-colors hover:bg-amber-500/20 hover:text-amber-800 dark:text-amber-300/70 dark:hover:text-amber-200"
+   585→            >
+   586→              <X className="size-3.5" />
+   587→            </button>
+   588→          </div>
+   589→        </div>
+   590→      )}
+   591→
+   592→      {/* Toolbar: range subtitle (or customize-mode hint) + actions */}
+   593→      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+   594→        <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
+   595→          {customizeMode ? (
+   596→            <>
+   597→              <Settings2 className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+   598→              <span className="truncate font-medium text-foreground">Customize mode</span>
+   599→              <span className="truncate">— drag the grip to reorder, eye icon to hide</span>
+   600→            </>
+   601→          ) : (
+   602→            <>
+   603→              <Calendar className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+   604→              <span className="truncate">{rangeSubtitle}</span>
+   605→              {loading && (
+   606→                <Loader2 className="size-3.5 shrink-0 animate-spin text-emerald-600 dark:text-emerald-400" />
+   607→              )}
+   608→            </>
+   609→          )}
+   610→        </div>
+   611→        <div className="flex flex-wrap items-center gap-2">
+   612→          {customizeMode ? (
+   613→            <>
+   614→              <Button variant="outline" size="sm" onClick={handleReset}>
+   615→                <RotateCcw className="size-3.5" /> Reset to default
+   616→              </Button>
+   617→              <Button size="sm" onClick={() => setCustomizeMode(false)}>
+   618→                <Check className="size-3.5" /> Done
+   619→              </Button>
+   620→            </>
+   621→          ) : (
+   622→            <>
+   623→              {customized && (
+   624→                <button
+   625→                  type="button"
+   626→                  onClick={() => setCustomizeMode(true)}
+   627→                  aria-label="Layout customized — open customize mode"
+   628→                  className="transition-transform hover:scale-105"
+   629→                >
+   630→                  <Badge
+   631→                    variant="outline"
+   632→                    className="border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+   633→                  >
+   634→                    <Check className="size-3" /> Customized
+   635→                  </Badge>
+   636→                </button>
+   637→              )}
+   638→              <Button variant="outline" size="sm" onClick={() => setCustomizeMode(true)}>
+   639→                <Settings2 className="size-3.5" />
+   640→                <span className="hidden sm:inline">Customize</span>
+   641→              </Button>
+   642→              <Button
+   643→                variant="outline"
+   644→                size="sm"
+   645→                onClick={() => setView("digest")}
+   646→                className="border-emerald-500/30 text-emerald-700 hover:bg-emerald-500/10 hover:text-emerald-700 dark:text-emerald-300 dark:hover:bg-emerald-500/10 dark:hover:text-emerald-200"
+   647→                aria-label="Open Daily Digest"
+   648→              >
+   649→                <Mail className="size-3.5" />
+   650→                <span className="hidden sm:inline">Daily digest</span>
+   651→              </Button>
+   652→              {!isAllTime && data.rangeStart ? (
+   653→                <Badge
+   654→                  variant="outline"
+   655→                  className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+   656→                >
+   657→                  <Calendar className="size-3" />
+   658→                  {formatDateShort(data.rangeStart)} – {formatDateShort(data.rangeEnd)}
+   659→                </Badge>
+   660→              ) : null}
+   661→              <ToggleGroup
+   662→                type="single"
+   663→                value={range}
+   664→                onValueChange={(v) => { if (v) setRange(v as Range); }}
+   665→                size="sm"
+   666→                className="glass rounded-lg border border-border/60 p-0.5"
+   667→                aria-label="Dashboard date range"
+   668→              >
+   669→                {RANGE_OPTIONS.map((opt) => (
+   670→                  <ToggleGroupItem
+   671→                    key={opt.value}
+   672→                    value={opt.value}
+   673→                    aria-label={opt.long}
+   674→                    className="rounded-md px-2.5 text-xs font-medium data-[state=on]:bg-emerald-500/15 data-[state=on]:text-emerald-700 dark:data-[state=on]:text-emerald-300"
+   675→                  >
+   676→                    <span className="hidden sm:inline">{opt.long}</span>
+   677→                    <span className="sm:hidden">{opt.short}</span>
+   678→                  </ToggleGroupItem>
+   679→                ))}
+   680→              </ToggleGroup>
+   681→            </>
+   682→          )}
+   683→        </div>
+   684→      </div>
+   685→
+   686→      {/* Draggable dashboard cards */}
+   687→      <DndContext
+   688→        sensors={sensors}
+   689→        collisionDetection={closestCenter}
+   690→        onDragEnd={onDragEnd}
+   691→      >
+   692→        <SortableContext items={visibleCards} strategy={verticalListSortingStrategy}>
+   693→          <div className="space-y-6">
+   694→            {visibleCards.map((id) => (
+   695→              <SortableCard
+   696→                key={id}
+   697→                id={id}
+   698→                label={DASHBOARD_CARD_LABELS[id]}
+   699→                customizeMode={customizeMode}
+   700→              >
+   701→                {renderCard(id)}
+   702→              </SortableCard>
+   703→            ))}
+   704→          </div>
+   705→        </SortableContext>
+   706→      </DndContext>
+   707→
+   708→      {/* Hidden-cards recovery panel — only in customize mode, only if there
+   709→          are hidden cards. Lets the broker re-add a card they hid. */}
+   710→      {customizeMode && hiddenCards.length > 0 && (
+   711→        <GlassCard className="p-5">
+   712→          <SectionHeader
+   713→            title="Hidden cards"
+   714→            description="Click a card below to bring it back to your dashboard."
+   715→          />
+   716→          <div className="mt-3 flex flex-wrap gap-2">
+   717→            {hiddenCards.map((id) => (
+   718→              <Button
+   719→                key={id}
+   720→                variant="outline"
+   721→                size="sm"
+   722→                onClick={() => toggleCard(id)}
+   723→                className="gap-1.5 border-emerald-500/30 bg-emerald-500/5 text-emerald-700 hover:bg-emerald-500/15 dark:text-emerald-300"
+   724→                aria-label={`Show ${DASHBOARD_CARD_LABELS[id]} card`}
+   725→              >
+   726→                <Eye className="size-3.5" />
+   727→                {DASHBOARD_CARD_LABELS[id]}
+   728→              </Button>
+   729→            ))}
+   730→          </div>
+   731→        </GlassCard>
+   732→      )}
+   733→
+   734→      {/* Empty-state hint when the broker has hidden everything. */}
+   735→      {customizeMode && visibleCards.length === 0 && hiddenCards.length > 0 && (
+   736→        <GlassCard className="p-8">
+   737→          <EmptyState
+   738→            title="No cards visible"
+   739→            hint="Re-add a card from the Hidden cards panel above to see your dashboard again."
+   740→            icon={<EyeOff className="size-5" />}
+   741→          />
+   742→        </GlassCard>
+   743→      )}
+   744→    </div>
+   745→  );
+   746→}
+   747→
+   748→// ─────────────────────────────────────────────────────────────────────────────
+   749→// SortableCard — wraps a dashboard section with dnd-kit's useSortable hook.
+   750→//
+   751→// In customize mode, a thin bar appears above the card content with:
+   752→//   • a grip drag handle (the activator for dnd-kit)
+   753→//   • the card label
+   754→//   • a "Hide" button (eye-off icon) that removes the card from the layout
+   755→//
+   756→// Out of customize mode, the bar is hidden and a small floating grip appears
+   757→// at the top-right corner of the card on hover — clicking it enters customize
+   758→// mode (so the hover affordance isn't a tease). The floating grip uses
+   759→// `pointer-events-none` until hovered so it never blocks clicks on underlying
+   760→// card content (e.g. KPI tile drill-downs).
+   761→//
+   762→// While dragging, the card lifts with `scale-[1.02] shadow-xl z-10` per spec.
+   763→// ─────────────────────────────────────────────────────────────────────────────
+   764→function SortableCard({
+   765→  id,
+   766→  label,
+   767→  customizeMode,
+   768→  children,
+   769→}: {
+   770→  id: DashboardCardId;
+   771→  label: string;
+   772→  customizeMode: boolean;
+   773→  children: React.ReactNode;
+   774→}) {
+   775→  const {
+   776→    attributes,
+   777→    listeners,
+   778→    setNodeRef,
+   779→    setActivatorNodeRef,
+   780→    transform,
+   781→    transition,
+   782→    isDragging,
+   783→  } = useSortable({ id });
+   784→
+   785→  const toggleCard = useDashboardLayout((s) => s.toggleCard);
+   786→  const setCustomizeMode = useDashboardLayout((s) => s.setCustomizeMode);
+   787→
+   788→  const style: React.CSSProperties = {
+   789→    transform: CSS.Transform.toString(transform),
+   790→    transition,
+   791→  };
+   792→
+   793→  return (
+   794→    <div
+   795→      ref={setNodeRef}
+   796→      style={style}
+   797→      className={cn(
+   798→        "group/sort relative",
+   799→        isDragging && "z-10 scale-[1.02] shadow-xl",
+   800→      )}
+   801→    >
+   802→      {customizeMode ? (
+   803→        <div className="mb-2 flex items-center justify-between rounded-xl border border-dashed border-emerald-500/40 bg-emerald-500/5 px-3 py-1.5">
+   804→          <div className="flex min-w-0 items-center gap-2">
+   805→            <button
+   806→              type="button"
+   807→              ref={setActivatorNodeRef}
+   808→              {...attributes}
+   809→              {...listeners}
+   810→              className="grid size-6 shrink-0 cursor-grab place-items-center rounded-md text-muted-foreground transition-colors hover:bg-emerald-500/10 hover:text-emerald-600 active:cursor-grabbing dark:hover:text-emerald-400"
+   811→              aria-label={`Drag ${label} to reorder`}
+   812→            >
+   813→              <GripVertical className="size-4" />
+   814→            </button>
+   815→            <span className="truncate text-xs font-medium text-muted-foreground">{label}</span>
+   816→          </div>
+   817→          <Button
+   818→            type="button"
+   819→            variant="ghost"
+   820→            size="sm"
+   821→            className="h-7 shrink-0 gap-1.5 px-2 text-[11px] text-muted-foreground hover:text-rose-600 dark:hover:text-rose-400"
+   822→            onClick={() => toggleCard(id)}
+   823→            aria-label={`Hide ${label} from dashboard`}
+   824→          >
+   825→            <EyeOff className="size-3.5" />
+   826→            <span className="hidden sm:inline">Hide</span>
+   827→          </Button>
+   828→        </div>
+   829→      ) : (
+   830→        // Floating grip — visible on hover only. Clicking it enters customize
+   831→        // mode so the broker can start rearranging. pointer-events-none until
+   832→        // hovered so it never blocks underlying card interactions.
+   833→        <button
+   834→          type="button"
+   835→          onClick={() => setCustomizeMode(true)}
+   836→          aria-label="Customize dashboard layout"
+   837→          className="absolute right-2 top-2 z-20 grid size-7 cursor-pointer place-items-center rounded-md bg-background/70 text-muted-foreground opacity-0 backdrop-blur-sm transition-all hover:text-emerald-600 group-hover/sort:opacity-100 group-hover/sort:pointer-events-auto pointer-events-none dark:hover:text-emerald-400"
+   838→        >
+   839→          <GripVertical className="size-3.5" />
+   840→        </button>
+   841→      )}
+   842→      {children}
+   843→    </div>
+   844→  );
+   845→}
+   846→
+   847→function MiniStat({ icon, label, value, onClick }: { icon: React.ReactNode; label: string; value: number; onClick: () => void }) {
+   848→  return (
+   849→    <button onClick={onClick} className="glass hover-lift flex items-center justify-between rounded-2xl p-4 text-left">
+   850→      <div>
+   851→        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{label}</p>
+   852→        <p className="kpi-num mt-1 text-2xl font-light text-foreground">{formatNumber(value)}</p>
+   853→      </div>
+   854→      <div className="grid size-9 place-items-center rounded-xl bg-primary/10 text-primary">{icon}</div>
+   855→    </button>
+   856→  );
+   857→}
+   858→
+   859→function BrokerageTile({ label, value, hint, tone }: { label: string; value: number; hint: string; tone: "emerald" | "amber" | "rose" | "teal" }) {
+   860→  const { format: fmtCurrency } = useCurrencyFormat();
+   861→  const toneClass: Record<string, string> = {
+   862→    emerald: "border-emerald-500/30 bg-emerald-500/5",
+   863→    amber: "border-amber-500/30 bg-amber-500/5",
+   864→    rose: "border-rose-500/30 bg-rose-500/5",
+   865→    teal: "border-teal-500/30 bg-teal-500/5",
+   866→  };
+   867→  return (
+   868→    <div className={`rounded-xl border p-4 ${toneClass[tone]}`}>
+   869→      <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{label}</p>
+   870→      <p className="kpi-num mt-2 text-2xl font-light text-foreground">{fmtCurrency(value, { compact: true })}</p>
+   871→      <p className="mt-1 text-[11px] text-muted-foreground">{hint}</p>
+   872→    </div>
+   873→  );
+   874→}
+   875→

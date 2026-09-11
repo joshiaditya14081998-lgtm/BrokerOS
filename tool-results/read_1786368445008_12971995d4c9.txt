@@ -1,0 +1,785 @@
+     1→"use client";
+     2→
+     3→import * as React from "react";
+     4→import {
+     5→  Users, Factory, FileText, AlertTriangle, Wallet, BadgePercent,
+     6→  TrendingUp, Clock, ArrowUpRight, Calendar, Loader2, HardDrive, X,
+     7→  GripVertical, Eye, EyeOff, RotateCcw, Settings2, Check, Mail,
+     8→} from "lucide-react";
+     9→import {
+    10→  ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid,
+    11→  BarChart, Bar, PieChart, Pie, Cell, Legend,
+    12→} from "recharts";
+    13→import {
+    14→  DndContext, PointerSensor, KeyboardSensor, closestCenter,
+    15→  useSensor, useSensors,
+    16→  type DragEndEvent,
+    17→} from "@dnd-kit/core";
+    18→import {
+    19→  SortableContext, useSortable, verticalListSortingStrategy, arrayMove,
+    20→  sortableKeyboardCoordinates,
+    21→} from "@dnd-kit/sortable";
+    22→import { CSS } from "@dnd-kit/utilities";
+    23→import { useApi, api } from "@/lib/api";
+    24→import { formatCurrency, formatNumber, formatDate, formatDateShort, titleCase, statusChipClass } from "@/lib/format";
+    25→import { GlassCard, KpiCard, SectionHeader, EmptyState } from "@/components/shared";
+    26→import { Button } from "@/components/ui/button";
+    27→import { Skeleton } from "@/components/ui/skeleton";
+    28→import { Badge } from "@/components/ui/badge";
+    29→import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+    30→import { useUI } from "@/lib/ui-store";
+    31→import { toast } from "sonner";
+    32→import { ActionCenter } from "@/components/action-center";
+    33→import { QuickTipsCard } from "@/components/quick-tips-card";
+    34→import {
+    35→  useDashboardLayout,
+    36→  isLayoutCustomized,
+    37→  DASHBOARD_CARD_LABELS,
+    38→  type DashboardCardId,
+    39→} from "@/lib/dashboard-layout-store";
+    40→import { cn } from "@/lib/utils";
+    41→
+    42→type SettingsResponse = {
+    43→  defaults: {
+    44→    autoBackupEnabled: boolean;
+    45→    lastBackupAt: string | null;
+    46→  };
+    47→};
+    48→
+    49→const BACKUP_REMINDER_KEY = "broker-os:backup-reminder-dismissed";
+    50→const BACKUP_STALE_DAYS = 7;
+    51→
+    52→function backupAgeDays(iso: string | null): number | null {
+    53→  if (!iso) return null;
+    54→  const t = new Date(iso).getTime();
+    55→  if (Number.isNaN(t)) return null;
+    56→  return Math.floor((Date.now() - t) / (24 * 60 * 60 * 1000));
+    57→}
+    58→
+    59→type Range = "month" | "quarter" | "year" | "all";
+    60→
+    61→type DashboardData = {
+    62→  range: Range;
+    63→  rangeStart: string | null;
+    64→  rangeEnd: string;
+    65→  outstandingIsAllTime?: boolean;
+    66→  kpis: {
+    67→    clients: number; suppliers: number; activePOs: number; openDisputes: number;
+    68→    outstandingReceivable: number; brokerageAccrued: number; brokerageScheduled: number;
+    69→    brokeragePaid: number; brokeragePending: number;
+    70→  };
+    71→  charts: {
+    72→    earningsTrend: { label: string; earned: number; paid: number }[];
+    73→    volumeByClient: { id: string; name: string; value: number }[];
+    74→    poStatus: { name: string; value: number }[];
+    75→  };
+    76→  notifications: {
+    77→    id: string; type: string; title: string; message: string | null;
+    78→    dueDate: string; status: string; entityType: string | null; entityId: string | null;
+    79→  }[];
+    80→  counts: { visits: number; bills: number; payments: number; payouts: number };
+    81→};
+    82→
+    83→const PO_STATUS_COLORS: Record<string, string> = {
+    84→  open: "oklch(0.7 0.15 162)",
+    85→  partially_delivered: "oklch(0.78 0.14 85)",
+    86→  fully_delivered: "oklch(0.6 0.12 200)",
+    87→  closed: "oklch(0.55 0.02 165)",
+    88→};
+    89→
+    90→const RANGE_OPTIONS: { value: Range; short: string; long: string }[] = [
+    91→  { value: "month", short: "Month", long: "This Month" },
+    92→  { value: "quarter", short: "Quarter", long: "This Quarter" },
+    93→  { value: "year", short: "Year", long: "This Year" },
+    94→  { value: "all", short: "All", long: "All Time" },
+    95→];
+    96→
+    97→function earningsDescription(range: Range): string {
+    98→  switch (range) {
+    99→    case "month": return "Last 30 days (daily) — earned vs. paid out";
+   100→    case "quarter": return "This quarter (weekly) — earned vs. paid out";
+   101→    case "year": return "This year (monthly) — earned vs. paid out";
+   102→    case "all":
+   103→    default: return "Last 6 months — earned vs. paid out";
+   104→  }
+   105→}
+   106→
+   107→export function DashboardView() {
+   108→  const [range, setRange] = React.useState<Range>("all");
+   109→  const { data, loading, refresh } = useApi<DashboardData>(
+   110→    `/api/dashboard?range=${range}`,
+   111→    { refreshKey: range },
+   112→  );
+   113→  const { data: settingsData } = useApi<SettingsResponse>("/api/settings");
+   114→  const { setView, openDetail, drillTo } = useUI();
+   115→
+   116→  // ─────────────────────────────────────────────────────────────────────────
+   117→  // Dashboard layout store — card visibility + order, persisted to localStorage.
+   118→  // `hydrate()` runs once on mount to read the saved layout (and merge in any
+   119→  // newly-added cards at the end). Until hydration completes we render the
+   120→  // default order; since `data` is also loading at that point (useApi returns
+   121→  // null on first render), the user sees the skeleton — no flash of the
+   122→  // default order before the saved layout kicks in.
+   123→  // ─────────────────────────────────────────────────────────────────────────
+   124→  const {
+   125→    cardOrder,
+   126→    hiddenCards,
+   127→    customizeMode,
+   128→    hydrated,
+   129→    setCardOrder,
+   130→    toggleCard,
+   131→    resetLayout,
+   132→    setCustomizeMode,
+   133→    hydrate,
+   134→  } = useDashboardLayout();
+   135→
+   136→  React.useEffect(() => {
+   137→    if (!hydrated) hydrate();
+   138→  }, [hydrated, hydrate]);
+   139→
+   140→  // dnd-kit sensors. PointerSensor covers mouse + touch + pen; the 6px
+   141→  // activation constraint lets taps/clicks through without starting a drag.
+   142→  // KeyboardSensor gives keyboard users arrow-key reordering (focus the grip,
+   143→  // press Space to pick up, arrows to move, Space to drop).
+   144→  const sensors = useSensors(
+   145→    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+   146→    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+   147→  );
+   148→
+   149→  const onDragEnd = React.useCallback((event: DragEndEvent) => {
+   150→    const { active, over } = event;
+   151→    if (!over || active.id === over.id) return;
+   152→    const oldIdx = cardOrder.indexOf(active.id as DashboardCardId);
+   153→    const newIdx = cardOrder.indexOf(over.id as DashboardCardId);
+   154→    if (oldIdx === -1 || newIdx === -1) return;
+   155→    setCardOrder(arrayMove(cardOrder, oldIdx, newIdx));
+   156→  }, [cardOrder, setCardOrder]);
+   157→
+   158→  const handleReset = () => {
+   159→    resetLayout();
+   160→    toast.success("Layout reset to default");
+   161→  };
+   162→
+   163→  // ─────────────────────────────────────────────────────────────────────────
+   164→  // Backup-age reminder — dismissible via localStorage so it doesn't nag
+   165→  // after the broker has seen it. Re-appears if the last backup gets even
+   166→  // staler than when they dismissed it (so a 14-day dismissal re-appears
+   167→  // at 30 days).
+   168→  // ─────────────────────────────────────────────────────────────────────────
+   169→  const [backupReminderDismissed, setBackupReminderDismissed] = React.useState<number>(0);
+   170→  React.useEffect(() => {
+   171→    try {
+   172→      const raw = localStorage.getItem(BACKUP_REMINDER_KEY);
+   173→      if (raw) {
+   174→        const n = parseInt(raw, 10);
+   175→        if (Number.isFinite(n)) setBackupReminderDismissed(n);
+   176→      }
+   177→    } catch {
+   178→      /* localStorage unavailable — ignore */
+   179→    }
+   180→  }, []);
+   181→
+   182→  const backupAge = backupAgeDays(settingsData?.defaults.lastBackupAt ?? null);
+   183→  const backupIsStale = backupAge === null || backupAge > BACKUP_STALE_DAYS;
+   184→  // Dismissal is keyed by the age at dismiss time, so the reminder re-appears
+   185→  // if the backup gets even staler (e.g., dismissed at 10d, reappears at 30d).
+   186→  // For the "never backed up" case (null), we use a large sentinel so a single
+   187→  // dismissal is sticky until a real backup happens.
+   188→  const effectiveAgeForDismiss = backupAge ?? 9999;
+   189→  const showBackupReminder =
+   190→    backupIsStale && effectiveAgeForDismiss > backupReminderDismissed;
+   191→
+   192→  const dismissBackupReminder = () => {
+   193→    setBackupReminderDismissed(effectiveAgeForDismiss);
+   194→    try {
+   195→      localStorage.setItem(BACKUP_REMINDER_KEY, String(effectiveAgeForDismiss));
+   196→    } catch {
+   197→      /* localStorage unavailable — state-only dismissal still works for this session */
+   198→    }
+   199→  };
+   200→
+   201→  const dismissNotif = async (id: string) => {
+   202→    await api("/api/notifications", { method: "PATCH", body: JSON.stringify({ id, status: "done" }) });
+   203→    toast.success("Notification dismissed");
+   204→    refresh();
+   205→  };
+   206→
+   207→  // Fire-and-forget reminder auto-generation on mount. The POST route reads
+   208→  // the `auto_generate_notifications` setting and no-ops (returns
+   209→  // `{ generated: 0, skipped: true }`) when disabled, so this is always safe.
+   210→  // Silent (no toast); we just refresh the dashboard so any newly-generated
+   211→  // reminders appear in the "Due Reminders" panel.
+   212→  const didAutoGen = React.useRef(false);
+   213→  React.useEffect(() => {
+   214→    if (didAutoGen.current) return;
+   215→    didAutoGen.current = true;
+   216→    void api("/api/notifications/generate", { method: "POST" })
+   217→      .then(() => refresh())
+   218→      .catch(() => {
+   219→        /* silent — non-blocking background job */
+   220→      });
+   221→  }, []);
+   222→
+   223→  // First-load skeleton (no data yet)
+   224→  if (!data) {
+   225→    return (
+   226→      <div className="space-y-6">
+   227→        <Skeleton className="h-10 w-full max-w-md rounded-lg" />
+   228→        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+   229→          {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-2xl" />)}
+   230→          <Skeleton className="h-72 rounded-2xl sm:col-span-2" />
+   231→          <Skeleton className="h-72 rounded-2xl" />
+   232→        </div>
+   233→      </div>
+   234→    );
+   235→  }
+   236→
+   237→  const { kpis, charts, notifications } = data;
+   238→  const isAllTime = range === "all";
+   239→  const rangeSubtitle = isAllTime
+   240→    ? "Showing all-time data"
+   241→    : `Showing data from ${formatDate(data.rangeStart)} to ${formatDate(data.rangeEnd)}`;
+   242→
+   243→  const visibleCards = cardOrder.filter((id) => !hiddenCards.includes(id));
+   244→  const customized = isLayoutCustomized({ cardOrder, hiddenCards });
+   245→
+   246→  // Per-card content. Each SortableCard renders its content via this switch.
+   247→  // The content is built fresh from `data` on every render — no memoization
+   248→  // needed since the parent re-renders whenever `data` or `cardOrder` changes.
+   249→  const renderCard = (id: DashboardCardId): React.ReactNode => {
+   250→    switch (id) {
+   251→      case "kpiOverview":
+   252→        return (
+   253→          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+   254→            <KpiCard
+   255→              label="Outstanding Receivable"
+   256→              value={formatCurrency(kpis.outstandingReceivable, { compact: true })}
+   257→              sub={`${kpis.clients} active clients · all-time snapshot`}
+   258→              icon={<Wallet className="size-5" />}
+   259→              accent="amber"
+   260→              onClick={() => drillTo("bills", "due")}
+   261→            />
+   262→            <KpiCard
+   263→              label="Brokerage Earned"
+   264→              value={formatCurrency(kpis.brokeragePaid + kpis.brokerageScheduled + kpis.brokerageAccrued, { compact: true })}
+   265→              sub={`${formatCurrency(kpis.brokeragePaid, { compact: true })} paid · ${formatCurrency(kpis.brokerageAccrued + kpis.brokerageScheduled, { compact: true })} due`}
+   266→              icon={<BadgePercent className="size-5" />}
+   267→              accent="emerald"
+   268→              onClick={() => drillTo("brokerage", "eligible")}
+   269→            />
+   270→            <KpiCard
+   271→              label="Pending (not eligible)"
+   272→              value={formatCurrency(kpis.brokeragePending, { compact: true })}
+   273→              sub="Awaiting full bill payment"
+   274→              icon={<Clock className="size-5" />}
+   275→              accent="rose"
+   276→              onClick={() => drillTo("brokerage", "pending")}
+   277→            />
+   278→            <KpiCard
+   279→              label="Active POs / Disputes"
+   280→              value={formatNumber(kpis.activePOs)}
+   281→              sub={`${kpis.openDisputes} open disputes`}
+   282→              icon={<FileText className="size-5" />}
+   283→              accent="teal"
+   284→              onClick={() => drillTo("disputes", "open")}
+   285→            />
+   286→          </div>
+   287→        );
+   288→
+   289→      case "secondaryKpis":
+   290→        return (
+   291→          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+   292→            <MiniStat icon={<Users className="size-4" />} label="Clients" value={kpis.clients} onClick={() => setView("clients")} />
+   293→            <MiniStat icon={<Factory className="size-4" />} label="Suppliers" value={kpis.suppliers} onClick={() => setView("suppliers")} />
+   294→            <MiniStat icon={<TrendingUp className="size-4" />} label="Bills" value={data.counts.bills} onClick={() => setView("bills")} />
+   295→            <MiniStat icon={<AlertTriangle className="size-4" />} label="Open Disputes" value={kpis.openDisputes} onClick={() => setView("disputes")} />
+   296→          </div>
+   297→        );
+   298→
+   299→      case "actionCenter":
+   300→        return <ActionCenter />;
+   301→
+   302→      case "earningsChart":
+   303→        return (
+   304→          <GlassCard className="p-5">
+   305→            <SectionHeader title="Brokerage Earnings Trend" description={earningsDescription(range)} />
+   306→            <div className="mt-4 h-64 w-full">
+   307→              <ResponsiveContainer width="100%" height="100%">
+   308→                <AreaChart data={charts.earningsTrend} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+   309→                  <defs>
+   310→                    <linearGradient id="gEarned" x1="0" y1="0" x2="0" y2="1">
+   311→                      <stop offset="0%" stopColor="oklch(0.7 0.15 162)" stopOpacity={0.5} />
+   312→                      <stop offset="100%" stopColor="oklch(0.7 0.15 162)" stopOpacity={0.02} />
+   313→                    </linearGradient>
+   314→                    <linearGradient id="gPaid" x1="0" y1="0" x2="0" y2="1">
+   315→                      <stop offset="0%" stopColor="oklch(0.6 0.12 200)" stopOpacity={0.5} />
+   316→                      <stop offset="100%" stopColor="oklch(0.6 0.12 200)" stopOpacity={0.02} />
+   317→                    </linearGradient>
+   318→                  </defs>
+   319→                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.7 0.02 160 / 0.2)" />
+   320→                  <XAxis
+   321→                    dataKey="label"
+   322→                    tick={{ fontSize: 12, fill: "oklch(0.5 0.02 165)" }}
+   323→                    axisLine={false}
+   324→                    tickLine={false}
+   325→                    interval={Math.max(0, Math.floor(charts.earningsTrend.length / 8))}
+   326→                    minTickGap={4}
+   327→                  />
+   328→                  <YAxis tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCurrency(v as number, { compact: true })} width={50} />
+   329→                  <Tooltip
+   330→                    contentStyle={{ background: "oklch(0.16 0.012 170 / 0.92)", border: "1px solid oklch(1 0 0 / 0.12)", borderRadius: 12, color: "white", backdropFilter: "blur(12px)" }}
+   331→                    formatter={(v: number) => formatCurrency(v)}
+   332→                  />
+   333→                  <Area type="monotone" dataKey="earned" name="Earned" stroke="oklch(0.7 0.15 162)" strokeWidth={2} fill="url(#gEarned)" />
+   334→                  <Area type="monotone" dataKey="paid" name="Paid out" stroke="oklch(0.6 0.12 200)" strokeWidth={2} fill="url(#gPaid)" />
+   335→                </AreaChart>
+   336→              </ResponsiveContainer>
+   337→            </div>
+   338→          </GlassCard>
+   339→        );
+   340→
+   341→      case "poStatusChart":
+   342→        return (
+   343→          <GlassCard className="p-5">
+   344→            <SectionHeader title="PO Status" description={isAllTime ? "All-time open vs. delivered" : `POs created in selected range`} />
+   345→            <div className="mt-4 h-64 w-full">
+   346→              {charts.poStatus.length === 0 ? (
+   347→                <EmptyState title="No POs in range" hint="Try a wider date range." icon={<FileText className="size-5" />} />
+   348→              ) : (
+   349→                <ResponsiveContainer width="100%" height="100%">
+   350→                  <PieChart>
+   351→                    <Pie
+   352→                      data={charts.poStatus}
+   353→                      dataKey="value"
+   354→                      nameKey="name"
+   355→                      innerRadius={50}
+   356→                      outerRadius={80}
+   357→                      paddingAngle={3}
+   358→                      onClick={(payload: { name?: string }) => {
+   359→                        if (payload && typeof payload === "object" && "name" in payload && payload.name) {
+   360→                          drillTo("pos", String(payload.name));
+   361→                        }
+   362→                      }}
+   363→                    >
+   364→                      {charts.poStatus.map((entry, i) => (
+   365→                        <Cell key={i} fill={PO_STATUS_COLORS[entry.name] ?? "oklch(0.6 0.02 165)"} stroke="none" className="cursor-pointer" />
+   366→                      ))}
+   367→                    </Pie>
+   368→                    <Tooltip
+   369→                      contentStyle={{ background: "oklch(0.16 0.012 170 / 0.92)", border: "1px solid oklch(1 0 0 / 0.12)", borderRadius: 12, color: "white" }}
+   370→                      formatter={(v: number, n: string) => [`${v} POs`, titleCase(n)]}
+   371→                    />
+   372→                    <Legend formatter={(v) => titleCase(v)} wrapperStyle={{ fontSize: 12 }} />
+   373→                  </PieChart>
+   374→                </ResponsiveContainer>
+   375→              )}
+   376→            </div>
+   377→          </GlassCard>
+   378→        );
+   379→
+   380→      case "volumeByClient":
+   381→        return (
+   382→          <GlassCard className="p-5">
+   383→            <SectionHeader title="Business Volume by Client" description={isAllTime ? "Final billed amount (₹) — all-time" : "Final billed amount (₹) — bills raised in range"} />
+   384→            <div className="mt-4 h-56 w-full">
+   385→              {charts.volumeByClient.length === 0 ? (
+   386→                <EmptyState title="No bills in range" hint="No bills were raised during this period." icon={<TrendingUp className="size-5" />} />
+   387→              ) : (
+   388→                <ResponsiveContainer width="100%" height="100%">
+   389→                  <BarChart data={charts.volumeByClient} layout="vertical" margin={{ top: 0, right: 16, bottom: 0, left: 8 }}>
+   390→                    <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.7 0.02 160 / 0.2)" horizontal={false} />
+   391→                    <XAxis type="number" tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCurrency(v as number, { compact: true })} />
+   392→                    <YAxis type="category" dataKey="name" tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} width={120} />
+   393→                    <Tooltip
+   394→                      cursor={{ fill: "oklch(0.7 0.02 160 / 0.08)" }}
+   395→                      contentStyle={{ background: "oklch(0.16 0.012 170 / 0.92)", border: "1px solid oklch(1 0 0 / 0.12)", borderRadius: 12, color: "white" }}
+   396→                      formatter={(v: number) => formatCurrency(v)}
+   397→                    />
+   398→                    <Bar
+   399→                      dataKey="value"
+   400→                      name="Volume"
+   401→                      fill="oklch(0.65 0.13 162)"
+   402→                      radius={[0, 6, 6, 0]}
+   403→                      className="cursor-pointer"
+   404→                      onClick={(payload: { id?: string }) => {
+   405→                        if (payload && typeof payload === "object" && "id" in payload && payload.id) {
+   406→                          openDetail("Client", String(payload.id));
+   407→                        }
+   408→                      }}
+   409→                    />
+   410→                  </BarChart>
+   411→                </ResponsiveContainer>
+   412→              )}
+   413→            </div>
+   414→          </GlassCard>
+   415→        );
+   416→
+   417→      case "dueReminders":
+   418→        return (
+   419→          <GlassCard className="p-5">
+   420→            <SectionHeader title="Due Reminders" description={`${notifications.length} pending`} action={<Button variant="ghost" size="sm" onClick={() => setView("notifications")}>View all</Button>} />
+   421→            <div className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
+   422→              {notifications.length === 0 ? (
+   423→                <EmptyState title="All caught up" hint="No pending reminders." icon={<Clock className="size-5" />} />
+   424→              ) : notifications.map((n) => (
+   425→                <div key={n.id} className="group rounded-xl border border-border/50 bg-card/40 p-3 transition-colors hover:bg-card/70">
+   426→                  <div className="flex items-start justify-between gap-2">
+   427→                    <p className="text-sm font-medium text-foreground">{n.title}</p>
+   428→                    <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium ${statusChipClass(n.type === "brokerage_due" ? "overdue" : "pending")}`}>
+   429→                      {titleCase(n.type.replace(/_/g, " "))}
+   430→                    </span>
+   431→                  </div>
+   432→                  {n.message ? <p className="mt-1 text-xs text-muted-foreground">{n.message}</p> : null}
+   433→                  <div className="mt-2 flex items-center justify-between">
+   434→                    <span className="text-[11px] text-muted-foreground">Due {formatDate(n.dueDate)}</span>
+   435→                    <Button variant="ghost" size="sm" className="h-6 px-2 text-[11px] opacity-0 group-hover:opacity-100" onClick={() => dismissNotif(n.id)}>Dismiss</Button>
+   436→                  </div>
+   437→                </div>
+   438→              ))}
+   439→            </div>
+   440→          </GlassCard>
+   441→        );
+   442→
+   443→      case "brokeragePosition":
+   444→        return (
+   445→          <GlassCard className="p-5">
+   446→            <SectionHeader title="Brokerage Position" description={isAllTime ? "Eligibility & payout status — all-time" : "Eligibility & payout status — range-filtered"} action={<Button variant="outline" size="sm" onClick={() => setView("brokerage")}>Manage brokerage <ArrowUpRight className="ml-1 size-3.5" /></Button>} />
+   447→            <div className="mt-4 grid gap-3 sm:grid-cols-4">
+   448→              <BrokerageTile label="Pending (not eligible)" value={kpis.brokeragePending} hint="Bill not fully paid" tone="rose" />
+   449→              <BrokerageTile label="Accrued" value={kpis.brokerageAccrued} hint="Eligible, awaiting payout" tone="amber" />
+   450→              <BrokerageTile label="Scheduled" value={kpis.brokerageScheduled} hint="In a payout batch" tone="teal" />
+   451→              <BrokerageTile label="Paid out" value={kpis.brokeragePaid} hint="Settled to broker" tone="emerald" />
+   452→            </div>
+   453→          </GlassCard>
+   454→        );
+   455→
+   456→      case "quickTips":
+   457→        return <QuickTipsCard />;
+   458→
+   459→      default:
+   460→        return null;
+   461→    }
+   462→  };
+   463→
+   464→  return (
+   465→    <div className="space-y-6">
+   466→      {/* Backup-age reminder — appears when last backup is >7 days old (or never) */}
+   467→      {showBackupReminder && (
+   468→        <div className="flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-amber-800 dark:text-amber-200">
+   469→          <div className="grid size-7 shrink-0 place-items-center rounded-lg bg-amber-500/20 text-amber-700 dark:text-amber-300">
+   470→            <HardDrive className="size-4" />
+   471→          </div>
+   472→          <div className="min-w-0 flex-1">
+   473→            <p className="text-sm font-medium">
+   474→              {backupAge === null
+   475→                ? "No backup has ever been taken — consider backing up your data."
+   476→                : `Last backup was ${backupAge} day${backupAge === 1 ? "" : "s"} ago — consider backing up your data.`}
+   477→            </p>
+   478→            <p className="mt-0.5 text-[11px] text-amber-700/80 dark:text-amber-300/80">
+   479→              Backups protect against accidental data loss. Open Settings → Backup &amp; Restore to download a full JSON snapshot.
+   480→            </p>
+   481→          </div>
+   482→          <div className="flex shrink-0 items-center gap-2">
+   483→            <Button
+   484→              size="sm"
+   485→              variant="outline"
+   486→              className="h-7 border-amber-500/40 bg-amber-500/10 px-2.5 text-[11px] text-amber-800 hover:bg-amber-500/20 dark:text-amber-200"
+   487→              onClick={() => setView("settings")}
+   488→            >
+   489→              Open Settings
+   490→            </Button>
+   491→            <button
+   492→              type="button"
+   493→              onClick={dismissBackupReminder}
+   494→              aria-label="Dismiss backup reminder"
+   495→              className="grid size-7 place-items-center rounded-lg text-amber-700/70 transition-colors hover:bg-amber-500/20 hover:text-amber-800 dark:text-amber-300/70 dark:hover:text-amber-200"
+   496→            >
+   497→              <X className="size-3.5" />
+   498→            </button>
+   499→          </div>
+   500→        </div>
+   501→      )}
+   502→
+   503→      {/* Toolbar: range subtitle (or customize-mode hint) + actions */}
+   504→      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+   505→        <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
+   506→          {customizeMode ? (
+   507→            <>
+   508→              <Settings2 className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+   509→              <span className="truncate font-medium text-foreground">Customize mode</span>
+   510→              <span className="truncate">— drag the grip to reorder, eye icon to hide</span>
+   511→            </>
+   512→          ) : (
+   513→            <>
+   514→              <Calendar className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+   515→              <span className="truncate">{rangeSubtitle}</span>
+   516→              {loading && (
+   517→                <Loader2 className="size-3.5 shrink-0 animate-spin text-emerald-600 dark:text-emerald-400" />
+   518→              )}
+   519→            </>
+   520→          )}
+   521→        </div>
+   522→        <div className="flex flex-wrap items-center gap-2">
+   523→          {customizeMode ? (
+   524→            <>
+   525→              <Button variant="outline" size="sm" onClick={handleReset}>
+   526→                <RotateCcw className="size-3.5" /> Reset to default
+   527→              </Button>
+   528→              <Button size="sm" onClick={() => setCustomizeMode(false)}>
+   529→                <Check className="size-3.5" /> Done
+   530→              </Button>
+   531→            </>
+   532→          ) : (
+   533→            <>
+   534→              {customized && (
+   535→                <button
+   536→                  type="button"
+   537→                  onClick={() => setCustomizeMode(true)}
+   538→                  aria-label="Layout customized — open customize mode"
+   539→                  className="transition-transform hover:scale-105"
+   540→                >
+   541→                  <Badge
+   542→                    variant="outline"
+   543→                    className="border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+   544→                  >
+   545→                    <Check className="size-3" /> Customized
+   546→                  </Badge>
+   547→                </button>
+   548→              )}
+   549→              <Button variant="outline" size="sm" onClick={() => setCustomizeMode(true)}>
+   550→                <Settings2 className="size-3.5" />
+   551→                <span className="hidden sm:inline">Customize</span>
+   552→              </Button>
+   553→              <Button
+   554→                variant="outline"
+   555→                size="sm"
+   556→                onClick={() => setView("digest")}
+   557→                className="border-emerald-500/30 text-emerald-700 hover:bg-emerald-500/10 hover:text-emerald-700 dark:text-emerald-300 dark:hover:bg-emerald-500/10 dark:hover:text-emerald-200"
+   558→                aria-label="Open Daily Digest"
+   559→              >
+   560→                <Mail className="size-3.5" />
+   561→                <span className="hidden sm:inline">Daily digest</span>
+   562→              </Button>
+   563→              {!isAllTime && data.rangeStart ? (
+   564→                <Badge
+   565→                  variant="outline"
+   566→                  className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+   567→                >
+   568→                  <Calendar className="size-3" />
+   569→                  {formatDateShort(data.rangeStart)} – {formatDateShort(data.rangeEnd)}
+   570→                </Badge>
+   571→              ) : null}
+   572→              <ToggleGroup
+   573→                type="single"
+   574→                value={range}
+   575→                onValueChange={(v) => { if (v) setRange(v as Range); }}
+   576→                size="sm"
+   577→                className="glass rounded-lg border border-border/60 p-0.5"
+   578→                aria-label="Dashboard date range"
+   579→              >
+   580→                {RANGE_OPTIONS.map((opt) => (
+   581→                  <ToggleGroupItem
+   582→                    key={opt.value}
+   583→                    value={opt.value}
+   584→                    aria-label={opt.long}
+   585→                    className="rounded-md px-2.5 text-xs font-medium data-[state=on]:bg-emerald-500/15 data-[state=on]:text-emerald-700 dark:data-[state=on]:text-emerald-300"
+   586→                  >
+   587→                    <span className="hidden sm:inline">{opt.long}</span>
+   588→                    <span className="sm:hidden">{opt.short}</span>
+   589→                  </ToggleGroupItem>
+   590→                ))}
+   591→              </ToggleGroup>
+   592→            </>
+   593→          )}
+   594→        </div>
+   595→      </div>
+   596→
+   597→      {/* Draggable dashboard cards */}
+   598→      <DndContext
+   599→        sensors={sensors}
+   600→        collisionDetection={closestCenter}
+   601→        onDragEnd={onDragEnd}
+   602→      >
+   603→        <SortableContext items={visibleCards} strategy={verticalListSortingStrategy}>
+   604→          <div className="space-y-6">
+   605→            {visibleCards.map((id) => (
+   606→              <SortableCard
+   607→                key={id}
+   608→                id={id}
+   609→                label={DASHBOARD_CARD_LABELS[id]}
+   610→                customizeMode={customizeMode}
+   611→              >
+   612→                {renderCard(id)}
+   613→              </SortableCard>
+   614→            ))}
+   615→          </div>
+   616→        </SortableContext>
+   617→      </DndContext>
+   618→
+   619→      {/* Hidden-cards recovery panel — only in customize mode, only if there
+   620→          are hidden cards. Lets the broker re-add a card they hid. */}
+   621→      {customizeMode && hiddenCards.length > 0 && (
+   622→        <GlassCard className="p-5">
+   623→          <SectionHeader
+   624→            title="Hidden cards"
+   625→            description="Click a card below to bring it back to your dashboard."
+   626→          />
+   627→          <div className="mt-3 flex flex-wrap gap-2">
+   628→            {hiddenCards.map((id) => (
+   629→              <Button
+   630→                key={id}
+   631→                variant="outline"
+   632→                size="sm"
+   633→                onClick={() => toggleCard(id)}
+   634→                className="gap-1.5 border-emerald-500/30 bg-emerald-500/5 text-emerald-700 hover:bg-emerald-500/15 dark:text-emerald-300"
+   635→                aria-label={`Show ${DASHBOARD_CARD_LABELS[id]} card`}
+   636→              >
+   637→                <Eye className="size-3.5" />
+   638→                {DASHBOARD_CARD_LABELS[id]}
+   639→              </Button>
+   640→            ))}
+   641→          </div>
+   642→        </GlassCard>
+   643→      )}
+   644→
+   645→      {/* Empty-state hint when the broker has hidden everything. */}
+   646→      {customizeMode && visibleCards.length === 0 && hiddenCards.length > 0 && (
+   647→        <GlassCard className="p-8">
+   648→          <EmptyState
+   649→            title="No cards visible"
+   650→            hint="Re-add a card from the Hidden cards panel above to see your dashboard again."
+   651→            icon={<EyeOff className="size-5" />}
+   652→          />
+   653→        </GlassCard>
+   654→      )}
+   655→    </div>
+   656→  );
+   657→}
+   658→
+   659→// ─────────────────────────────────────────────────────────────────────────────
+   660→// SortableCard — wraps a dashboard section with dnd-kit's useSortable hook.
+   661→//
+   662→// In customize mode, a thin bar appears above the card content with:
+   663→//   • a grip drag handle (the activator for dnd-kit)
+   664→//   • the card label
+   665→//   • a "Hide" button (eye-off icon) that removes the card from the layout
+   666→//
+   667→// Out of customize mode, the bar is hidden and a small floating grip appears
+   668→// at the top-right corner of the card on hover — clicking it enters customize
+   669→// mode (so the hover affordance isn't a tease). The floating grip uses
+   670→// `pointer-events-none` until hovered so it never blocks clicks on underlying
+   671→// card content (e.g. KPI tile drill-downs).
+   672→//
+   673→// While dragging, the card lifts with `scale-[1.02] shadow-xl z-10` per spec.
+   674→// ─────────────────────────────────────────────────────────────────────────────
+   675→function SortableCard({
+   676→  id,
+   677→  label,
+   678→  customizeMode,
+   679→  children,
+   680→}: {
+   681→  id: DashboardCardId;
+   682→  label: string;
+   683→  customizeMode: boolean;
+   684→  children: React.ReactNode;
+   685→}) {
+   686→  const {
+   687→    attributes,
+   688→    listeners,
+   689→    setNodeRef,
+   690→    setActivatorNodeRef,
+   691→    transform,
+   692→    transition,
+   693→    isDragging,
+   694→  } = useSortable({ id });
+   695→
+   696→  const toggleCard = useDashboardLayout((s) => s.toggleCard);
+   697→  const setCustomizeMode = useDashboardLayout((s) => s.setCustomizeMode);
+   698→
+   699→  const style: React.CSSProperties = {
+   700→    transform: CSS.Transform.toString(transform),
+   701→    transition,
+   702→  };
+   703→
+   704→  return (
+   705→    <div
+   706→      ref={setNodeRef}
+   707→      style={style}
+   708→      className={cn(
+   709→        "group/sort relative",
+   710→        isDragging && "z-10 scale-[1.02] shadow-xl",
+   711→      )}
+   712→    >
+   713→      {customizeMode ? (
+   714→        <div className="mb-2 flex items-center justify-between rounded-xl border border-dashed border-emerald-500/40 bg-emerald-500/5 px-3 py-1.5">
+   715→          <div className="flex min-w-0 items-center gap-2">
+   716→            <button
+   717→              type="button"
+   718→              ref={setActivatorNodeRef}
+   719→              {...attributes}
+   720→              {...listeners}
+   721→              className="grid size-6 shrink-0 cursor-grab place-items-center rounded-md text-muted-foreground transition-colors hover:bg-emerald-500/10 hover:text-emerald-600 active:cursor-grabbing dark:hover:text-emerald-400"
+   722→              aria-label={`Drag ${label} to reorder`}
+   723→            >
+   724→              <GripVertical className="size-4" />
+   725→            </button>
+   726→            <span className="truncate text-xs font-medium text-muted-foreground">{label}</span>
+   727→          </div>
+   728→          <Button
+   729→            type="button"
+   730→            variant="ghost"
+   731→            size="sm"
+   732→            className="h-7 shrink-0 gap-1.5 px-2 text-[11px] text-muted-foreground hover:text-rose-600 dark:hover:text-rose-400"
+   733→            onClick={() => toggleCard(id)}
+   734→            aria-label={`Hide ${label} from dashboard`}
+   735→          >
+   736→            <EyeOff className="size-3.5" />
+   737→            <span className="hidden sm:inline">Hide</span>
+   738→          </Button>
+   739→        </div>
+   740→      ) : (
+   741→        // Floating grip — visible on hover only. Clicking it enters customize
+   742→        // mode so the broker can start rearranging. pointer-events-none until
+   743→        // hovered so it never blocks underlying card interactions.
+   744→        <button
+   745→          type="button"
+   746→          onClick={() => setCustomizeMode(true)}
+   747→          aria-label="Customize dashboard layout"
+   748→          className="absolute right-2 top-2 z-20 grid size-7 cursor-pointer place-items-center rounded-md bg-background/70 text-muted-foreground opacity-0 backdrop-blur-sm transition-all hover:text-emerald-600 group-hover/sort:opacity-100 group-hover/sort:pointer-events-auto pointer-events-none dark:hover:text-emerald-400"
+   749→        >
+   750→          <GripVertical className="size-3.5" />
+   751→        </button>
+   752→      )}
+   753→      {children}
+   754→    </div>
+   755→  );
+   756→}
+   757→
+   758→function MiniStat({ icon, label, value, onClick }: { icon: React.ReactNode; label: string; value: number; onClick: () => void }) {
+   759→  return (
+   760→    <button onClick={onClick} className="glass hover-lift flex items-center justify-between rounded-2xl p-4 text-left">
+   761→      <div>
+   762→        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{label}</p>
+   763→        <p className="kpi-num mt-1 text-2xl font-light text-foreground">{formatNumber(value)}</p>
+   764→      </div>
+   765→      <div className="grid size-9 place-items-center rounded-xl bg-primary/10 text-primary">{icon}</div>
+   766→    </button>
+   767→  );
+   768→}
+   769→
+   770→function BrokerageTile({ label, value, hint, tone }: { label: string; value: number; hint: string; tone: "emerald" | "amber" | "rose" | "teal" }) {
+   771→  const toneClass: Record<string, string> = {
+   772→    emerald: "border-emerald-500/30 bg-emerald-500/5",
+   773→    amber: "border-amber-500/30 bg-amber-500/5",
+   774→    rose: "border-rose-500/30 bg-rose-500/5",
+   775→    teal: "border-teal-500/30 bg-teal-500/5",
+   776→  };
+   777→  return (
+   778→    <div className={`rounded-xl border p-4 ${toneClass[tone]}`}>
+   779→      <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{label}</p>
+   780→      <p className="kpi-num mt-2 text-2xl font-light text-foreground">{formatCurrency(value, { compact: true })}</p>
+   781→      <p className="mt-1 text-[11px] text-muted-foreground">{hint}</p>
+   782→    </div>
+   783→  );
+   784→}
+   785→

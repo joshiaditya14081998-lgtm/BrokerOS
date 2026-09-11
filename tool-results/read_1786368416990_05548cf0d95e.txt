@@ -1,0 +1,1299 @@
+     1→     1→"use client";
+     2→     2→
+     3→     3→import * as React from "react";
+     4→     4→import {
+     5→     5→  Settings as SettingsIcon, Save, AlertCircle, Database, Download,
+     6→     6→  Percent, Receipt, BadgePercent, ShieldCheck, FileText, RotateCcw,
+     7→     7→  BellRing, Printer, ImageIcon, HardDrive, Upload, AlertTriangle,
+     8→     8→  Shield, Clock, Loader2, Sparkles, Lightbulb, Mail, Coffee, ArrowRight,
+     9→     9→} from "lucide-react";
+    10→    10→import { useApi, api } from "@/lib/api";
+    11→    11→import { useUI } from "@/lib/ui-store";
+    12→    12→import { GlassCard, SectionHeader } from "@/components/shared";
+    13→    13→import { Button } from "@/components/ui/button";
+    14→    14→import { Input } from "@/components/ui/input";
+    15→    15→import { Label } from "@/components/ui/label";
+    16→    16→import { Skeleton } from "@/components/ui/skeleton";
+    17→    17→import { Switch } from "@/components/ui/switch";
+    18→    18→import { Badge } from "@/components/ui/badge";
+    19→    19→import {
+    20→    20→  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+    21→    21→  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+    22→    22→} from "@/components/ui/alert-dialog";
+    23→    23→import { toast } from "sonner";
+    24→    24→
+    25→    25→type SettingRow = {
+    26→    26→  id: string;
+    27→    27→  key: string;
+    28→    28→  value: string;
+    29→    29→  notes: string | null;
+    30→    30→};
+    31→    31→
+    32→    32→type SettingsResponse = {
+    33→    33→  settings: SettingRow[];
+    34→    34→  defaults: {
+    35→    35→    defaultGstRate: number;
+    36→    36→    defaultCommissionRate: number;
+    37→    37→    brokerageOnGst: boolean;
+    38→    38→    autoGenerateNotifications: boolean;
+    39→    39→    autoBackupEnabled: boolean;
+    40→    40→    lastBackupAt: string | null;
+    41→    41→    autoDigestEnabled: boolean;
+    42→    42→    digestEmail: string;
+    43→    43→  };
+    44→    44→};
+    45→    45→
+    46→    46→type ParsedBackup = {
+    47→    47→  version: number;
+    48→    48→  exportedAt?: string;
+    49→    49→  tables: Record<string, unknown[]>;
+    50→    50→  bytes: number;
+    51→    51→};
+    52→    52→
+    53→    53→type RestoreResponse = {
+    54→    54→  success?: boolean;
+    55→    55→  error?: string;
+    56→    56→  sourceExportedAt?: string | null;
+    57→    57→  counts?: Record<string, number>;
+    58→    58→};
+    59→    59→
+    60→    60→type PhotoStats = {
+    61→    61→  count: number;
+    62→    62→  totalSizeBytes: number;
+    63→    63→  totalSizeMB: number;
+    64→    64→};
+    65→    65→
+    66→    66→const EXPORT_LINKS: { type: string; label: string; icon: React.ReactNode }[] = [
+    67→    67→  { type: "clients", label: "Clients", icon: <Database className="size-4" /> },
+    68→    68→  { type: "suppliers", label: "Suppliers", icon: <Database className="size-4" /> },
+    69→    69→  { type: "pos", label: "Purchase Orders", icon: <FileText className="size-4" /> },
+    70→    70→  { type: "bills", label: "Bills", icon: <Receipt className="size-4" /> },
+    71→    71→  { type: "payments", label: "Payments", icon: <Receipt className="size-4" /> },
+    72→    72→  { type: "brokerage", label: "Brokerage", icon: <BadgePercent className="size-4" /> },
+    73→    73→  { type: "audit", label: "Audit Trail", icon: <FileText className="size-4" /> },
+    74→    74→];
+    75→    75→
+    76→    76→const PDF_REPORTS: { href: string; label: string; hint: string; icon: React.ReactNode }[] = [
+    77→    77→  {
+    78→    78→    href: "/api/reports?type=brokerage-statement&range=all",
+    79→    79→    label: "Brokerage Statement",
+    80→    80→    hint: "Monthly earnings, eligibility & payouts (all-time).",
+    81→    81→    icon: <BadgePercent className="size-4" />,
+    82→    82→  },
+    83→    83→  {
+    84→    84→    href: "",
+    85→    85→    label: "Client Ledger",
+    86→    86→    hint: "Open any client and click “Print ledger” in the sheet header.",
+    87→    87→    icon: <Receipt className="size-4" />,
+    88→    88→  },
+    89→    89→  {
+    90→    90→    href: "",
+    91→    91→    label: "Supplier Summary",
+    92→    92→    hint: "Open any supplier and click “Print summary” in the sheet header.",
+    93→    93→    icon: <Database className="size-4" />,
+    94→    94→  },
+    95→    95→];
+    96→    96→
+    97→    97→const BUSINESS_RULES: {
+    98→    98→  icon: React.ReactNode;
+    99→    99→  title: string;
+   100→   100→  body: string;
+   101→   101→  tone: "emerald" | "amber" | "teal" | "rose";
+   102→   102→}[] = [
+   103→   103→  {
+   104→   104→    icon: <BadgePercent className="size-4" />,
+   105→   105→    title: "Brokerage excludes GST",
+   106→   106→    body: "Brokerage is always computed on the bill's base amount (PO value − short-shipment − returns), never on the GST component.",
+   107→   107→    tone: "emerald",
+   108→   108→  },
+   109→   109→  {
+   110→   110→    icon: <ShieldCheck className="size-4" />,
+   111→   111→    title: "Eligible only on full payment",
+   112→   112→    body: "A brokerage entry stays 'accrued' until the linked bill is fully paid. The moment status becomes fully_paid, brokerage auto-flips to 'eligible'.",
+   113→   113→    tone: "teal",
+   114→   114→  },
+   115→   115→  {
+   116→   116→    icon: <RotateCcw className="size-4" />,
+   117→   117→    title: "Payout follows client cadence",
+   118→   118→    body: "Eligible brokerages are batched into a payout following the client's cadence — immediate, 4-month cumulative, or 12-month cumulative.",
+   119→   119→    tone: "amber",
+   120→   120→  },
+   121→   121→  {
+   122→   122→    icon: <Percent className="size-4" />,
+   123→   123→    title: "Commission set per supplier",
+   124→   124→    body: "Each supplier has a default commission % (defaults to 5%). It can be overridden per booking/PO at record time; the snapshot is used for brokerage.",
+   125→   125→    tone: "emerald",
+   126→   126→  },
+   127→   127→  {
+   128→   128→    icon: <Receipt className="size-4" />,
+   129→   129→    title: "Adjustments before GST & brokerage",
+   130→   130→    body: "Short-shipment and resolved defective returns reduce the base amount BEFORE GST and brokerage are computed — never after.",
+   131→   131→    tone: "rose",
+   132→   132→  },
+   133→   133→];
+   134→   134→
+   135→   135→const BACKUP_TABLE_LABELS: { key: string; label: string }[] = [
+   136→   136→  { key: "clients", label: "Clients" },
+   137→   137→  { key: "suppliers", label: "Suppliers" },
+   138→   138→  { key: "visits", label: "Visits" },
+   139→   139→  { key: "bookings", label: "Bookings" },
+   140→   140→  { key: "bookingLineItems", label: "Booking line items" },
+   141→   141→  { key: "purchaseOrders", label: "Purchase orders" },
+   142→   142→  { key: "dispatchDateLogs", label: "Dispatch date logs" },
+   143→   143→  { key: "dispatches", label: "Dispatches" },
+   144→   144→  { key: "bills", label: "Bills" },
+   145→   145→  { key: "payments", label: "Payments" },
+   146→   146→  { key: "brokerages", label: "Brokerages" },
+   147→   147→  { key: "brokeragePayouts", label: "Brokerage payouts" },
+   148→   148→  { key: "disputes", label: "Disputes" },
+   149→   149→  { key: "photos", label: "Photos" },
+   150→   150→  { key: "notifications", label: "Notifications" },
+   151→   151→  { key: "auditLogs", label: "Audit logs" },
+   152→   152→  { key: "systemSettings", label: "System settings" },
+   153→   153→];
+   154→   154→
+   155→   155→function formatBytes(bytes: number): string {
+   156→   156→  if (bytes < 1024) return `${bytes} B`;
+   157→   157→  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+   158→   158→  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+   159→   159→}
+   160→   160→
+   161→   161→function formatRelative(iso: string | null): string {
+   162→   162→  if (!iso) return "Never";
+   163→   163→  const t = new Date(iso).getTime();
+   164→   164→  if (Number.isNaN(t)) return "Never";
+   165→   165→  const diff = Date.now() - t;
+   166→   166→  const sec = Math.floor(diff / 1000);
+   167→   167→  if (sec < 60) return "Just now";
+   168→   168→  const min = Math.floor(sec / 60);
+   169→   169→  if (min < 60) return `${min} min ago`;
+   170→   170→  const hr = Math.floor(min / 60);
+   171→   171→  if (hr < 24) return `${hr} hr ago`;
+   172→   172→  const day = Math.floor(hr / 24);
+   173→   173→  if (day < 30) return `${day} day${day === 1 ? "" : "s"} ago`;
+   174→   174→  const mon = Math.floor(day / 30);
+   175→   175→  if (mon < 12) return `${mon} month${mon === 1 ? "" : "s"} ago`;
+   176→   176→  return new Date(iso).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+   177→   177→}
+   178→   178→
+   179→   179→function formatDateTime(iso: string | null | undefined): string {
+   180→   180→  if (!iso) return "Unknown";
+   181→   181→  const d = new Date(iso);
+   182→   182→  if (Number.isNaN(d.getTime())) return "Unknown";
+   183→   183→  return d.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
+   184→   184→}
+   185→   185→
+   186→   186→function parseBackupFile(text: string, fileName: string, fileSize: number): { ok: true; backup: ParsedBackup } | { ok: false; error: string } {
+   187→   187→  let json: unknown;
+   188→   188→  try {
+   189→   189→    json = JSON.parse(text);
+   190→   190→  } catch {
+   191→   191→    return { ok: false, error: `"${fileName}" is not valid JSON.` };
+   192→   192→  }
+   193→   193→  if (typeof json !== "object" || json === null || Array.isArray(json)) {
+   194→   194→    return { ok: false, error: "Backup file must be a JSON object." };
+   195→   195→  }
+   196→   196→  const obj = json as Record<string, unknown>;
+   197→   197→  if (obj.version !== 1) {
+   198→   198→    return { ok: false, error: `Unsupported backup version (expected 1, got ${String(obj.version)}).` };
+   199→   199→  }
+   200→   200→  if (typeof obj.tables !== "object" || obj.tables === null || Array.isArray(obj.tables)) {
+   201→   201→    return { ok: false, error: "Backup file is missing the 'tables' object." };
+   202→   202→  }
+   203→   203→  const tables = obj.tables as Record<string, unknown>;
+   204→   204→  for (const t of BACKUP_TABLE_LABELS) {
+   205→   205→    if (!Array.isArray(tables[t.key])) {
+   206→   206→      return { ok: false, error: `Backup file is missing the "${t.key}" table.` };
+   207→   207→    }
+   208→   208→  }
+   209→   209→  return {
+   210→   210→    ok: true,
+   211→   211→    backup: {
+   212→   212→      version: 1,
+   213→   213→      exportedAt: typeof obj.exportedAt === "string" ? obj.exportedAt : undefined,
+   214→   214→      tables: tables as Record<string, unknown[]>,
+   215→   215→      bytes: fileSize,
+   216→   216→    },
+   217→   217→  };
+   218→   218→}
+   219→   219→
+   220→   220→export function SettingsView() {
+   221→   221→  const { data, loading, refresh } = useApi<SettingsResponse>("/api/settings");
+   222→   222→  const { data: photoStats } = useApi<PhotoStats>("/api/photos/stats");
+   223→   223→  const { setView } = useUI();
+   224→   224→
+   225→   225→  const [gstRate, setGstRate] = React.useState<string>("5");
+   226→   226→  const [commissionRate, setCommissionRate] = React.useState<string>("5");
+   227→   227→  const [brokerageOnGst, setBrokerageOnGst] = React.useState<boolean>(false);
+   228→   228→  const [autoGen, setAutoGen] = React.useState<boolean>(true);
+   229→   229→  const [saving, setSaving] = React.useState(false);
+   230→   230→  const [seedOpen, setSeedOpen] = React.useState(false);
+   231→   231→  const [seeding, setSeeding] = React.useState(false);
+   232→   232→
+   233→   233→  // Onboarding replay / demo-load state
+   234→   234→  const [replayOpen, setReplayOpen] = React.useState(false);
+   235→   235→  const [replaying, setReplaying] = React.useState(false);
+   236→   236→  const [loadDemoOpen, setLoadDemoOpen] = React.useState(false);
+   237→   237→  const [loadingDemo, setLoadingDemo] = React.useState(false);
+   238→   238→
+   239→   239→  // Backup / restore state
+   240→   240→  const [downloading, setDownloading] = React.useState(false);
+   241→   241→  const [autoBackup, setAutoBackup] = React.useState(false);
+   242→   242→  const [autoBackupSaving, setAutoBackupSaving] = React.useState(false);
+   243→   243→  const [restoreOpen, setRestoreOpen] = React.useState(false);
+   244→   244→  const [restoring, setRestoring] = React.useState(false);
+   245→   245→  const [parsedBackup, setParsedBackup] = React.useState<ParsedBackup | null>(null);
+   246→   246→  const [fileInputKey, setFileInputKey] = React.useState(0);
+   247→   247→
+   248→   248→  // Daily digest state
+   249→   249→  const [autoDigest, setAutoDigest] = React.useState(true);
+   250→   250→  const [autoDigestSaving, setAutoDigestSaving] = React.useState(false);
+   251→   251→  const [digestEmail, setDigestEmail] = React.useState("");
+   252→   252→  const [digestEmailSaving, setDigestEmailSaving] = React.useState(false);
+   253→   253→
+   254→   254→  // Track the original loaded values so we can show a "dirty" indicator.
+   255→   255→  const [original, setOriginal] = React.useState({ gstRate: "5", commissionRate: "5", brokerageOnGst: false, autoGen: true });
+   256→   256→
+   257→   257→  React.useEffect(() => {
+   258→   258→    if (!data) return;
+   259→   259→    const g = String(data.defaults.defaultGstRate);
+   260→   260→    const c = String(data.defaults.defaultCommissionRate);
+   261→   261→    const b = data.defaults.brokerageOnGst;
+   262→   262→    const a = data.defaults.autoGenerateNotifications;
+   263→   263→    setGstRate(g);
+   264→   264→    setCommissionRate(c);
+   265→   265→    setBrokerageOnGst(b);
+   266→   266→    setAutoGen(a);
+   267→   267→    setAutoBackup(data.defaults.autoBackupEnabled);
+   268→   268→    setAutoDigest(data.defaults.autoDigestEnabled);
+   269→   269→    setDigestEmail(data.defaults.digestEmail ?? "");
+   270→   270→    setOriginal({ gstRate: g, commissionRate: c, brokerageOnGst: b, autoGen: a });
+   271→   271→  }, [data]);
+   272→   272→
+   273→   273→  const dirty =
+   274→   274→    gstRate !== original.gstRate ||
+   275→   275→    commissionRate !== original.commissionRate ||
+   276→   276→    brokerageOnGst !== original.brokerageOnGst ||
+   277→   277→    autoGen !== original.autoGen;
+   278→   278→
+   279→   279→  const save = async () => {
+   280→   280→    const gstNum = Number(gstRate);
+   281→   281→    const commNum = Number(commissionRate);
+   282→   282→    if (!Number.isFinite(gstNum) || gstNum < 0 || gstNum > 100) {
+   283→   283→      toast.error("Default GST rate must be a number between 0 and 100");
+   284→   284→      return;
+   285→   285→    }
+   286→   286→    if (!Number.isFinite(commNum) || commNum < 0 || commNum > 100) {
+   287→   287→      toast.error("Default commission rate must be a number between 0 and 100");
+   288→   288→      return;
+   289→   289→    }
+   290→   290→
+   291→   291→    setSaving(true);
+   292→   292→    const changes: { key: string; value: string; notes?: string }[] = [];
+   293→   293→    if (gstRate !== original.gstRate) {
+   294→   294→      changes.push({ key: "default_gst_rate", value: gstRate, notes: "Default GST % applied to bills." });
+   295→   295→    }
+   296→   296→    if (commissionRate !== original.commissionRate) {
+   297→   297→      changes.push({ key: "default_commission_rate", value: commissionRate, notes: "Default broker commission %." });
+   298→   298→    }
+   299→   299→    if (brokerageOnGst !== original.brokerageOnGst) {
+   300→   300→      changes.push({ key: "brokerage_on_gst", value: brokerageOnGst ? "true" : "false", notes: "Brokerage is computed on base amount, excluding GST." });
+   301→   301→    }
+   302→   302→    if (autoGen !== original.autoGen) {
+   303→   303→      changes.push({ key: "auto_generate_notifications", value: autoGen ? "true" : "false", notes: "Auto-generate reminders on dashboard load and on-demand." });
+   304→   304→    }
+   305→   305→
+   306→   306→    if (changes.length === 0) {
+   307→   307→      toast.info("Nothing to save — no changes detected.");
+   308→   308→      setSaving(false);
+   309→   309→      return;
+   310→   310→    }
+   311→   311→
+   312→   312→    try {
+   313→   313→      for (const c of changes) {
+   314→   314→        await api("/api/settings", { method: "POST", body: JSON.stringify(c) });
+   315→   315→      }
+   316→   316→      toast.success(`Saved ${changes.length} setting${changes.length > 1 ? "s" : ""}`);
+   317→   317→      setOriginal({ gstRate, commissionRate, brokerageOnGst, autoGen });
+   318→   318→      refresh();
+   319→   319→    } catch (e) {
+   320→   320→      toast.error(e instanceof Error ? e.message : "Failed to save settings");
+   321→   321→    } finally {
+   322→   322→      setSaving(false);
+   323→   323→    }
+   324→   324→  };
+   325→   325→
+   326→   326→  const runSeed = async () => {
+   327→   327→    setSeeding(true);
+   328→   328→    try {
+   329→   329→      const res = await api<{ ok: boolean; message?: string; error?: string }>("/api/seed", { method: "POST" });
+   330→   330→      if (res.ok) {
+   331→   331→        toast.success("Database re-seeded. Refresh other views to see the fresh dataset.");
+   332→   332→        setSeedOpen(false);
+   333→   333→        refresh();
+   334→   334→      } else {
+   335→   335→        toast.error(res.error ?? "Re-seed failed");
+   336→   336→      }
+   337→   337→    } catch (e) {
+   338→   338→      toast.error(e instanceof Error ? e.message : "Re-seed failed");
+   339→   339→    } finally {
+   340→   340→      setSeeding(false);
+   341→   341→    }
+   342→   342→  };
+   343→   343→
+   344→   344→  // ── Onboarding handlers ───────────────────────────────────────────────────
+   345→   345→  // POST /api/onboarding { action: "reset" } clears the `onboarding_completed`
+   346→   346→  // setting so the wizard shows again on the next page load.
+   347→   347→  const runReplay = async () => {
+   348→   348→    setReplaying(true);
+   349→   349→    try {
+   350→   350→      await api<{ ok: boolean }>("/api/onboarding", {
+   351→   351→        method: "POST",
+   352→   352→        body: JSON.stringify({ action: "reset" }),
+   353→   353→      });
+   354→   354→      toast.success("Onboarding reset — reloading…");
+   355→   355→      setReplayOpen(false);
+   356→   356→      // Hard reload so the wizard overlay re-appears (page.tsx checks
+   357→   357→      // /api/onboarding on mount).
+   358→   358→      setTimeout(() => window.location.reload(), 900);
+   359→   359→    } catch (e) {
+   360→   360→      toast.error(e instanceof Error ? e.message : "Failed to reset onboarding");
+   361→   361→      setReplaying(false);
+   362→   362→    }
+   363→   363→  };
+   364→   364→
+   365→   365→  // POST /api/onboarding { action: "load_demo" } re-runs the seed script AND
+   366→   366→  // marks onboarding complete in one shot. Useful for testing without having
+   367→   367→  // to walk through the wizard.
+   368→   368→  const runLoadDemo = async () => {
+   369→   369→    setLoadingDemo(true);
+   370→   370→    try {
+   371→   371→      const res = await api<{ ok: boolean; error?: string; message?: string }>(
+   372→   372→        "/api/onboarding",
+   373→   373→        { method: "POST", body: JSON.stringify({ action: "load_demo" }) },
+   374→   374→      );
+   375→   375→      if (res.ok) {
+   376→   376→        toast.success(res.message ?? "Demo data loaded — reloading…");
+   377→   377→        setLoadDemoOpen(false);
+   378→   378→        setTimeout(() => window.location.reload(), 1200);
+   379→   379→      } else {
+   380→   380→        toast.error(res.error ?? "Load demo failed");
+   381→   381→        setLoadingDemo(false);
+   382→   382→      }
+   383→   383→    } catch (e) {
+   384→   384→      toast.error(e instanceof Error ? e.message : "Load demo failed");
+   385→   385→      setLoadingDemo(false);
+   386→   386→    }
+   387→   387→  };
+   388→   388→
+   389→   389→  // ── Backup / restore handlers ─────────────────────────────────────────────
+   390→   390→
+   391→   391→  const handleDownload = async () => {
+   392→   392→    setDownloading(true);
+   393→   393→    try {
+   394→   394→      // Use a fetch + blob + anchor click so we know when the download
+   395→   395→      // finishes (so we can refresh `lastBackupAt`) without leaving the page.
+   396→   396→      const res = await fetch("/api/backup", { method: "GET" });
+   397→   397→      if (!res.ok) {
+   398→   398→        const txt = await res.text().catch(() => "");
+   399→   399→        throw new Error(`Backup failed (${res.status}): ${txt}`);
+   400→   400→      }
+   401→   401→      const blob = await res.blob();
+   402→   402→      const url = URL.createObjectURL(blob);
+   403→   403→      const a = document.createElement("a");
+   404→   404→      a.href = url;
+   405→   405→      const stamp = (() => {
+   406→   406→        const d = new Date();
+   407→   407→        const yyyy = d.getFullYear();
+   408→   408→        const mm = String(d.getMonth() + 1).padStart(2, "0");
+   409→   409→        const dd = String(d.getDate()).padStart(2, "0");
+   410→   410→        return `${yyyy}-${mm}-${dd}`;
+   411→   411→      })();
+   412→   412→      a.download = `broker-os-backup-${stamp}.json`;
+   413→   413→      document.body.appendChild(a);
+   414→   414→      a.click();
+   415→   415→      a.remove();
+   416→   416→      URL.revokeObjectURL(url);
+   417→   417→      toast.success("Backup downloaded — full DB snapshot saved.");
+   418→   418→      // Give the audit log a tick to land, then refresh settings so the
+   419→   419→      // "Last backup" timestamp updates.
+   420→   420→      setTimeout(() => void refresh(), 400);
+   421→   421→    } catch (e) {
+   422→   422→      toast.error(e instanceof Error ? e.message : "Backup download failed");
+   423→   423→    } finally {
+   424→   424→      setDownloading(false);
+   425→   425→    }
+   426→   426→  };
+   427→   427→
+   428→   428→  const toggleAutoBackup = async (next: boolean) => {
+   429→   429→    setAutoBackup(next);
+   430→   430→    setAutoBackupSaving(true);
+   431→   431→    try {
+   432→   432→      await api("/api/settings", {
+   433→   433→        method: "POST",
+   434→   434→        body: JSON.stringify({
+   435→   435→          key: "auto_backup_enabled",
+   436→   436→          value: next ? "true" : "false",
+   437→   437→          notes: "When enabled, a backup file will be downloaded automatically once per day when the app is opened.",
+   438→   438→        }),
+   439→   439→      });
+   440→   440→      toast.success(`Auto-backup ${next ? "enabled" : "disabled"}`);
+   441→   441→      refresh();
+   442→   442→    } catch (e) {
+   443→   443→      // Revert on failure
+   444→   444→      setAutoBackup(!next);
+   445→   445→      toast.error(e instanceof Error ? e.message : "Failed to save auto-backup setting");
+   446→   446→    } finally {
+   447→   447→      setAutoBackupSaving(false);
+   448→   448→    }
+   449→   449→  };
+   450→   450→
+   451→   451→  // Daily digest auto-generate toggle — immediately persists.
+   452→   452→  const toggleAutoDigest = async (next: boolean) => {
+   453→   453→    setAutoDigest(next);
+   454→   454→    setAutoDigestSaving(true);
+   455→   455→    try {
+   456→   456→      await api("/api/settings", {
+   457→   457→        method: "POST",
+   458→   458→        body: JSON.stringify({
+   459→   459→          key: "auto_digest_enabled",
+   460→   460→          value: next ? "true" : "false",
+   461→   461→          notes: "When enabled, the AI brief generates automatically when you open the Digest view.",
+   462→   462→        }),
+   463→   463→      });
+   464→   464→      toast.success(`Daily digest auto-generate ${next ? "enabled" : "disabled"}`);
+   465→   465→      refresh();
+   466→   466→    } catch (e) {
+   467→   467→      setAutoDigest(!next);
+   468→   468→      toast.error(e instanceof Error ? e.message : "Failed to save digest setting");
+   469→   469→    } finally {
+   470→   470→      setAutoDigestSaving(false);
+   471→   471→    }
+   472→   472→  };
+   473→   473→
+   474→   474→  // Digest recipient email — save on blur (or Enter) so the broker can type
+   475→   475→  // freely without a "Save changes" round-trip per keystroke.
+   476→   476→  const saveDigestEmail = async () => {
+   477→   477→    const trimmed = digestEmail.trim();
+   478→   478→    // Light validation — empty string is allowed (clears the value).
+   479→   479→    if (trimmed && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+   480→   480→      toast.error("Enter a valid email address (e.g. broker@example.com)");
+   481→   481→      return;
+   482→   482→    }
+   483→   483→    // Skip the round-trip if nothing actually changed vs. the loaded value.
+   484→   484→    if (trimmed === (data?.defaults.digestEmail ?? "")) return;
+   485→   485→    setDigestEmailSaving(true);
+   486→   486→    try {
+   487→   487→      await api("/api/settings", {
+   488→   488→        method: "POST",
+   489→   489→        body: JSON.stringify({
+   490→   490→          key: "digest_email",
+   491→   491→          value: trimmed,
+   492→   492→          notes: "Recipient email for future automated daily digest delivery.",
+   493→   493→        }),
+   494→   494→      });
+   495→   495→      toast.success(trimmed ? "Digest email saved" : "Digest email cleared");
+   496→   496→      refresh();
+   497→   497→    } catch (e) {
+   498→   498→      toast.error(e instanceof Error ? e.message : "Failed to save digest email");
+   499→   499→    } finally {
+   500→   500→      setDigestEmailSaving(false);
+   501→   501→    }
+   502→   502→  };
+   503→   503→
+   504→   504→  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+   505→   505→    const file = e.target.files?.[0];
+   506→   506→    if (!file) return;
+   507→   507→    const text = await file.text();
+   508→   508→    const result = parseBackupFile(text, file.name, file.size);
+   509→   509→    if (!result.ok) {
+   510→   510→      toast.error(result.error);
+   511→   511→      // Reset the input so the same file can be re-selected later.
+   512→   512→      setFileInputKey((k) => k + 1);
+   513→   513→      setParsedBackup(null);
+   514→   514→      return;
+   515→   515→    }
+   516→   516→    setParsedBackup(result.backup);
+   517→   517→    toast.info(`Backup loaded — ${formatBytes(file.size)}, ${BACKUP_TABLE_LABELS.reduce((s, t) => s + ((result.backup.tables[t.key]?.length as number) ?? 0), 0)} rows total. Review and confirm below.`);
+   518→   518→  };
+   519→   519→
+   520→   520→  const openRestoreConfirm = () => {
+   521→   521→    if (!parsedBackup) {
+   522→   522→      toast.error("Select a backup file first.");
+   523→   523→      return;
+   524→   524→    }
+   525→   525→    setRestoreOpen(true);
+   526→   526→  };
+   527→   527→
+   528→   528→  const handleRestore = async () => {
+   529→   529→    if (!parsedBackup) return;
+   530→   530→    setRestoring(true);
+   531→   531→    try {
+   532→   532→      // Send the parsed JSON as the request body (raw JSON).
+   533→   533→      const payload = JSON.stringify({
+   534→   534→        version: parsedBackup.version,
+   535→   535→        exportedAt: parsedBackup.exportedAt,
+   536→   536→        tables: parsedBackup.tables,
+   537→   537→      });
+   538→   538→      const res = await fetch("/api/backup", {
+   539→   539→        method: "POST",
+   540→   540→        headers: { "Content-Type": "application/json" },
+   541→   541→        body: payload,
+   542→   542→      });
+   543→   543→      const data = await res.json().catch(() => ({})) as RestoreResponse;
+   544→   544→      if (!res.ok || !data.success) {
+   545→   545→        throw new Error(data.error ?? `Restore failed (HTTP ${res.status})`);
+   546→   546→      }
+   547→   547→      toast.success("Backup restored — reloading…");
+   548→   548→      setRestoreOpen(false);
+   549→   549→      // Wait 1.5s for the toast to land, then hard reload so all
+   550→   550→      // client-side cached state is reset.
+   551→   551→      setTimeout(() => window.location.reload(), 1500);
+   552→   552→    } catch (e) {
+   553→   553→      toast.error(e instanceof Error ? e.message : "Restore failed");
+   554→   554→      setRestoring(false);
+   555→   555→    }
+   556→   556→  };
+   557→   557→
+   558→   558→  const cancelRestore = () => {
+   559→   559→    if (restoring) return; // no cancel mid-restore
+   560→   560→    setRestoreOpen(false);
+   561→   561→  };
+   562→   562→
+   563→   563→  const clearSelectedBackup = () => {
+   564→   564→    setParsedBackup(null);
+   565→   565→    setFileInputKey((k) => k + 1);
+   566→   566→  };
+   567→   567→
+   568→   568→  const lastBackupAt = data?.defaults.lastBackupAt ?? null;
+   569→   569→
+   570→   570→  return (
+   571→   571→    <div className="space-y-6">
+   572→   572→      <SectionHeader
+   573→   573→        title="Settings"
+   574→   574→        description="System defaults & business rules"
+   575→   575→        action={
+   576→   576→          <Button size="sm" onClick={save} disabled={saving || !dirty}>
+   577→   577→            <Save className="mr-1.5 size-4" />
+   578→   578→            {saving ? "Saving…" : "Save changes"}
+   579→   579→          </Button>
+   580→   580→        }
+   581→   581→      />
+   582→   582→
+   583→   583→      {loading ? (
+   584→   584→        <div className="grid gap-4 lg:grid-cols-2">
+   585→   585→          <Skeleton className="h-72 rounded-2xl" />
+   586→   586→          <Skeleton className="h-72 rounded-2xl" />
+   587→   587→        </div>
+   588→   588→      ) : (
+   589→   589→        <div className="grid gap-6 lg:grid-cols-2">
+   590→   590→          {/* Card 1 — System defaults form */}
+   591→   591→          <GlassCard className="hover-lift p-6">
+   592→   592→            <div className="flex items-center gap-2.5">
+   593→   593→              <div className="grid size-9 place-items-center rounded-xl bg-primary/10 text-primary">
+   594→   594→                <SettingsIcon className="size-4.5" />
+   595→   595→              </div>
+   596→   596→              <div>
+   597→   597→                <h3 className="text-sm font-semibold text-foreground">System defaults</h3>
+   598→   598→                <p className="text-xs text-muted-foreground">Default rates applied when no per-party override exists.</p>
+   599→   599→              </div>
+   600→   600→            </div>
+   601→   601→
+   602→   602→            <div className="mt-5 space-y-5">
+   603→   603→              <div className="space-y-1.5">
+   604→   604→                <Label htmlFor="gst-rate" className="text-xs font-medium text-muted-foreground">
+   605→   605→                  Default GST rate (%)
+   606→   606→                </Label>
+   607→   607→                <Input
+   608→   608→                  id="gst-rate"
+   609→   609→                  type="number"
+   610→   610→                  min={0}
+   611→   611→                  max={100}
+   612→   612→                  step="0.1"
+   613→   613→                  value={gstRate}
+   614→   614→                  onChange={(e) => setGstRate(e.target.value)}
+   615→   615→                />
+   616→   616→                <p className="text-[11px] text-muted-foreground">
+   617→   617→                  Applied to new bills when no client/supplier GST rate is set.
+   618→   618→                </p>
+   619→   619→              </div>
+   620→   620→
+   621→   621→              <div className="space-y-1.5">
+   622→   622→                <Label htmlFor="comm-rate" className="text-xs font-medium text-muted-foreground">
+   623→   623→                  Default commission rate (%)
+   624→   624→                </Label>
+   625→   625→                <Input
+   626→   626→                  id="comm-rate"
+   627→   627→                  type="number"
+   628→   628→                  min={0}
+   629→   629→                  max={100}
+   630→   630→                  step="0.1"
+   631→   631→                  value={commissionRate}
+   632→   632→                  onChange={(e) => setCommissionRate(e.target.value)}
+   633→   633→                />
+   634→   634→                <p className="text-[11px] text-muted-foreground">
+   635→   635→                  Default broker commission % — overridden by per-supplier rates.
+   636→   636→                </p>
+   637→   637→              </div>
+   638→   638→
+   639→   639→              <div className="flex items-start justify-between gap-3 rounded-xl border border-border/50 bg-card/30 p-3">
+   640→   640→                <div className="min-w-0 space-y-1">
+   641→   641→                  <Label htmlFor="brokerage-gst" className="text-xs font-medium text-muted-foreground">
+   642→   642→                    Brokerage on GST
+   643→   643→                  </Label>
+   644→   644→                  <p className="text-[11px] leading-relaxed text-muted-foreground">
+   645→   645→                    Brokerage is always computed on the base amount <span className="font-semibold text-foreground">excluding GST</span>.
+   646→   646→                    Toggle is informational only — the rule is enforced system-wide.
+   647→   647→                  </p>
+   648→   648→                </div>
+   649→   649→                <Switch
+   650→   650→                  id="brokerage-gst"
+   651→   651→                  checked={brokerageOnGst}
+   652→   652→                  onCheckedChange={setBrokerageOnGst}
+   653→   653→                  aria-label="Brokerage on GST"
+   654→   654→                />
+   655→   655→              </div>
+   656→   656→
+   657→   657→              <div className="flex items-start justify-between gap-3 rounded-xl border border-border/50 bg-card/30 p-3">
+   658→   658→                <div className="min-w-0 space-y-1">
+   659→   659→                  <Label htmlFor="auto-gen" className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+   660→   660→                    <BellRing className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+   661→   661→                    Auto-generate reminders
+   662→   662→                  </Label>
+   663→   663→                  <p className="text-[11px] leading-relaxed text-muted-foreground">
+   664→   664→                    When enabled, the dashboard fires a background scan on load that creates pending notifications for overdue visits, upcoming dispatches (≤ 7d), due payments (≤ 14d), and eligible brokerage payouts. The Notifications view always allows manual generation.
+   665→   665→                  </p>
+   666→   666→                </div>
+   667→   667→                <Switch
+   668→   668→                  id="auto-gen"
+   669→   669→                  checked={autoGen}
+   670→   670→                  onCheckedChange={setAutoGen}
+   671→   671→                  aria-label="Auto-generate reminders"
+   672→   672→                />
+   673→   673→              </div>
+   674→   674→
+   675→   675→              {dirty && (
+   676→   676→                <div className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] text-amber-700 dark:text-amber-300">
+   677→   677→                  <AlertCircle className="size-3" />
+   678→   678→                  Unsaved changes — click “Save changes” to persist.
+   679→   679→                </div>
+   680→   680→              )}
+   681→   681→            </div>
+   682→   682→          </GlassCard>
+   683→   683→
+   684→   684→          {/* Card 2 — Business rules reference */}
+   685→   685→          <GlassCard className="hover-lift p-6">
+   686→   686→            <div className="flex items-center gap-2.5">
+   687→   687→              <div className="grid size-9 place-items-center rounded-xl bg-primary/10 text-primary">
+   688→   688→                <ShieldCheck className="size-4.5" />
+   689→   689→              </div>
+   690→   690→              <div>
+   691→   691→                <h3 className="text-sm font-semibold text-foreground">Business rules reference</h3>
+   692→   692→                <p className="text-xs text-muted-foreground">Core financial rules enforced across the system (§7).</p>
+   693→   693→              </div>
+   694→   694→            </div>
+   695→   695→
+   696→   696→            <ul className="mt-5 space-y-3">
+   697→   697→              {BUSINESS_RULES.map((rule) => (
+   698→   698→                <RuleRow key={rule.title} {...rule} />
+   699→   699→              ))}
+   700→   700→            </ul>
+   701→   701→          </GlassCard>
+   702→   702→        </div>
+   703→   703→      )}
+   704→   704→
+   705→   705→      {/* Card 3 — Data management */}
+   706→   706→      <GlassCard className="hover-lift p-6">
+   707→   707→        <div className="flex items-center gap-2.5">
+   708→   708→          <div className="grid size-9 place-items-center rounded-xl bg-primary/10 text-primary">
+   709→   709→            <Database className="size-4.5" />
+   710→   710→          </div>
+   711→   711→          <div>
+   712→   712→            <h3 className="text-sm font-semibold text-foreground">Data management</h3>
+   713→   713→            <p className="text-xs text-muted-foreground">Export data as CSV or reset the demo dataset.</p>
+   714→   714→          </div>
+   715→   715→        </div>
+   716→   716→
+   717→   717→        {/* Photo storage mini-stat — full-res originals + 400px JPEG thumbnails under public/uploads */}
+   718→   718→        <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+   719→   719→          <div className="glass flex items-center gap-3 rounded-xl border border-border/50 p-3">
+   720→   720→            <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+   721→   721→              <ImageIcon className="size-4" />
+   722→   722→            </div>
+   723→   723→            <div className="min-w-0">
+   724→   724→              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Photos</p>
+   725→   725→              <p className="kpi-num text-base font-semibold text-foreground">
+   726→   726→                {photoStats ? photoStats.count : "—"}
+   727→   727→                <span className="ml-1 text-[11px] font-normal text-muted-foreground">
+   728→   728→                  {photoStats && photoStats.count === 1 ? "record" : "records"}
+   729→   729→                </span>
+   730→   730→              </p>
+   731→   731→            </div>
+   732→   732→          </div>
+   733→   733→          <div className="glass flex items-center gap-3 rounded-xl border border-border/50 p-3">
+   734→   734→            <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+   735→   735→              <HardDrive className="size-4" />
+   736→   736→            </div>
+   737→   737→            <div className="min-w-0">
+   738→   738→              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Storage used</p>
+   739→   739→              <p className="kpi-num text-base font-semibold text-foreground">
+   740→   740→                {photoStats ? `${photoStats.totalSizeMB} MB` : "—"}
+   741→   741→                <span className="ml-1 text-[11px] font-normal text-muted-foreground">
+   742→   742→                  {photoStats ? `(${photoStats.totalSizeBytes.toLocaleString()} bytes)` : "in /uploads"}
+   743→   743→                </span>
+   744→   744→              </p>
+   745→   745→            </div>
+   746→   746→          </div>
+   747→   747→        </div>
+   748→   748→        <p className="mt-2 text-[11px] text-muted-foreground">
+   749→   749→          Originals are stored full-resolution in <code className="rounded bg-card/60 px-1 py-0.5 text-[10px]">public/uploads/</code>;
+   750→   750→          a 400&nbsp;px JPEG thumbnail (q80) is generated on upload for fast gallery loading.
+   751→   751→        </p>
+   752→   752→
+   753→   753→        <div className="mt-5">
+   754→   754→          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Export data (CSV)</p>
+   755→   755→          <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+   756→   756→            {EXPORT_LINKS.map((link) => (
+   757→   757→              <a
+   758→   758→                key={link.type}
+   759→   759→                href={`/api/export?type=${link.type}`}
+   760→   760→                target="_blank"
+   761→   761→                rel="noopener noreferrer"
+   762→   762→                className="glass hover-lift inline-flex items-center gap-2 rounded-xl border border-border/50 px-3 py-2 text-xs font-medium text-foreground transition-colors hover:text-primary"
+   763→   763→              >
+   764→   764→                {link.icon}
+   765→   765→                <span className="truncate">{link.label}</span>
+   766→   766→                <Download className="ml-auto size-3 text-muted-foreground" />
+   767→   767→              </a>
+   768→   768→            ))}
+   769→   769→          </div>
+   770→   770→        </div>
+   771→   771→
+   772→   772→        <div className="mt-5">
+   773→   773→          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Print-ready PDF reports</p>
+   774→   774→          <p className="mt-1 text-[11px] text-muted-foreground">
+   775→   775→            Opens a print-optimized page in a new tab — the browser's print dialog auto-launches, where you can choose “Save as PDF” as the destination.
+   776→   776→          </p>
+   777→   777→          <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
+   778→   778→            {PDF_REPORTS.map((r) => {
+   779→   779→              const isLink = r.href.length > 0;
+   780→   780→              const cls = "glass hover-lift inline-flex items-start gap-2 rounded-xl border border-border/50 px-3 py-2 text-xs font-medium text-foreground transition-colors hover:text-primary";
+   781→   781→              const inner = (
+   782→   782→                <>
+   783→   783→                  <span className="mt-0.5 text-emerald-600 dark:text-emerald-400">{r.icon}</span>
+   784→   784→                  <span className="min-w-0 flex-1">
+   785→   785→                    <span className="block truncate font-semibold">{r.label}</span>
+   786→   786→                    <span className="block text-[10px] font-normal leading-snug text-muted-foreground">{r.hint}</span>
+   787→   787→                  </span>
+   788→   788→                  <Printer className="ml-auto size-3 shrink-0 text-muted-foreground" />
+   789→   789→                </>
+   790→   790→              );
+   791→   791→              return isLink ? (
+   792→   792→                <a key={r.label} href={r.href} target="_blank" rel="noopener noreferrer" className={cls}>
+   793→   793→                  {inner}
+   794→   794→                </a>
+   795→   795→              ) : (
+   796→   796→                <span key={r.label} className={`${cls} cursor-default opacity-80`}>
+   797→   797→                  {inner}
+   798→   798→                </span>
+   799→   799→              );
+   800→   800→            })}
+   801→   801→          </div>
+   802→   802→        </div>
+   803→   803→
+   804→   804→        <div className="mt-5 flex flex-col gap-3 border-t border-border/50 pt-4 sm:flex-row sm:items-center sm:justify-between">
+   805→   805→          <div className="min-w-0">
+   806→   806→            <p className="text-sm font-medium text-foreground">Re-seed database</p>
+   807→   807→            <p className="text-[11px] text-muted-foreground">
+   808→   808→              Wipes <span className="font-semibold">all</span> current data and writes a fresh demo dataset. Use only in development.
+   809→   809→            </p>
+   810→   810→          </div>
+   811→   811→          <Button
+   812→   812→            variant="outline"
+   813→   813→            className="border-rose-500/30 text-rose-600 hover:text-rose-500 dark:text-rose-400"
+   814→   814→            onClick={() => setSeedOpen(true)}
+   815→   815→          >
+   816→   816→            <RotateCcw className="mr-1.5 size-4" />Re-seed
+   817→   817→          </Button>
+   818→   818→        </div>
+   819→   819→      </GlassCard>
+   820→   820→
+   821→   821→      {/* Card 4 — Backup & Restore (export = emerald/safe, import = rose/danger) */}
+   822→   822→      <GlassCard className="hover-lift p-6">
+   823→   823→        <div className="flex items-center gap-2.5">
+   824→   824→          <div className="grid size-9 place-items-center rounded-xl bg-primary/10 text-primary">
+   825→   825→            <Shield className="size-4.5" />
+   826→   826→          </div>
+   827→   827→          <div>
+   828→   828→            <h3 className="text-sm font-semibold text-foreground">Backup &amp; Restore</h3>
+   829→   829→            <p className="text-xs text-muted-foreground">Export the entire database as JSON, or restore from a backup file.</p>
+   830→   830→          </div>
+   831→   831→        </div>
+   832→   832→
+   833→   833→        <div className="mt-5 grid gap-4 lg:grid-cols-2">
+   834→   834→          {/* ── Export (glass + emerald accent — safe) ── */}
+   835→   835→          <div className="glass rounded-xl border border-emerald-500/30 p-4">
+   836→   836→            <div className="flex items-center gap-2">
+   837→   837→              <div className="grid size-7 place-items-center rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+   838→   838→                <Download className="size-4" />
+   839→   839→              </div>
+   840→   840→              <p className="text-sm font-medium text-foreground">Export database</p>
+   841→   841→            </div>
+   842→   842→            <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+   843→   843→              Downloads every table — clients, suppliers, visits, bookings, POs, dispatches, bills, payments, brokerage, payouts, disputes, photos, notifications, audit logs &amp; settings — as a single JSON file.
+   844→   844→            </p>
+   845→   845→
+   846→   846→            <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
+   847→   847→              <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+   848→   848→                <Clock className="mr-1 size-3" />
+   849→   849→                Last backup: {loading ? "…" : formatRelative(lastBackupAt)}
+   850→   850→              </Badge>
+   851→   851→              <Badge variant="outline" className="border-border/60 bg-card/40 text-muted-foreground">
+   852→   852→                <HardDrive className="mr-1 size-3" />
+   853→   853→                JSON snapshot (full DB)
+   854→   854→              </Badge>
+   855→   855→            </div>
+   856→   856→
+   857→   857→            <Button
+   858→   858→              className="mt-4 w-full bg-emerald-600 text-white hover:bg-emerald-700"
+   859→   859→              onClick={handleDownload}
+   860→   860→              disabled={downloading}
+   861→   861→            >
+   862→   862→              {downloading ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <Download className="mr-1.5 size-4" />}
+   863→   863→              {downloading ? "Preparing…" : "Download backup"}
+   864→   864→            </Button>
+   865→   865→
+   866→   866→            {/* Auto-backup toggle — immediately persists (no "Save changes" needed). */}
+   867→   867→            <div className="mt-4 flex items-start justify-between gap-3 rounded-lg border border-border/40 bg-card/30 p-3">
+   868→   868→              <div className="min-w-0 space-y-1">
+   869→   869→                <Label htmlFor="auto-backup" className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+   870→   870→                  <Shield className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+   871→   871→                  Auto-backup (daily)
+   872→   872→                </Label>
+   873→   873→                <p className="text-[11px] leading-relaxed text-muted-foreground">
+   874→   874→                  A backup file will be downloaded automatically once per day when you open the app. (Daily trigger is a future enhancement — for now, toggle the preference and use “Download backup” above.)
+   875→   875→                </p>
+   876→   876→              </div>
+   877→   877→              <Switch
+   878→   878→                id="auto-backup"
+   879→   879→                checked={autoBackup}
+   880→   880→                onCheckedChange={toggleAutoBackup}
+   881→   881→                disabled={autoBackupSaving}
+   882→   882→                aria-label="Auto-backup daily"
+   883→   883→              />
+   884→   884→            </div>
+   885→   885→          </div>
+   886→   886→
+   887→   887→          {/* ── Import (rose-tinted danger zone — destructive) ── */}
+   888→   888→          <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 p-4">
+   889→   889→            <div className="flex items-center gap-2">
+   890→   890→              <div className="grid size-7 place-items-center rounded-lg bg-rose-500/15 text-rose-600 dark:text-rose-400">
+   891→   891→                <AlertTriangle className="size-4" />
+   892→   892→              </div>
+   893→   893→              <p className="text-sm font-medium text-foreground">Restore from backup</p>
+   894→   894→            </div>
+   895→   895→
+   896→   896→            <div className="mt-2 flex items-start gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-700 dark:text-rose-300">
+   897→   897→              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+   898→   898→              <span>
+   899→   899→                <span className="font-semibold">WARNING:</span> This will replace ALL current data with the backup. This cannot be undone.
+   900→   900→              </span>
+   901→   901→            </div>
+   902→   902→
+   903→   903→            <Label htmlFor="backup-file" className="mt-3 block text-xs font-medium text-muted-foreground">
+   904→   904→              Backup file (.json)
+   905→   905→            </Label>
+   906→   906→            <Input
+   907→   907→              key={fileInputKey}
+   908→   908→              id="backup-file"
+   909→   909→              type="file"
+   910→   910→              accept=".json,application/json"
+   911→   911→              onChange={handleFileSelect}
+   912→   912→              className="mt-1 cursor-pointer text-xs file:mr-3 file:rounded-md file:border-0 file:bg-rose-500/15 file:px-3 file:py-1.5 file:text-rose-700 hover:file:bg-rose-500/25 dark:file:text-rose-300"
+   913→   913→            />
+   914→   914→
+   915→   915→            {parsedBackup && (
+   916→   916→              <div className="mt-3 rounded-lg border border-border/60 bg-card/40 p-3">
+   917→   917→                <div className="flex items-center justify-between gap-2">
+   918→   918→                  <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Backup metadata</p>
+   919→   919→                  <button
+   920→   920→                    type="button"
+   921→   921→                    onClick={clearSelectedBackup}
+   922→   922→                    className="text-[10px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+   923→   923→                  >
+   924→   924→                    Clear
+   925→   925→                  </button>
+   926→   926→                </div>
+   927→   927→                <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px]">
+   928→   928→                  <dt className="text-muted-foreground">Version</dt>
+   929→   929→                  <dd className="font-medium text-foreground">{parsedBackup.version}</dd>
+   930→   930→                  <dt className="text-muted-foreground">Exported at</dt>
+   931→   931→                  <dd className="font-medium text-foreground">{formatDateTime(parsedBackup.exportedAt)}</dd>
+   932→   932→                  <dt className="text-muted-foreground">File size</dt>
+   933→   933→                  <dd className="font-medium text-foreground">{formatBytes(parsedBackup.bytes)}</dd>
+   934→   934→                </dl>
+   935→   935→                <p className="mt-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Row counts</p>
+   936→   936→                <div className="mt-1.5 max-h-32 overflow-y-auto pr-1">
+   937→   937→                  <div className="flex flex-wrap gap-1.5">
+   938→   938→                    {BACKUP_TABLE_LABELS.map((t) => {
+   939→   939→                      const n = (parsedBackup.tables[t.key]?.length as number) ?? 0;
+   940→   940→                      if (n === 0) return null;
+   941→   941→                      return (
+   942→   942→                        <Badge key={t.key} variant="outline" className="border-border/60 bg-card/40 text-[10px] font-normal text-foreground">
+   943→   943→                          {t.label}: <span className="ml-0.5 font-semibold">{n}</span>
+   944→   944→                        </Badge>
+   945→   945→                      );
+   946→   946→                    })}
+   947→   947→                  </div>
+   948→   948→                </div>
+   949→   949→              </div>
+   950→   950→            )}
+   951→   951→
+   952→   952→            <Button
+   953→   953→              variant="outline"
+   954→   954→              className="mt-4 w-full border-rose-500/40 text-rose-600 hover:bg-rose-500/10 hover:text-rose-700 dark:text-rose-400 dark:hover:text-rose-300"
+   955→   955→              onClick={openRestoreConfirm}
+   956→   956→              disabled={!parsedBackup || restoring}
+   957→   957→            >
+   958→   958→              {restoring ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <Upload className="mr-1.5 size-4" />}
+   959→   959→              {restoring ? "Restoring…" : "Restore from backup"}
+   960→   960→            </Button>
+   961→   961→          </div>
+   962→   962→        </div>
+   963→   963→      </GlassCard>
+   964→   964→
+   965→   965→      {/* Card 5 — Daily Digest */}
+   966→   966→      <GlassCard className="hover-lift p-6">
+   967→   967→        <div className="flex items-center gap-2.5">
+   968→   968→          <div className="grid size-9 place-items-center rounded-xl bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+   969→   969→            <Coffee className="size-4.5" />
+   970→   970→          </div>
+   971→   971→          <div>
+   972→   972→            <h3 className="text-sm font-semibold text-foreground">Daily Digest</h3>
+   973→   973→            <p className="text-xs text-muted-foreground">AI-powered morning brief & email-ready summary of today&apos;s priorities.</p>
+   974→   974→          </div>
+   975→   975→        </div>
+   976→   976→
+   977→   977→        <div className="mt-5 grid gap-4 lg:grid-cols-2">
+   978→   978→          {/* Auto-generate toggle */}
+   979→   979→          <div className="glass flex flex-col gap-3 rounded-xl border border-border/50 p-4">
+   980→   980→            <div className="flex items-start justify-between gap-3">
+   981→   981→              <div className="min-w-0 space-y-1">
+   982→   982→                <Label htmlFor="auto-digest" className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+   983→   983→                  <Coffee className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+   984→   984→                  Auto-generate daily digest
+   985→   985→                </Label>
+   986→   986→                <p className="text-[11px] leading-relaxed text-muted-foreground">
+   987→   987→                  When enabled, the AI brief generates automatically when you open the Digest view. Disable if you prefer to generate on-demand.
+   988→   988→                </p>
+   989→   989→              </div>
+   990→   990→              <Switch
+   991→   991→                id="auto-digest"
+   992→   992→                checked={autoDigest}
+   993→   993→                onCheckedChange={toggleAutoDigest}
+   994→   994→                disabled={autoDigestSaving}
+   995→   995→                aria-label="Auto-generate daily digest"
+   996→   996→              />
+   997→   997→            </div>
+   998→   998→            <Button
+   999→   999→              variant="outline"
+  1000→  1000→              className="w-full border-emerald-500/30 text-emerald-700 hover:bg-emerald-500/10 hover:text-emerald-700 dark:text-emerald-300 dark:hover:bg-emerald-500/10 dark:hover:text-emerald-200"
+  1001→  1001→              onClick={() => setView("digest")}
+  1002→  1002→            >
+  1003→  1003→              <Mail className="mr-1.5 size-4" />
+  1004→  1004→              Generate now
+  1005→  1005→              <ArrowRight className="ml-1.5 size-3.5" />
+  1006→  1006→            </Button>
+  1007→  1007→          </div>
+  1008→  1008→
+  1009→  1009→          {/* Recipient email */}
+  1010→  1010→          <div className="glass flex flex-col gap-3 rounded-xl border border-border/50 p-4">
+  1011→  1011→            <div className="space-y-1">
+  1012→  1012→              <Label htmlFor="digest-email" className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+  1013→  1013→                <Mail className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+  1014→  1014→                Send digest to
+  1015→  1015→              </Label>
+  1016→  1016→              <p className="text-[11px] leading-relaxed text-muted-foreground">
+  1017→  1017→                Email address to receive the daily digest automatically (future enhancement).
+  1018→  1018→              </p>
+  1019→  1019→            </div>
+  1020→  1020→            <div className="flex gap-2">
+  1021→  1021→              <Input
+  1022→  1022→                id="digest-email"
+  1023→  1023→                type="email"
+  1024→  1024→                placeholder="broker@example.com"
+  1025→  1025→                value={digestEmail}
+  1026→  1026→                onChange={(e) => setDigestEmail(e.target.value)}
+  1027→  1027→                onBlur={saveDigestEmail}
+  1028→  1028→                onKeyDown={(e) => {
+  1029→  1029→                  if (e.key === "Enter") {
+  1030→  1030→                    e.preventDefault();
+  1031→  1031→                    (e.target as HTMLInputElement).blur();
+  1032→  1032→                  }
+  1033→  1033→                }}
+  1034→  1034→                disabled={digestEmailSaving}
+  1035→  1035→                className="text-sm"
+  1036→  1036→              />
+  1037→  1037→              <Button
+  1038→  1038→                size="sm"
+  1039→  1039→                variant="outline"
+  1040→  1040→                onClick={saveDigestEmail}
+  1041→  1041→                disabled={digestEmailSaving}
+  1042→  1042→                className="shrink-0"
+  1043→  1043→              >
+  1044→  1044→                {digestEmailSaving ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}
+  1045→  1045→                <span className="sr-only">Save email</span>
+  1046→  1046→              </Button>
+  1047→  1047→            </div>
+  1048→  1048→            <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300">
+  1049→  1049→              <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+  1050→  1050→              <span>
+  1051→  1051→                Email sending coming soon — for now, use the <span className="font-semibold">Copy</span> buttons in the Digest view.
+  1052→  1052→              </span>
+  1053→  1053→            </div>
+  1054→  1054→          </div>
+  1055→  1055→        </div>
+  1056→  1056→      </GlassCard>
+  1057→  1057→
+  1058→  1058→      {/* Card 6 — Onboarding & help */}
+  1059→  1059→      <GlassCard className="hover-lift p-6">
+  1060→  1060→        <div className="flex items-center gap-2.5">
+  1061→  1061→          <div className="grid size-9 place-items-center rounded-xl bg-primary/10 text-primary">
+  1062→  1062→            <Sparkles className="size-4.5" />
+  1063→  1063→          </div>
+  1064→  1064→          <div>
+  1065→  1065→            <h3 className="text-sm font-semibold text-foreground">Onboarding &amp; help</h3>
+  1066→  1066→            <p className="text-xs text-muted-foreground">Replay the first-run wizard or load demo data for testing.</p>
+  1067→  1067→          </div>
+  1068→  1068→        </div>
+  1069→  1069→
+  1070→  1070→        <div className="mt-5 grid gap-3 sm:grid-cols-2">
+  1071→  1071→          {/* Replay onboarding */}
+  1072→  1072→          <div className="glass flex flex-col gap-3 rounded-xl border border-border/50 p-4">
+  1073→  1073→            <div className="flex items-start gap-2.5">
+  1074→  1074→              <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+  1075→  1075→                <RotateCcw className="size-4" />
+  1076→  1076→              </div>
+  1077→  1077→              <div className="min-w-0">
+  1078→  1078→                <p className="text-sm font-medium text-foreground">Replay onboarding</p>
+  1079→  1079→                <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+  1080→  1080→                  Re-opens the welcome wizard so you can walk through the guided setup again.
+  1081→  1081→                  No data is touched — only the onboarding flag is reset.
+  1082→  1082→                </p>
+  1083→  1083→              </div>
+  1084→  1084→            </div>
+  1085→  1085→            <Button
+  1086→  1086→              variant="outline"
+  1087→  1087→              className="border-emerald-500/30 text-emerald-700 hover:text-emerald-600 dark:text-emerald-300 dark:hover:text-emerald-200"
+  1088→  1088→              onClick={() => setReplayOpen(true)}
+  1089→  1089→            >
+  1090→  1090→              <Sparkles className="mr-1.5 size-4" />
+  1091→  1091→              Replay onboarding
+  1092→  1092→            </Button>
+  1093→  1093→          </div>
+  1094→  1094→
+  1095→  1095→          {/* Load demo data */}
+  1096→  1096→          <div className="glass flex flex-col gap-3 rounded-xl border border-border/50 p-4">
+  1097→  1097→            <div className="flex items-start gap-2.5">
+  1098→  1098→              <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-amber-500/15 text-amber-600 dark:text-amber-400">
+  1099→  1099→                <Database className="size-4" />
+  1100→  1100→              </div>
+  1101→  1101→              <div className="min-w-0">
+  1102→  1102→                <p className="text-sm font-medium text-foreground">Load demo data</p>
+  1103→  1103→                <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+  1104→  1104→                  Wipes all current data and writes a fresh demo dataset, then marks onboarding
+  1105→  1105→                  complete. Handy for testing without walking through the wizard.
+  1106→  1106→                </p>
+  1107→  1107→              </div>
+  1108→  1108→            </div>
+  1109→  1109→            <Button
+  1110→  1110→              variant="outline"
+  1111→  1111→              className="border-rose-500/30 text-rose-600 hover:text-rose-500 dark:text-rose-400"
+  1112→  1112→              onClick={() => setLoadDemoOpen(true)}
+  1113→  1113→            >
+  1114→  1114→              <Database className="mr-1.5 size-4" />
+  1115→  1115→              Load demo data
+  1116→  1116→            </Button>
+  1117→  1117→          </div>
+  1118→  1118→        </div>
+  1119→  1119→
+  1120→  1120→        {/* Inline quick-tips reference */}
+  1121→  1121→        <div className="mt-5 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
+  1122→  1122→          <div className="flex items-center gap-2">
+  1123→  1123→            <Lightbulb className="size-4 text-emerald-600 dark:text-emerald-400" />
+  1124→  1124→            <p className="text-xs font-semibold text-foreground">Quick tips</p>
+  1125→  1125→          </div>
+  1126→  1126→          <ul className="mt-2.5 grid gap-2 sm:grid-cols-2">
+  1127→  1127→            <li className="text-[11px] text-muted-foreground">
+  1128→  1128→              <span className="font-medium text-foreground">⌘K</span> — open the command palette to find any client, PO, or bill.
+  1129→  1129→            </li>
+  1130→  1130→            <li className="text-[11px] text-muted-foreground">
+  1131→  1131→              <span className="font-medium text-foreground">Click any KPI card</span> — drill into the filtered list.
+  1132→  1132→            </li>
+  1133→  1133→            <li className="text-[11px] text-muted-foreground">
+  1134→  1134→              <span className="font-medium text-foreground">Action Center</span> — see what needs your attention today.
+  1135→  1135→            </li>
+  1136→  1136→            <li className="text-[11px] text-muted-foreground">
+  1137→  1137→              <span className="font-medium text-foreground">Upload photos</span> at every stage for a complete audit trail.
+  1138→  1138→            </li>
+  1139→  1139→          </ul>
+  1140→  1140→        </div>
+  1141→  1141→      </GlassCard>
+  1142→  1142→
+  1143→  1143→      {/* Restore confirmation — explicit AlertDialog to prevent accidental data loss */}
+  1144→  1144→      <AlertDialog
+  1145→  1145→        open={restoreOpen}
+  1146→  1146→        onOpenChange={(o) => { if (!o && !restoring) setRestoreOpen(false); }}
+  1147→  1147→      >
+  1148→  1148→        <AlertDialogContent className="glass-strong max-w-md">
+  1149→  1149→          <AlertDialogHeader>
+  1150→  1150→            <AlertDialogTitle>Restore from this backup?</AlertDialogTitle>
+  1151→  1151→            <AlertDialogDescription>
+  1152→  1152→              This will permanently replace ALL current data with the contents of the selected backup file. The action cannot be undone.
+  1153→  1153→            </AlertDialogDescription>
+  1154→  1154→          </AlertDialogHeader>
+  1155→  1155→          {parsedBackup && (
+  1156→  1156→            <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2.5 text-[11px] text-rose-700 dark:text-rose-300">
+  1157→  1157→              <div className="flex items-center gap-1.5 font-semibold">
+  1158→  1158→                <AlertTriangle className="size-3.5" />
+  1159→  1159→                Restore preview
+  1160→  1160→              </div>
+  1161→  1161→              <dl className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-1">
+  1162→  1162→                <dt className="opacity-80">Exported at</dt>
+  1163→  1163→                <dd className="font-medium">{formatDateTime(parsedBackup.exportedAt)}</dd>
+  1164→  1164→                <dt className="opacity-80">File size</dt>
+  1165→  1165→                <dd className="font-medium">{formatBytes(parsedBackup.bytes)}</dd>
+  1166→  1166→                <dt className="opacity-80">Total rows</dt>
+  1167→  1167→                <dd className="font-medium">
+  1168→  1168→                  {BACKUP_TABLE_LABELS.reduce(
+  1169→  1169→                    (s, t) => s + ((parsedBackup.tables[t.key]?.length as number) ?? 0),
+  1170→  1170→                    0,
+  1171→  1171→                  )}
+  1172→  1172→                </dd>
+  1173→  1173→              </dl>
+  1174→  1174→            </div>
+  1175→  1175→          )}
+  1176→  1176→          <AlertDialogFooter>
+  1177→  1177→            <AlertDialogCancel disabled={restoring}>Cancel</AlertDialogCancel>
+  1178→  1178→            <AlertDialogAction
+  1179→  1179→              className="bg-rose-600 text-white hover:bg-rose-700"
+  1180→  1180→              onClick={(e) => { e.preventDefault(); void handleRestore(); }}
+  1181→  1181→              disabled={restoring}
+  1182→  1182→            >
+  1183→  1183→              {restoring ? "Restoring…" : "Restore — replace all data"}
+  1184→  1184→            </AlertDialogAction>
+  1185→  1185→          </AlertDialogFooter>
+  1186→  1186→        </AlertDialogContent>
+  1187→  1187→      </AlertDialog>
+  1188→  1188→
+  1189→  1189→      {/* Re-seed confirm */}
+  1190→  1190→      <AlertDialog open={seedOpen} onOpenChange={setSeedOpen}>
+  1191→  1191→        <AlertDialogContent className="glass-strong max-w-md">
+  1192→  1192→          <AlertDialogHeader>
+  1193→  1193→            <AlertDialogTitle>Re-seed database?</AlertDialogTitle>
+  1194→  1194→            <AlertDialogDescription>
+  1195→  1195→              This will erase all current data (clients, suppliers, POs, bills, payments, brokerage, disputes, audit logs) and replace it with a fresh demo dataset. The action is irreversible.
+  1196→  1196→            </AlertDialogDescription>
+  1197→  1197→          </AlertDialogHeader>
+  1198→  1198→          <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2.5 text-[11px] text-rose-700 dark:text-rose-300">
+  1199→  1199→            <AlertCircle className="mr-1 inline size-3.5" />
+  1200→  1200→            Make sure no one else is actively working in the system — running this mid-session will invalidate their data.
+  1201→  1201→          </div>
+  1202→  1202→          <AlertDialogFooter>
+  1203→  1203→            <AlertDialogCancel disabled={seeding}>Cancel</AlertDialogCancel>
+  1204→  1204→            <AlertDialogAction
+  1205→  1205→              className="bg-rose-600 text-white hover:bg-rose-700"
+  1206→  1206→              onClick={(e) => { e.preventDefault(); void runSeed(); }}
+  1207→  1207→              disabled={seeding}
+  1208→  1208→            >
+  1209→  1209→              {seeding ? "Seeding…" : "Yes, re-seed everything"}
+  1210→  1210→            </AlertDialogAction>
+  1211→  1211→          </AlertDialogFooter>
+  1212→  1212→        </AlertDialogContent>
+  1213→  1213→      </AlertDialog>
+  1214→  1214→
+  1215→  1215→      {/* Replay onboarding confirm — low-risk (only clears a setting), but
+  1216→  1216→          we confirm because the page will hard-reload. */}
+  1217→  1217→      <AlertDialog open={replayOpen} onOpenChange={(o) => { if (!o && !replaying) setReplayOpen(false); }}>
+  1218→  1218→        <AlertDialogContent className="glass-strong max-w-md">
+  1219→  1219→          <AlertDialogHeader>
+  1220→  1220→            <AlertDialogTitle>Replay the onboarding wizard?</AlertDialogTitle>
+  1221→  1221→            <AlertDialogDescription>
+  1222→  1222→              This will reset the onboarding flag and reload the page so the welcome wizard
+  1223→  1223→              appears again. None of your clients, suppliers, or other data will be affected.
+  1224→  1224→            </AlertDialogDescription>
+  1225→  1225→          </AlertDialogHeader>
+  1226→  1226→          <AlertDialogFooter>
+  1227→  1227→            <AlertDialogCancel disabled={replaying}>Cancel</AlertDialogCancel>
+  1228→  1228→            <AlertDialogAction
+  1229→  1229→              className="bg-emerald-600 text-white hover:bg-emerald-700"
+  1230→  1230→              onClick={(e) => { e.preventDefault(); void runReplay(); }}
+  1231→  1231→              disabled={replaying}
+  1232→  1232→            >
+  1233→  1233→              {replaying ? "Resetting…" : "Replay onboarding"}
+  1234→  1234→            </AlertDialogAction>
+  1235→  1235→          </AlertDialogFooter>
+  1236→  1236→        </AlertDialogContent>
+  1237→  1237→      </AlertDialog>
+  1238→  1238→
+  1239→  1239→      {/* Load demo data confirm — destructive (wipes all data) */}
+  1240→  1240→      <AlertDialog open={loadDemoOpen} onOpenChange={(o) => { if (!o && !loadingDemo) setLoadDemoOpen(false); }}>
+  1241→  1241→        <AlertDialogContent className="glass-strong max-w-md">
+  1242→  1242→          <AlertDialogHeader>
+  1243→  1243→            <AlertDialogTitle>Load demo data?</AlertDialogTitle>
+  1244→  1244→            <AlertDialogDescription>
+  1245→  1245→              This will erase <span className="font-semibold">all</span> current data and write a
+  1246→  1246→              fresh demo dataset (same as re-seeding), then mark onboarding complete. The action is
+  1247→  1247→              irreversible.
+  1248→  1248→            </AlertDialogDescription>
+  1249→  1249→          </AlertDialogHeader>
+  1250→  1250→          <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2.5 text-[11px] text-rose-700 dark:text-rose-300">
+  1251→  1251→            <AlertCircle className="mr-1 inline size-3.5" />
+  1252→  1252→            Useful for testing the wizard end-to-end without walking through it manually.
+  1253→  1253→          </div>
+  1254→  1254→          <AlertDialogFooter>
+  1255→  1255→            <AlertDialogCancel disabled={loadingDemo}>Cancel</AlertDialogCancel>
+  1256→  1256→            <AlertDialogAction
+  1257→  1257→              className="bg-rose-600 text-white hover:bg-rose-700"
+  1258→  1258→              onClick={(e) => { e.preventDefault(); void runLoadDemo(); }}
+  1259→  1259→              disabled={loadingDemo}
+  1260→  1260→            >
+  1261→  1261→              {loadingDemo ? "Loading…" : "Yes, load demo data"}
+  1262→  1262→            </AlertDialogAction>
+  1263→  1263→          </AlertDialogFooter>
+  1264→  1264→        </AlertDialogContent>
+  1265→  1265→      </AlertDialog>
+  1266→  1266→    </div>
+  1267→  1267→  );
+  1268→  1268→}
+  1269→  1269→
+  1270→  1270→function RuleRow({
+  1271→  1271→  icon,
+  1272→  1272→  title,
+  1273→  1273→  body,
+  1274→  1274→  tone,
+  1275→  1275→}: {
+  1276→  1276→  icon: React.ReactNode;
+  1277→  1277→  title: string;
+  1278→  1278→  body: string;
+  1279→  1279→  tone: "emerald" | "amber" | "teal" | "rose";
+  1280→  1280→}) {
+  1281→  1281→  const toneWrap: Record<string, string> = {
+  1282→  1282→    emerald: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30",
+  1283→  1283→    amber: "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30",
+  1284→  1284→    teal: "bg-teal-500/15 text-teal-600 dark:text-teal-400 border-teal-500/30",
+  1285→  1285→    rose: "bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/30",
+  1286→  1286→  };
+  1287→  1287→  return (
+  1288→  1288→    <li className="flex items-start gap-3 rounded-xl border border-border/40 bg-card/30 p-3">
+  1289→  1289→      <div className={`grid size-8 shrink-0 place-items-center rounded-lg border ${toneWrap[tone]}`}>
+  1290→  1290→        {icon}
+  1291→  1291→      </div>
+  1292→  1292→      <div className="min-w-0">
+  1293→  1293→        <p className="text-sm font-medium text-foreground">{title}</p>
+  1294→  1294→        <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">{body}</p>
+  1295→  1295→      </div>
+  1296→  1296→    </li>
+  1297→  1297→  );
+  1298→  1298→}
+  1299→  1299→

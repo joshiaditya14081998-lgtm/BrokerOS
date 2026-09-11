@@ -1,0 +1,924 @@
+     1→import { NextRequest, NextResponse } from "next/server";
+     2→import { db } from "@/lib/db";
+     3→import { isValidEntityType, type TagEntityType } from "@/lib/tags";
+     4→
+     5→// ─────────────────────────────────────────────────────────────────────────────
+     6→// GET /api/analytics — combined analytics view: supplier reliability,
+     7→// client credit exposure, brokerage forecast, business volume trends,
+     8→// and a deep forecasting section (6-mo brokerage with confidence interval,
+     9→// 12-mo seasonal trend analysis, client order velocity, supplier capacity).
+    10→//
+    11→// Optional query params:
+    12→//   ?tagId=X                  — filter all sections to entities tagged with X.
+    13→//   &entityType=Client|Supplier|PurchaseOrder
+    14→//                             — only filter that entity type; the other two
+    15→//                               remain unfiltered. If omitted, the tag filter
+    16→//                               applies to all three entity types.
+    17→//
+    18→// When a tag filter is active, the response includes `appliedFilter`
+    19→// ({ tagId, tagName, tagColor, entityType }) plus a `tagInsights` block with
+    20→// side-by-side "tagged vs all" comparisons the broker can use to size up the
+    21→// tagged segment's share of overall business.
+    22→//
+    23→// All values are computed on-read from existing tables (no denormalisation).
+    24→// ─────────────────────────────────────────────────────────────────────────────
+    25→
+    26→function tierFor(score: number): "excellent" | "good" | "average" | "needs attention" {
+    27→  if (score >= 85) return "excellent";
+    28→  if (score >= 70) return "good";
+    29→  if (score >= 55) return "average";
+    30→  return "needs attention";
+    31→}
+    32→
+    33→// Parse line items JSON safely into a typed shape.
+    34→type LineItem = { styleName: string; color?: string | null; setQty: number; unitPrice: number; lineTotal?: number };
+    35→function parseLineItems(raw: string | null | undefined): LineItem[] {
+    36→  if (!raw) return [];
+    37→  try {
+    38→    const v = JSON.parse(raw);
+    39→    return Array.isArray(v) ? (v as LineItem[]) : [];
+    40→  } catch {
+    41→    return [];
+    42→  }
+    43→}
+    44→
+    45→// Build N monthly buckets ending at the current month, oldest first.
+    46→function monthlyBuckets(count: number, now: Date): { label: string; start: Date; end: Date; monthIndex: number }[] {
+    47→  const out: { label: string; start: Date; end: Date; monthIndex: number }[] = [];
+    48→  for (let i = count - 1; i >= 0; i--) {
+    49→    const start = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    50→    const end = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
+    51→    out.push({
+    52→      label: start.toLocaleDateString("en-IN", { month: "short" }) + (count >= 12 ? ` ${String(start.getFullYear()).slice(-2)}` : ""),
+    53→      start,
+    54→      end,
+    55→      monthIndex: start.getMonth(),
+    56→    });
+    57→  }
+    58→  return out;
+    59→}
+    60→
+    61→// ─────────────────────────────────────────────────────────────────────────────
+    62→// Indian garment-industry season mapping (month 0..11 → season key + label).
+    63→// festive  → Oct–Nov (Dussehra / Diwali peak)
+    64→// wedding  → Dec–Jan (wedding season)
+    65→// summer   → Apr–May (summer stock transition)
+    66→// winter   → Aug–Sep (winter stock prep)
+    67→// normal   → everything else
+    68→// ─────────────────────────────────────────────────────────────────────────────
+    69→type SeasonKey = "festive" | "wedding" | "summer" | "winter" | "normal";
+    70→function seasonForMonth(monthIndex: number): { key: SeasonKey; label: string } {
+    71→  switch (monthIndex) {
+    72→    case 11: return { key: "wedding", label: "Wedding season start" };
+    73→    case 0:  return { key: "wedding", label: "Wedding season peak" };
+    74→    case 2:  return { key: "festive", label: "Holi festive" };
+    75→    case 3:  return { key: "summer",  label: "Summer stock transition" };
+    76→    case 4:  return { key: "summer",  label: "Summer stock peak" };
+    77→    case 7:  return { key: "winter",  label: "Winter stock prep" };
+    78→    case 8:  return { key: "winter",  label: "Winter stock loading" };
+    79→    case 9:  return { key: "festive", label: "Festive season (Dussehra)" };
+    80→    case 10: return { key: "festive", label: "Festive season peak (Diwali)" };
+    81→    default: return { key: "normal",  label: "Regular season" };
+    82→  }
+    83→}
+    84→
+    85→// ─────────────────────────────────────────────────────────────────────────────
+    86→// Tag filter resolution — given a tagId and an optional entityType scope,
+    87→// returns the matching set of entity IDs for each filtered entity type.
+    88→// When `entityType` is null, the filter applies to all three entity types.
+    89→// ─────────────────────────────────────────────────────────────────────────────
+    90→type TagFilter = {
+    91→  tagId: string;
+    92→  tagName: string;
+    93→  tagColor: string;
+    94→  // null = "all entity types"; otherwise a single type.
+    95→  entityType: TagEntityType | null;
+    96→  taggedClientIds: Set<string>;
+    97→  taggedSupplierIds: Set<string>;
+    98→  taggedPoIds: Set<string>;
+    99→};
+   100→
+   101→async function resolveTagFilter(tagId: string, entityType: TagEntityType | null): Promise<TagFilter | null> {
+   102→  const tag = await db.tag.findUnique({
+   103→    where: { id: tagId },
+   104→    select: { id: true, name: true, color: true },
+   105→  });
+   106→  if (!tag) return null;
+   107→
+   108→  const filterTypes: TagEntityType[] = entityType ? [entityType] : ["Client", "Supplier", "PurchaseOrder"];
+   109→  const where = { tagId, entityType: { in: filterTypes } };
+   110→  const rows = await db.entityTag.findMany({
+   111→    where,
+   112→    select: { entityType: true, entityId: true },
+   113→  });
+   114→  return {
+   115→    tagId: tag.id,
+   116→    tagName: tag.name,
+   117→    tagColor: tag.color,
+   118→    entityType,
+   119→    taggedClientIds: new Set(rows.filter((r) => r.entityType === "Client").map((r) => r.entityId)),
+   120→    taggedSupplierIds: new Set(rows.filter((r) => r.entityType === "Supplier").map((r) => r.entityId)),
+   121→    taggedPoIds: new Set(rows.filter((r) => r.entityType === "PurchaseOrder").map((r) => r.entityId)),
+   122→  };
+   123→}
+   124→
+   125→export async function GET(req: NextRequest) {
+   126→  const now = new Date();
+   127→  const url = req.nextUrl;
+   128→  const tagIdParam = url.searchParams.get("tagId");
+   129→  const entityTypeParam = url.searchParams.get("entityType");
+   130→  const entityType = entityTypeParam && isValidEntityType(entityTypeParam) ? entityTypeParam : null;
+   131→
+   132→  let tagFilter: TagFilter | null = null;
+   133→  if (tagIdParam) {
+   134→    tagFilter = await resolveTagFilter(tagIdParam, entityType);
+   135→    // If the tagId doesn't resolve to a real tag, we treat the request as
+   136→    // unfiltered rather than 404 — analytics should never hard-fail because
+   137→    // a stale URL/bookmark pointed at a deleted tag.
+   138→  }
+   139→
+   140→  // ── Pull all data we need in parallel ──────────────────────────────────────
+   141→  const [
+   142→    suppliers,
+   143→    clients,
+   144→    dispatches,
+   145→    pos,
+   146→    bills,
+   147→    payments,
+   148→    disputes,
+   149→    brokerages,
+   150→  ] = await Promise.all([
+   151→    db.supplier.findMany({ select: { id: true, name: true } }),
+   152→    db.client.findMany({ select: { id: true, name: true, payoutCadence: true } }),
+   153→    db.dispatch.findMany({
+   154→      select: {
+   155→        id: true, supplierId: true, poId: true, dispatchDate: true, dispatchedQty: true,
+   156→        status: true, po: { select: { totalValue: true, lineItemsJson: true, expectedDispatchDate: true, revisedDispatchDate: true, createdAt: true } },
+   157→      },
+   158→    }),
+   159→    db.purchaseOrder.findMany({
+   160→      select: { id: true, supplierId: true, clientId: true, lineItemsJson: true, totalValue: true, createdAt: true, status: true },
+   161→    }),
+   162→    db.bill.findMany({
+   163→      select: { id: true, clientId: true, supplierId: true, poId: true, finalAmount: true, paidAmount: true, status: true, createdAt: true },
+   164→    }),
+   165→    db.payment.findMany({ select: { id: true, billId: true, date: true, createdAt: true } }),
+   166→    db.dispute.findMany({ select: { id: true, poId: true, type: true, createdAt: true } }),
+   167→    db.brokerage.findMany({
+   168→      select: {
+   169→        id: true, clientId: true, supplierId: true, billId: true, brokerageAmount: true,
+   170→        eligible: true, payoutStatus: true, eligibleAt: true, createdAt: true,
+   171→        bill: { select: { status: true, finalAmount: true, paidAmount: true } },
+   172→      },
+   173→    }),
+   174→  ]);
+   175→
+   176→  // Quick lookup maps (pre-filter).
+   177→  const poById = new Map(pos.map((p) => [p.id, p]));
+   178→  const allClientIds = new Set(clients.map((c) => c.id));
+   179→  const allSupplierIds = new Set(suppliers.map((s) => s.id));
+   180→  const allPoIds = new Set(pos.map((p) => p.id));
+   181→
+   182→  // ── Apply tag filter to the main collections ──────────────────────────────
+   183→  // The filter strategy mirrors the task spec:
+   184→  //   • Clients → only tagged clients (when Client filter active).
+   185→  //   • Suppliers → only tagged suppliers (when Supplier filter active).
+   186→  //   • POs → tagged POs OR POs whose client/supplier is tagged
+   187→  //           (when PO filter active, OR when client/supplier filter is active
+   188→  //            and broker wants PO-level visibility into that segment).
+   189→  // When entityType is null, all three filters apply simultaneously; when
+   190→  // entityType is set, only that filter applies and the other collections stay
+   191→  // unfiltered.
+   192→  let fSuppliers = suppliers;
+   193→  let fClients = clients;
+   194→  let fPos = pos;
+   195→  let fDispatches = dispatches;
+   196→  let fBills = bills;
+   197→  let fPayments = payments;
+   198→  let fDisputes = disputes;
+   199→  let fBrokerages = brokerages;
+   200→
+   201→  if (tagFilter) {
+   202→    const { taggedClientIds, taggedSupplierIds, taggedPoIds } = tagFilter;
+   203→
+   204→    if (tagFilter.entityType === null || tagFilter.entityType === "Supplier") {
+   205→      fSuppliers = suppliers.filter((s) => taggedSupplierIds.has(s.id));
+   206→    }
+   207→    if (tagFilter.entityType === null || tagFilter.entityType === "Client") {
+   208→      fClients = clients.filter((c) => taggedClientIds.has(c.id));
+   209→    }
+   210→
+   211→    // PO filtering — tag + cascade. A PO survives if:
+   212→    //   - the PO itself is tagged (when PO filter active), OR
+   213→    //   - its client is tagged (when Client filter active), OR
+   214→    //   - its supplier is tagged (when Supplier filter active).
+   215→    if (tagFilter.entityType === null) {
+   216→      fPos = pos.filter((p) =>
+   217→        taggedPoIds.has(p.id) || taggedClientIds.has(p.clientId) || taggedSupplierIds.has(p.supplierId),
+   218→      );
+   219→    } else if (tagFilter.entityType === "PurchaseOrder") {
+   220→      fPos = pos.filter((p) => taggedPoIds.has(p.id));
+   221→    } else if (tagFilter.entityType === "Client") {
+   222→      fPos = pos.filter((p) => taggedClientIds.has(p.clientId));
+   223→    } else if (tagFilter.entityType === "Supplier") {
+   224→      fPos = pos.filter((p) => taggedSupplierIds.has(p.supplierId));
+   225→    }
+   226→
+   227→    // Cascade: keep only dispatches/bills/payments/disputes/brokerages that
+   228→    // reference a surviving PO, client, or supplier.
+   229→    const survivingPoIds = new Set(fPos.map((p) => p.id));
+   230→    const survivingClientIds = new Set(fClients.map((c) => c.id));
+   231→    const survivingSupplierIds = new Set(fSuppliers.map((s) => s.id));
+   232→
+   233→    fDispatches = dispatches.filter((d) => survivingPoIds.has(d.poId));
+   234→    fDisputes = disputes.filter((d) => survivingPoIds.has(d.poId));
+   235→
+   236→    // Bills carry their own clientId/supplierId/poId — keep any that match a
+   237→    // surviving entity (PO, client, or supplier depending on the active filter).
+   238→    fBills = bills.filter((b) => {
+   239→      if (survivingPoIds.has(b.poId)) return true;
+   240→      if (tagFilter!.entityType === null || tagFilter!.entityType === "Client") {
+   241→        if (survivingClientIds.has(b.clientId)) return true;
+   242→      }
+   243→      if (tagFilter!.entityType === null || tagFilter!.entityType === "Supplier") {
+   244→        if (survivingSupplierIds.has(b.supplierId)) return true;
+   245→      }
+   246→      return false;
+   247→    });
+   248→
+   249→    const survivingBillIds = new Set(fBills.map((b) => b.id));
+   250→    fPayments = payments.filter((p) => survivingBillIds.has(p.billId));
+   251→
+   252→    // Brokerages have their own clientId/supplierId/billId linkage.
+   253→    fBrokerages = brokerages.filter((b) => {
+   254→      if (survivingBillIds.has(b.billId)) return true;
+   255→      if (tagFilter!.entityType === null || tagFilter!.entityType === "Client") {
+   256→        if (survivingClientIds.has(b.clientId)) return true;
+   257→      }
+   258→      if (tagFilter!.entityType === null || tagFilter!.entityType === "Supplier") {
+   259→        if (survivingSupplierIds.has(b.supplierId)) return true;
+   260→      }
+   261→      return false;
+   262→    });
+   263→  }
+   264→
+   265→  // Quick lookup maps (post-filter)
+   266→  const billsByClient = new Map<string, typeof fBills>();
+   267→  for (const b of fBills) {
+   268→    const arr = billsByClient.get(b.clientId) ?? [];
+   269→    arr.push(b);
+   270→    billsByClient.set(b.clientId, arr);
+   271→  }
+   272→  const disputesByPo = new Map<string, typeof fDisputes>();
+   273→  for (const d of fDisputes) {
+   274→    const arr = disputesByPo.get(d.poId) ?? [];
+   275→    arr.push(d);
+   276→    disputesByPo.set(d.poId, arr);
+   277→  }
+   278→  const posBySupplier = new Map<string, typeof fPos>();
+   279→  for (const p of fPos) {
+   280→    const arr = posBySupplier.get(p.supplierId) ?? [];
+   281→    arr.push(p);
+   282→    posBySupplier.set(p.supplierId, arr);
+   283→  }
+   284→  const dispatchesBySupplier = new Map<string, typeof fDispatches>();
+   285→  for (const d of fDispatches) {
+   286→    const arr = dispatchesBySupplier.get(d.supplierId) ?? [];
+   287→    arr.push(d);
+   288→    dispatchesBySupplier.set(d.supplierId, arr);
+   289→  }
+   290→
+   291→  // ═══════════════════════════════════════════════════════════════════════════
+   292→  // (a) Supplier reliability scores
+   293→  // ═══════════════════════════════════════════════════════════════════════════
+   294→  const supplierScores = fSuppliers.map((s) => {
+   295→    const sDispatches = dispatchesBySupplier.get(s.id) ?? [];
+   296→    const sPos = posBySupplier.get(s.id) ?? [];
+   297→
+   298→    // Fulfillment rate: avg dispatchedQty/orderedQty across dispatches.
+   299→    // No dispatches → treat as 100 (nothing to fulfil, no failures yet).
+   300→    let fulfillment = 100;
+   301→    let totalSupplied = 0;
+   302→    if (sDispatches.length > 0) {
+   303→      let sumRatio = 0;
+   304→      for (const d of sDispatches) {
+   305→        const ordered = parseLineItems(d.po.lineItemsJson).reduce((a, i) => a + (i.setQty || 0), 0);
+   306→        const ratio = ordered > 0 ? Math.min(1, (d.dispatchedQty || 0) / ordered) : 0;
+   307→        sumRatio += ratio;
+   308→        // Approximate supplied value: dispatched qty share × PO total
+   309→        const poValue = d.po.totalValue || 0;
+   310→        const lineShare = ordered > 0 ? (d.dispatchedQty || 0) / ordered : 0;
+   311→        totalSupplied += poValue * lineShare;
+   312→      }
+   313→      fulfillment = Math.round((sumRatio / sDispatches.length) * 100);
+   314→    }
+   315→
+   316→    // On-time dispatch: % of dispatches where dispatchDate <= expectedDispatchDate
+   317→    // (use revisedDispatchDate if present). No dispatches/dates → 100.
+   318→    let onTimeRate = 100;
+   319→    if (sDispatches.length > 0) {
+   320→      const withDates = sDispatches.filter((d) => d.po.expectedDispatchDate || d.po.revisedDispatchDate);
+   321→      if (withDates.length > 0) {
+   322→        const onTime = withDates.filter((d) => {
+   323→          const expected = d.po.revisedDispatchDate ?? d.po.expectedDispatchDate;
+   324→          return expected && new Date(d.dispatchDate) <= new Date(expected);
+   325→        }).length;
+   326→        onTimeRate = Math.round((onTime / withDates.length) * 100);
+   327→      }
+   328→    }
+   329→
+   330→    // Short-shipment rate: % of dispatches marked short_shipment
+   331→    const shortShipmentRate = sDispatches.length > 0
+   332→      ? Math.round((sDispatches.filter((d) => d.status === "short_shipment").length / sDispatches.length) * 100)
+   333→      : 0;
+   334→
+   335→    // Dispute rate: disputes linked to their POs / total POs × 100
+   336→    let disputeRate = 0;
+   337→    if (sPos.length > 0) {
+   338→      const dispCount = sPos.reduce((acc, p) => acc + (disputesByPo.get(p.id)?.length ?? 0), 0);
+   339→      disputeRate = Math.round((dispCount / sPos.length) * 100);
+   340→    }
+   341→
+   342→    // Composite score (0–100)
+   343→    //   fulfillment (40) + onTime (30) + (100 - shortShip) (20) + (100 - dispute) (10)
+   344→    const score = Math.round(
+   345→      (fulfillment * 0.4) + (onTimeRate * 0.3) + ((100 - shortShipmentRate) * 0.2) + ((100 - disputeRate) * 0.1),
+   346→    );
+   347→
+   348→    return {
+   349→      supplierId: s.id,
+   350→      name: s.name,
+   351→      score: Math.max(0, Math.min(100, score)),
+   352→      fulfillment,
+   353→      onTimeRate,
+   354→      shortShipmentRate,
+   355→      disputeRate,
+   356→      dispatchCount: sDispatches.length,
+   357→      totalSupplied: Math.round(totalSupplied),
+   358→      tier: tierFor(score),
+   359→    };
+   360→  });
+   361→  supplierScores.sort((a, b) => b.score - a.score);
+   362→
+   363→  // ═══════════════════════════════════════════════════════════════════════════
+   364→  // (b) Client credit exposure
+   365→  // ═══════════════════════════════════════════════════════════════════════════
+   366→  const exposureBuckets = monthlyBuckets(6, now);
+   367→  // Group payments by bill for delay computation
+   368→  const paymentsByBill = new Map<string, typeof fPayments>();
+   369→  for (const p of fPayments) {
+   370→    const arr = paymentsByBill.get(p.billId) ?? [];
+   371→    arr.push(p);
+   372→    paymentsByBill.set(p.billId, arr);
+   373→  }
+   374→
+   375→  const clientExposure = fClients.map((c) => {
+   376→    const cBills = billsByClient.get(c.id) ?? [];
+   377→    const outstanding = cBills.reduce((s, b) => s + (b.finalAmount - b.paidAmount), 0);
+   378→
+   379→    // Exposure trend: outstanding snapshot at end of each of last 6 months.
+   380→    // Approximation: include only bills created before month end; use current
+   381→    // paidAmount as the running-paid value (no payment history snapshot).
+   382→    const exposureTrend = exposureBuckets.map((m) => {
+   383→      const val = cBills
+   384→        .filter((b) => new Date(b.createdAt) <= m.end)
+   385→        .reduce((s, b) => s + (b.finalAmount - b.paidAmount), 0);
+   386→      return { month: m.label, value: Math.round(val) };
+   387→    });
+   388→
+   389→    // Avg payment delay (days) for fully-paid bills: createdAt → last payment date
+   390→    let avgPaymentDelay = 0;
+   391→    const paidBills = cBills.filter((b) => b.status === "fully_paid");
+   392→    if (paidBills.length > 0) {
+   393→      let totalDelay = 0;
+   394→      let counted = 0;
+   395→      for (const b of paidBills) {
+   396→        const bPays = paymentsByBill.get(b.id) ?? [];
+   397→        if (bPays.length === 0) continue;
+   398→        const lastPay = bPays.reduce((latest, p) => (new Date(p.date) > latest ? new Date(p.date) : latest), new Date(0));
+   399→        const diff = Math.round((lastPay.getTime() - new Date(b.createdAt).getTime()) / (1000 * 60 * 60 * 24));
+   400→        if (diff >= 0) {
+   401→          totalDelay += diff;
+   402→          counted += 1;
+   403→        }
+   404→      }
+   405→      avgPaymentDelay = counted > 0 ? Math.round(totalDelay / counted) : 0;
+   406→    }
+   407→
+   408→    // Return rate: defective_return disputes / total bills × 100
+   409→    // Disputes are linked via PO; need POs that belong to this client.
+   410→    const clientPoIds = new Set(fPos.filter((p) => p.clientId === c.id).map((p) => p.id));
+   411→    const defectiveReturns = fDisputes.filter((d) => d.type === "defective_return" && clientPoIds.has(d.poId)).length;
+   412→    const returnRate = cBills.length > 0 ? Math.round((defectiveReturns / cBills.length) * 100) : 0;
+   413→
+   414→    return {
+   415→      clientId: c.id,
+   416→      name: c.name,
+   417→      outstanding: Math.round(outstanding),
+   418→      exposureTrend,
+   419→      avgPaymentDelay,
+   420→      returnRate,
+   421→      billCount: cBills.length,
+   422→    };
+   423→  });
+   424→  clientExposure.sort((a, b) => b.outstanding - a.outstanding);
+   425→
+   426→  // ═══════════════════════════════════════════════════════════════════════════
+   427→  // (c) Brokerage forecast
+   428→  // ═══════════════════════════════════════════════════════════════════════════
+   429→  const pendingTotal = fBrokerages
+   430→    .filter((b) => !b.eligible)
+   431→    .reduce((s, b) => s + b.brokerageAmount, 0);
+   432→
+   433→  const eligibleUnpaid = fBrokerages.filter((b) => b.eligible && b.payoutStatus !== "paid");
+   434→  const eligibleUnpaidTotal = eligibleUnpaid.reduce((s, b) => s + b.brokerageAmount, 0);
+   435→
+   436→  // Breakdown by client cadence
+   437→  const clientCadence = new Map(fClients.map((c) => [c.id, c.payoutCadence]));
+   438→  const byCadence = { immediate: 0, "4_month": 0, "12_month": 0 };
+   439→  for (const b of eligibleUnpaid) {
+   440→    const cad = clientCadence.get(b.clientId) ?? "immediate";
+   441→    if (cad === "immediate") byCadence.immediate += b.brokerageAmount;
+   442→    else if (cad === "4_month_cumulative") byCadence["4_month"] += b.brokerageAmount;
+   443→    else if (cad === "12_month_cumulative") byCadence["12_month"] += b.brokerageAmount;
+   444→  }
+   445→
+   446→  // Projected next 3 months payout:
+   447→  //   immediate → entire amount in current month
+   448→  //   4_month  → 1/4 per month for next 4 months (so months 1,2,3 get 1/4 each)
+   449→  //   12_month → 1/12 per month for next 12 months (so months 1,2,3 get 1/12 each)
+   450→  const projectedByMonth: { month: string; amount: number }[] = [];
+   451→  for (let i = 0; i < 3; i++) {
+   452→    const mStart = new Date(now.getFullYear(), now.getMonth() + i, 1);
+   453→    const label = mStart.toLocaleDateString("en-IN", { month: "short" }) + ` ${String(mStart.getFullYear()).slice(-2)}`;
+   454→    const immediateShare = byCadence.immediate * (i === 0 ? 1 : 0);
+   455→    const fourShare = byCadence["4_month"] / 4;
+   456→    const twelveShare = byCadence["12_month"] / 12;
+   457→    projectedByMonth.push({
+   458→      month: label,
+   459→      amount: Math.round(immediateShare + fourShare + twelveShare),
+   460→    });
+   461→  }
+   462→
+   463→  const brokerageForecast = {
+   464→    pendingTotal: Math.round(pendingTotal),
+   465→    eligibleUnpaidTotal: Math.round(eligibleUnpaidTotal),
+   466→    projectedByMonth,
+   467→    byCadence: {
+   468→      immediate: Math.round(byCadence.immediate),
+   469→      "4_month": Math.round(byCadence["4_month"]),
+   470→      "12_month": Math.round(byCadence["12_month"]),
+   471→    },
+   472→  };
+   473→
+   474→  // ═══════════════════════════════════════════════════════════════════════════
+   475→  // (d) Business volume trends
+   476→  // ═══════════════════════════════════════════════════════════════════════════
+   477→  const volBuckets = monthlyBuckets(12, now);
+   478→  const monthlyBilled = volBuckets.map((m) => ({
+   479→    month: m.label,
+   480→    value: Math.round(
+   481→      fBills
+   482→        .filter((b) => new Date(b.createdAt) >= m.start && new Date(b.createdAt) < m.end)
+   483→        .reduce((s, b) => s + b.finalAmount, 0),
+   484→    ),
+   485→  }));
+   486→
+   487→  // Dispatched value per month: approximate each dispatch's value as
+   488→  // (dispatchedQty / orderedQty) × po.totalValue, bucketed by dispatchDate.
+   489→  const monthlyDispatched = volBuckets.map((m) => {
+   490→    let val = 0;
+   491→    for (const d of fDispatches) {
+   492→      const dd = new Date(d.dispatchDate);
+   493→      if (dd < m.start || dd >= m.end) continue;
+   494→      const ordered = parseLineItems(d.po.lineItemsJson).reduce((a, i) => a + (i.setQty || 0), 0);
+   495→      const share = ordered > 0 ? Math.min(1, (d.dispatchedQty || 0) / ordered) : 0;
+   496→      val += (d.po.totalValue || 0) * share;
+   497→    }
+   498→    return { month: m.label, value: Math.round(val) };
+   499→  });
+   500→
+   501→  // Top 5 client/supplier pairs by total business value (bill finalAmount)
+   502→  const pairMap = new Map<string, { clientName: string; supplierName: string; value: number }>();
+   503→  const clientName = new Map(fClients.map((c) => [c.id, c.name]));
+   504→  const supplierName = new Map(fSuppliers.map((s) => [s.id, s.name]));
+   505→  // Fall back to ALL clients/suppliers for naming — when a tag filter excludes
+   506→  // the client/supplier themselves, the pair may still reference them via a
+   507→  // surviving bill (because bill.supplierId matched the tagged PO segment).
+   508→  const clientNameAll = new Map(clients.map((c) => [c.id, c.name]));
+   509→  const supplierNameAll = new Map(suppliers.map((s) => [s.id, s.name]));
+   510→  for (const b of fBills) {
+   511→    const key = `${b.clientId}|${b.supplierId}`;
+   512→    const existing = pairMap.get(key) ?? {
+   513→      clientName: clientName.get(b.clientId) ?? clientNameAll.get(b.clientId) ?? "—",
+   514→      supplierName: supplierName.get(b.supplierId) ?? supplierNameAll.get(b.supplierId) ?? "—",
+   515→      value: 0,
+   516→    };
+   517→    existing.value += b.finalAmount;
+   518→    pairMap.set(key, existing);
+   519→  }
+   520→  const topPairs = Array.from(pairMap.values())
+   521→    .map((p) => ({ ...p, value: Math.round(p.value) }))
+   522→    .sort((a, b) => b.value - a.value)
+   523→    .slice(0, 5);
+   524→
+   525→  const volumeTrends = { monthlyBilled, monthlyDispatched, topPairs };
+   526→
+   527→  // ═══════════════════════════════════════════════════════════════════════════
+   528→  // (e) Deep forecasting — 6-mo brokerage w/ confidence interval,
+   529→  //     12-mo seasonal trend analysis, client order velocity,
+   530→  //     supplier capacity utilisation.
+   531→  // ═══════════════════════════════════════════════════════════════════════════
+   532→
+   533→  // ── (e.1) Historical eligible-brokerage monthly series (last 6 months) ──────
+   534→  const histBuckets = monthlyBuckets(6, now);
+   535→  const histMonthly = histBuckets.map((m) => {
+   536→    const val = fBrokerages
+   537→      .filter((b) => {
+   538→        if (!b.eligible) return false;
+   539→        const ts = b.eligibleAt ? new Date(b.eligibleAt) : new Date(b.createdAt);
+   540→        return ts >= m.start && ts < m.end;
+   541→      })
+   542→      .reduce((s, b) => s + b.brokerageAmount, 0);
+   543→    return { label: m.label, value: Math.round(val) };
+   544→  });
+   545→  const histValues = histMonthly.map((m) => m.value);
+   546→  const histMax = histValues.length > 0 ? Math.max(...histValues) : 0;
+   547→  const histMin = histValues.length > 0 ? Math.min(...histValues) : 0;
+   548→  const histAvg = histValues.length > 0 ? histValues.reduce((a, b) => a + b, 0) / histValues.length : 0;
+   549→
+   550→  // ── (e.2) 6-month brokerage forecast with confidence interval ──────────────
+   551→  const pendingShare = brokerageForecast.pendingTotal / 6;
+   552→  const cadenceImmediate = byCadence.immediate;
+   553→  const cadence4Share = byCadence["4_month"] / 4;
+   554→  const cadence12Share = byCadence["12_month"] / 12;
+   555→  const brokerage6Month: { month: string; projected: number; upper: number; lower: number }[] = [];
+   556→  for (let i = 0; i < 6; i++) {
+   557→    const mStart = new Date(now.getFullYear(), now.getMonth() + i, 1);
+   558→    const label = mStart.toLocaleDateString("en-IN", { month: "short" }) + ` ${String(mStart.getFullYear()).slice(-2)}`;
+   559→    const cadenceShare = (i === 0 ? cadenceImmediate : 0) + (i < 4 ? cadence4Share : 0) + cadence12Share;
+   560→    const projected = Math.round(pendingShare + cadenceShare + histAvg);
+   561→    const upper = Math.max(projected, Math.round(histMax * 1.2));
+   562→    const lower = Math.min(projected, Math.round(histMin * 0.8));
+   563→    brokerage6Month.push({ month: label, projected, upper, lower });
+   564→  }
+   565→
+   566→  // ── (e.3) 12-month seasonal trend analysis ─────────────────────────────────
+   567→  const seasonalTrends = volBuckets.map((m, i) => {
+   568→    const value = monthlyBilled[i]?.value ?? 0;
+   569→    const prev = i > 0 ? (monthlyBilled[i - 1]?.value ?? 0) : 0;
+   570→    const growthRate = prev > 0 ? Math.round(((value - prev) / prev) * 100) : (value > 0 ? 100 : 0);
+   571→    const season = seasonForMonth(m.monthIndex);
+   572→    return {
+   573→      month: m.label,
+   574→      value,
+   575→      growthRate,
+   576→      seasonLabel: season.label,
+   577→      seasonKey: season.key,
+   578→      isPeak: false,
+   579→      isLow: false,
+   580→    };
+   581→  });
+   582→  // Mark top-2 peaks (by value)
+   583→  const peakIndices = [...seasonalTrends.map((s, i) => ({ s, i }))]
+   584→    .sort((a, b) => b.s.value - a.s.value)
+   585→    .slice(0, 2)
+   586→    .filter((x) => x.s.value > 0)
+   587→    .map((x) => x.i);
+   588→  // Mark bottom-2 lows (only among non-zero months)
+   589→  const nonZero = seasonalTrends.map((s, i) => ({ s, i })).filter((x) => x.s.value > 0);
+   590→  const lowIndices = nonZero
+   591→    .sort((a, b) => a.s.value - b.s.value)
+   592→    .slice(0, 2)
+   593→    .map((x) => x.i);
+   594→  for (const i of peakIndices) seasonalTrends[i].isPeak = true;
+   595→  for (const i of lowIndices) seasonalTrends[i].isLow = true;
+   596→
+   597→  // ── (e.4) Client business velocity ─────────────────────────────────────────
+   598→  const posByClient = new Map<string, typeof fPos>();
+   599→  for (const p of fPos) {
+   600→    const arr = posByClient.get(p.clientId) ?? [];
+   601→    arr.push(p);
+   602→    posByClient.set(p.clientId, arr);
+   603→  }
+   604→  const clientVelocity = fClients
+   605→    .map((c) => {
+   606→      const cPos = (posByClient.get(c.id) ?? [])
+   607→        .map((p) => new Date(p.createdAt).getTime())
+   608→        .sort((a, b) => a - b);
+   609→      if (cPos.length === 0) {
+   610→        return {
+   611→          clientId: c.id,
+   612→          name: c.name,
+   613→          lastOrderDate: null as string | null,
+   614→          avgDaysBetweenOrders: 0,
+   615→          predictedNextOrderDate: null as string | null,
+   616→          orderCount: 0,
+   617→        };
+   618→      }
+   619→      const lastTs = cPos[cPos.length - 1];
+   620→      const lastOrderDate = new Date(lastTs).toISOString();
+   621→      let avgDays = 0;
+   622→      if (cPos.length >= 2) {
+   623→        let totalGap = 0;
+   624→        for (let i = 1; i < cPos.length; i++) totalGap += (cPos[i] - cPos[i - 1]) / (1000 * 60 * 60 * 24);
+   625→        avgDays = Math.round(totalGap / (cPos.length - 1));
+   626→      }
+   627→      const predictedTs = avgDays > 0 ? lastTs + avgDays * 24 * 60 * 60 * 1000 : null;
+   628→      return {
+   629→        clientId: c.id,
+   630→        name: c.name,
+   631→        lastOrderDate,
+   632→        avgDaysBetweenOrders: avgDays,
+   633→        predictedNextOrderDate: predictedTs ? new Date(predictedTs).toISOString() : null,
+   634→        orderCount: cPos.length,
+   635→      };
+   636→    })
+   637→    .filter((c) => c.orderCount > 0)
+   638→    .sort((a, b) => {
+   639→      // Sort by predicted-next-order-date proximity (closest first), nulls last.
+   640→      const aTs = a.predictedNextOrderDate ? new Date(a.predictedNextOrderDate).getTime() : Infinity;
+   641→      const bTs = b.predictedNextOrderDate ? new Date(b.predictedNextOrderDate).getTime() : Infinity;
+   642→      return aTs - bTs;
+   643→    })
+   644→    .slice(0, 5);
+   645→
+   646→  // ── (e.5) Supplier capacity utilisation ────────────────────────────────────
+   647→  const supplierCapacity = fSuppliers.map((s) => {
+   648→    const sDispatches = dispatchesBySupplier.get(s.id) ?? [];
+   649→    const sPos = posBySupplier.get(s.id) ?? [];
+   650→
+   651→    // Avg dispatch lead time (only counts dispatches with a valid po.createdAt)
+   652→    let avgLeadTimeDays = 0;
+   653→    const leadTimes: number[] = [];
+   654→    for (const d of sDispatches) {
+   655→      const poCreated = d.po.createdAt ? new Date(d.po.createdAt).getTime() : 0;
+   656→      if (!poCreated) continue;
+   657→      const diff = Math.round((new Date(d.dispatchDate).getTime() - poCreated) / (1000 * 60 * 60 * 24));
+   658→      if (diff >= 0) leadTimes.push(diff);
+   659→    }
+   660→    if (leadTimes.length > 0) {
+   661→      avgLeadTimeDays = Math.round(leadTimes.reduce((a, b) => a + b, 0) / leadTimes.length);
+   662→    }
+   663→
+   664→    // Pending POs = currently open or partially-delivered
+   665→    const pendingPOs = sPos.filter((p) => p.status === "open" || p.status === "partially_delivered").length;
+   666→
+   667→    // Historical monthly avg PO count over the last 12 months
+   668→    const twelveMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+   669→    const recentPOs = sPos.filter((p) => new Date(p.createdAt) >= twelveMonthsAgo).length;
+   670→    const monthlyAvgPOs = recentPOs / 12;
+   671→
+   672→    // Status thresholds:
+   673→    //   overloaded  — pendingPOs >= 2× monthlyAvgPOs AND pendingPOs >= 5
+   674→    //   high        — pendingPOs >  monthlyAvgPOs AND pendingPOs >= 3
+   675→    //   normal      — otherwise
+   676→    let status: "normal" | "high" | "overloaded" = "normal";
+   677→    if (pendingPOs >= 5 && monthlyAvgPOs > 0 && pendingPOs >= 2 * monthlyAvgPOs) status = "overloaded";
+   678→    else if (pendingPOs >= 3 && pendingPOs > monthlyAvgPOs) status = "high";
+   679→
+   680→    return {
+   681→      supplierId: s.id,
+   682→      name: s.name,
+   683→      avgLeadTimeDays,
+   684→      pendingPOs,
+   685→      monthlyAvgPOs: Math.round(monthlyAvgPOs * 10) / 10,
+   686→      status,
+   687→    };
+   688→  });
+   689→  // Sort by status severity (overloaded > high > normal), then by pending POs desc
+   690→  const statusRank: Record<string, number> = { overloaded: 0, high: 1, normal: 2 };
+   691→  supplierCapacity.sort((a, b) => {
+   692→    const r = statusRank[a.status] - statusRank[b.status];
+   693→    if (r !== 0) return r;
+   694→    return b.pendingPOs - a.pendingPOs;
+   695→  });
+   696→
+   697→  const forecast = {
+   698→    brokerage6Month,
+   699→    seasonalTrends,
+   700→    clientVelocity,
+   701→    supplierCapacity,
+   702→  };
+   703→
+   704→  // ═══════════════════════════════════════════════════════════════════════════
+   705→  // Tag insights — when a tag filter is active, compute a tagged-vs-all
+   706→  // comparison block. Always uses BOTH the filtered ("tagged") set and the
+   707→  // full unfiltered set of entities — the broker needs the side-by-side
+   708→  // view to size up the segment's share of overall business.
+   709→  // ═══════════════════════════════════════════════════════════════════════════
+   710→  let tagInsights: unknown = null;
+   711→  let appliedFilter: {
+   712→    tagId: string;
+   713→    tagName: string;
+   714→    tagColor: string;
+   715→    entityType: TagEntityType | null;
+   716→    clientCount: number;
+   717→    supplierCount: number;
+   718→    purchaseOrderCount: number;
+   719→  } | null = null;
+   720→
+   721→  if (tagFilter) {
+   722→    // Total counts for the tag — drawn from ALL entities of each type, not the
+   723→    // filtered subset (so the broker sees "this tag has 4 VIP clients out of 9
+   724→    // total clients" even when the entityType scope is "Client" only).
+   725→    const taggedClientCount = tagFilter.taggedClientIds.size;
+   726→    const taggedSupplierCount = tagFilter.taggedSupplierIds.size;
+   727→    const taggedPoCount = tagFilter.taggedPoIds.size;
+   728→
+   729→    appliedFilter = {
+   730→      tagId: tagFilter.tagId,
+   731→      tagName: tagFilter.tagName,
+   732→      tagColor: tagFilter.tagColor,
+   733→      entityType: tagFilter.entityType,
+   734→      clientCount: taggedClientCount,
+   735→      supplierCount: taggedSupplierCount,
+   736→      purchaseOrderCount: taggedPoCount,
+   737→    };
+   738→
+   739→    // ── Client comparison (computed when Client filter active OR all) ────────
+   740→    type ClientCompare = {
+   741→      taggedCount: number;
+   742→      totalCount: number;
+   743→      taggedBusiness: number;
+   744→      allBusiness: number;
+   745→      taggedOutstanding: number;
+   746→      allOutstanding: number;
+   747→      taggedBrokerage: number;
+   748→      allBrokerage: number;
+   749→      taggedAvgOutstanding: number;
+   750→      allAvgOutstanding: number;
+   751→    };
+   752→    let clientComparison: ClientCompare | null = null;
+   753→    const includeClients = tagFilter.entityType === null || tagFilter.entityType === "Client";
+   754→    if (includeClients) {
+   755→      const taggedClientIds = tagFilter.taggedClientIds;
+   756→      const taggedClientSet = new Set(taggedClientIds);
+   757→      // Tagged totals — using ALL bills/brokerages (unfiltered), not fBills,
+   758→      // so the comparison reflects the full segment size.
+   759→      let tBus = 0, tOut = 0, tBrok = 0;
+   760→      let aBus = 0, aOut = 0, aBrok = 0;
+   761→      const billsByClientAll = new Map<string, typeof bills>();
+   762→      for (const b of bills) {
+   763→        const arr = billsByClientAll.get(b.clientId) ?? [];
+   764→        arr.push(b);
+   765→        billsByClientAll.set(b.clientId, arr);
+   766→        aBus += b.finalAmount;
+   767→        aOut += (b.finalAmount - b.paidAmount);
+   768→      }
+   769→      for (const b of brokerages) {
+   770→        aBrok += b.brokerageAmount;
+   771→      }
+   772→      for (const cid of taggedClientSet) {
+   773→        const cb = billsByClientAll.get(cid) ?? [];
+   774→        for (const b of cb) {
+   775→          tBus += b.finalAmount;
+   776→          tOut += (b.finalAmount - b.paidAmount);
+   777→        }
+   778→        for (const b of brokerages) {
+   779→          if (b.clientId === cid) tBrok += b.brokerageAmount;
+   780→        }
+   781→      }
+   782→      clientComparison = {
+   783→        taggedCount: taggedClientCount,
+   784→        totalCount: allClientIds.size,
+   785→        taggedBusiness: Math.round(tBus),
+   786→        allBusiness: Math.round(aBus),
+   787→        taggedOutstanding: Math.round(tOut),
+   788→        allOutstanding: Math.round(aOut),
+   789→        taggedBrokerage: Math.round(tBrok),
+   790→        allBrokerage: Math.round(aBrok),
+   791→        taggedAvgOutstanding: taggedClientCount > 0 ? Math.round(tOut / taggedClientCount) : 0,
+   792→        allAvgOutstanding: allClientIds.size > 0 ? Math.round(aOut / allClientIds.size) : 0,
+   793→      };
+   794→    }
+   795→
+   796→    // ── Supplier comparison ──────────────────────────────────────────────────
+   797→    type SupplierCompare = {
+   798→      taggedCount: number;
+   799→      totalCount: number;
+   800→      taggedSupplied: number;
+   801→      allSupplied: number;
+   802→      taggedFulfillment: number;
+   803→      allFulfillment: number;
+   804→    };
+   805→    let supplierComparison: SupplierCompare | null = null;
+   806→    const includeSuppliers = tagFilter.entityType === null || tagFilter.entityType === "Supplier";
+   807→    if (includeSuppliers) {
+   808→      const taggedSupplierSet = new Set(tagFilter.taggedSupplierIds);
+   809→      // Build dispatches-by-supplier over ALL dispatches (unfiltered).
+   810→      const dispatchesBySupplierAll = new Map<string, typeof dispatches>();
+   811→      for (const d of dispatches) {
+   812→        const arr = dispatchesBySupplierAll.get(d.supplierId) ?? [];
+   813→        arr.push(d);
+   814→        dispatchesBySupplierAll.set(d.supplierId, arr);
+   815→      }
+   816→      const computeSupplierMetrics = (supplierIds: Iterable<string>) => {
+   817→        let supplied = 0;
+   818→        const ratios: number[] = [];
+   819→        for (const sid of supplierIds) {
+   820→          const ds = dispatchesBySupplierAll.get(sid) ?? [];
+   821→          for (const d of ds) {
+   822→            const ordered = parseLineItems(d.po.lineItemsJson).reduce((a, i) => a + (i.setQty || 0), 0);
+   823→            const ratio = ordered > 0 ? Math.min(1, (d.dispatchedQty || 0) / ordered) : 0;
+   824→            ratios.push(ratio);
+   825→            const poValue = d.po.totalValue || 0;
+   826→            const lineShare = ordered > 0 ? (d.dispatchedQty || 0) / ordered : 0;
+   827→            supplied += poValue * lineShare;
+   828→          }
+   829→        }
+   830→        const fulfillment = ratios.length > 0
+   831→          ? Math.round((ratios.reduce((a, b) => a + b, 0) / ratios.length) * 100)
+   832→          : 0;
+   833→        return { supplied: Math.round(supplied), fulfillment };
+   834→      };
+   835→      const taggedMetrics = computeSupplierMetrics(taggedSupplierSet);
+   836→      const allMetrics = computeSupplierMetrics(allSupplierIds);
+   837→      supplierComparison = {
+   838→        taggedCount: taggedSupplierCount,
+   839→        totalCount: allSupplierIds.size,
+   840→        taggedSupplied: taggedMetrics.supplied,
+   841→        allSupplied: allMetrics.supplied,
+   842→        taggedFulfillment: taggedMetrics.fulfillment,
+   843→        allFulfillment: allMetrics.fulfillment,
+   844→      };
+   845→    }
+   846→
+   847→    // ── PO comparison ─────────────────────────────────────────────────────────
+   848→    type PoCompare = {
+   849→      taggedCount: number;
+   850→      totalCount: number;
+   851→      taggedValue: number;
+   852→      allValue: number;
+   853→      taggedFulfillment: number;
+   854→      allFulfillment: number;
+   855→    };
+   856→    let poComparison: PoCompare | null = null;
+   857→    const includePos = tagFilter.entityType === null || tagFilter.entityType === "PurchaseOrder";
+   858→    if (includePos) {
+   859→      const taggedPoSet = new Set(tagFilter.taggedPoIds);
+   860→      // Build dispatches-by-po over ALL dispatches (unfiltered).
+   861→      const dispatchesByPoAll = new Map<string, typeof dispatches>();
+   862→      for (const d of dispatches) {
+   863→        const arr = dispatchesByPoAll.get(d.poId) ?? [];
+   864→        arr.push(d);
+   865→        dispatchesByPoAll.set(d.poId, arr);
+   866→      }
+   867→      const computePoMetrics = (poIds: Iterable<string>) => {
+   868→        let totalValue = 0;
+   869→        const ratios: number[] = [];
+   870→        for (const pid of poIds) {
+   871→          const po = poById.get(pid);
+   872→          if (!po) continue;
+   873→          totalValue += po.totalValue || 0;
+   874→          const ds = dispatchesByPoAll.get(pid) ?? [];
+   875→          if (ds.length > 0) {
+   876→            const ordered = parseLineItems(po.lineItemsJson).reduce((a, i) => a + (i.setQty || 0), 0);
+   877→            const totalDispatched = ds.reduce((s, d) => s + (d.dispatchedQty || 0), 0);
+   878→            const ratio = ordered > 0 ? Math.min(1, totalDispatched / ordered) : 0;
+   879→            ratios.push(ratio);
+   880→          }
+   881→        }
+   882→        const fulfillment = ratios.length > 0
+   883→          ? Math.round((ratios.reduce((a, b) => a + b, 0) / ratios.length) * 100)
+   884→          : 0;
+   885→        return { totalValue: Math.round(totalValue), fulfillment };
+   886→      };
+   887→      const taggedMetrics = computePoMetrics(taggedPoSet);
+   888→      const allMetrics = computePoMetrics(allPoIds);
+   889→      poComparison = {
+   890→        taggedCount: taggedPoCount,
+   891→        totalCount: allPoIds.size,
+   892→        taggedValue: taggedMetrics.totalValue,
+   893→        allValue: allMetrics.totalValue,
+   894→        taggedFulfillment: taggedMetrics.fulfillment,
+   895→        allFulfillment: allMetrics.fulfillment,
+   896→      };
+   897→    }
+   898→
+   899→    tagInsights = {
+   900→      client: clientComparison,
+   901→      supplier: supplierComparison,
+   902→      purchaseOrder: poComparison,
+   903→    };
+   904→  }
+   905→
+   906→  // ═══════════════════════════════════════════════════════════════════════════
+   907→  return NextResponse.json({
+   908→    appliedFilter,
+   909→    tagInsights,
+   910→    // Total (unfiltered) entity counts — the UI uses these to render
+   911→    // "(N of M suppliers)" headers when a tag filter narrows the result set.
+   912→    totals: {
+   913→      supplierCount: allSupplierIds.size,
+   914→      clientCount: allClientIds.size,
+   915→      purchaseOrderCount: allPoIds.size,
+   916→    },
+   917→    suppliers: supplierScores,
+   918→    clients: clientExposure,
+   919→    brokerage: brokerageForecast,
+   920→    volume: volumeTrends,
+   921→    forecast,
+   922→  });
+   923→}
+   924→

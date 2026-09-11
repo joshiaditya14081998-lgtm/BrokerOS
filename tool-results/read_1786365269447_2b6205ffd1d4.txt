@@ -1,0 +1,764 @@
+     1→"use client";
+     2→
+     3→import * as React from "react";
+     4→import {
+     5→  Settings as SettingsIcon, Save, AlertCircle, Database, Download,
+     6→  Percent, Receipt, BadgePercent, ShieldCheck, FileText, RotateCcw,
+     7→  BellRing, Printer, ImageIcon, HardDrive, Upload, AlertTriangle,
+     8→  Shield, Clock, Loader2,
+     9→} from "lucide-react";
+    10→import { useApi, api } from "@/lib/api";
+    11→import { GlassCard, SectionHeader } from "@/components/shared";
+    12→import { Button } from "@/components/ui/button";
+    13→import { Input } from "@/components/ui/input";
+    14→import { Label } from "@/components/ui/label";
+    15→import { Skeleton } from "@/components/ui/skeleton";
+    16→import { Switch } from "@/components/ui/switch";
+    17→import { Badge } from "@/components/ui/badge";
+    18→import {
+    19→  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+    20→  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+    21→} from "@/components/ui/alert-dialog";
+    22→import { toast } from "sonner";
+    23→
+    24→type SettingRow = {
+    25→  id: string;
+    26→  key: string;
+    27→  value: string;
+    28→  notes: string | null;
+    29→};
+    30→
+    31→type SettingsResponse = {
+    32→  settings: SettingRow[];
+    33→  defaults: {
+    34→    defaultGstRate: number;
+    35→    defaultCommissionRate: number;
+    36→    brokerageOnGst: boolean;
+    37→    autoGenerateNotifications: boolean;
+    38→    autoBackupEnabled: boolean;
+    39→    lastBackupAt: string | null;
+    40→  };
+    41→};
+    42→
+    43→type ParsedBackup = {
+    44→  version: number;
+    45→  exportedAt?: string;
+    46→  tables: Record<string, unknown[]>;
+    47→  bytes: number;
+    48→};
+    49→
+    50→type RestoreResponse = {
+    51→  success?: boolean;
+    52→  error?: string;
+    53→  sourceExportedAt?: string | null;
+    54→  counts?: Record<string, number>;
+    55→};
+    56→
+    57→type PhotoStats = {
+    58→  count: number;
+    59→  totalSizeBytes: number;
+    60→  totalSizeMB: number;
+    61→};
+    62→
+    63→const EXPORT_LINKS: { type: string; label: string; icon: React.ReactNode }[] = [
+    64→  { type: "clients", label: "Clients", icon: <Database className="size-4" /> },
+    65→  { type: "suppliers", label: "Suppliers", icon: <Database className="size-4" /> },
+    66→  { type: "pos", label: "Purchase Orders", icon: <FileText className="size-4" /> },
+    67→  { type: "bills", label: "Bills", icon: <Receipt className="size-4" /> },
+    68→  { type: "payments", label: "Payments", icon: <Receipt className="size-4" /> },
+    69→  { type: "brokerage", label: "Brokerage", icon: <BadgePercent className="size-4" /> },
+    70→  { type: "audit", label: "Audit Trail", icon: <FileText className="size-4" /> },
+    71→];
+    72→
+    73→const PDF_REPORTS: { href: string; label: string; hint: string; icon: React.ReactNode }[] = [
+    74→  {
+    75→    href: "/api/reports?type=brokerage-statement&range=all",
+    76→    label: "Brokerage Statement",
+    77→    hint: "Monthly earnings, eligibility & payouts (all-time).",
+    78→    icon: <BadgePercent className="size-4" />,
+    79→  },
+    80→  {
+    81→    href: "",
+    82→    label: "Client Ledger",
+    83→    hint: "Open any client and click “Print ledger” in the sheet header.",
+    84→    icon: <Receipt className="size-4" />,
+    85→  },
+    86→  {
+    87→    href: "",
+    88→    label: "Supplier Summary",
+    89→    hint: "Open any supplier and click “Print summary” in the sheet header.",
+    90→    icon: <Database className="size-4" />,
+    91→  },
+    92→];
+    93→
+    94→const BUSINESS_RULES: {
+    95→  icon: React.ReactNode;
+    96→  title: string;
+    97→  body: string;
+    98→  tone: "emerald" | "amber" | "teal" | "rose";
+    99→}[] = [
+   100→  {
+   101→    icon: <BadgePercent className="size-4" />,
+   102→    title: "Brokerage excludes GST",
+   103→    body: "Brokerage is always computed on the bill's base amount (PO value − short-shipment − returns), never on the GST component.",
+   104→    tone: "emerald",
+   105→  },
+   106→  {
+   107→    icon: <ShieldCheck className="size-4" />,
+   108→    title: "Eligible only on full payment",
+   109→    body: "A brokerage entry stays 'accrued' until the linked bill is fully paid. The moment status becomes fully_paid, brokerage auto-flips to 'eligible'.",
+   110→    tone: "teal",
+   111→  },
+   112→  {
+   113→    icon: <RotateCcw className="size-4" />,
+   114→    title: "Payout follows client cadence",
+   115→    body: "Eligible brokerages are batched into a payout following the client's cadence — immediate, 4-month cumulative, or 12-month cumulative.",
+   116→    tone: "amber",
+   117→  },
+   118→  {
+   119→    icon: <Percent className="size-4" />,
+   120→    title: "Commission set per supplier",
+   121→    body: "Each supplier has a default commission % (defaults to 5%). It can be overridden per booking/PO at record time; the snapshot is used for brokerage.",
+   122→    tone: "emerald",
+   123→  },
+   124→  {
+   125→    icon: <Receipt className="size-4" />,
+   126→    title: "Adjustments before GST & brokerage",
+   127→    body: "Short-shipment and resolved defective returns reduce the base amount BEFORE GST and brokerage are computed — never after.",
+   128→    tone: "rose",
+   129→  },
+   130→];
+   131→
+   132→const BACKUP_TABLE_LABELS: { key: string; label: string }[] = [
+   133→  { key: "clients", label: "Clients" },
+   134→  { key: "suppliers", label: "Suppliers" },
+   135→  { key: "visits", label: "Visits" },
+   136→  { key: "bookings", label: "Bookings" },
+   137→  { key: "bookingLineItems", label: "Booking line items" },
+   138→  { key: "purchaseOrders", label: "Purchase orders" },
+   139→  { key: "dispatchDateLogs", label: "Dispatch date logs" },
+   140→  { key: "dispatches", label: "Dispatches" },
+   141→  { key: "bills", label: "Bills" },
+   142→  { key: "payments", label: "Payments" },
+   143→  { key: "brokerages", label: "Brokerages" },
+   144→  { key: "brokeragePayouts", label: "Brokerage payouts" },
+   145→  { key: "disputes", label: "Disputes" },
+   146→  { key: "photos", label: "Photos" },
+   147→  { key: "notifications", label: "Notifications" },
+   148→  { key: "auditLogs", label: "Audit logs" },
+   149→  { key: "systemSettings", label: "System settings" },
+   150→];
+   151→
+   152→function formatBytes(bytes: number): string {
+   153→  if (bytes < 1024) return `${bytes} B`;
+   154→  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+   155→  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+   156→}
+   157→
+   158→function formatRelative(iso: string | null): string {
+   159→  if (!iso) return "Never";
+   160→  const t = new Date(iso).getTime();
+   161→  if (Number.isNaN(t)) return "Never";
+   162→  const diff = Date.now() - t;
+   163→  const sec = Math.floor(diff / 1000);
+   164→  if (sec < 60) return "Just now";
+   165→  const min = Math.floor(sec / 60);
+   166→  if (min < 60) return `${min} min ago`;
+   167→  const hr = Math.floor(min / 60);
+   168→  if (hr < 24) return `${hr} hr ago`;
+   169→  const day = Math.floor(hr / 24);
+   170→  if (day < 30) return `${day} day${day === 1 ? "" : "s"} ago`;
+   171→  const mon = Math.floor(day / 30);
+   172→  if (mon < 12) return `${mon} month${mon === 1 ? "" : "s"} ago`;
+   173→  return new Date(iso).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+   174→}
+   175→
+   176→function formatDateTime(iso: string | null | undefined): string {
+   177→  if (!iso) return "Unknown";
+   178→  const d = new Date(iso);
+   179→  if (Number.isNaN(d.getTime())) return "Unknown";
+   180→  return d.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
+   181→}
+   182→
+   183→function parseBackupFile(text: string, fileName: string, fileSize: number): { ok: true; backup: ParsedBackup } | { ok: false; error: string } {
+   184→  let json: unknown;
+   185→  try {
+   186→    json = JSON.parse(text);
+   187→  } catch {
+   188→    return { ok: false, error: `"${fileName}" is not valid JSON.` };
+   189→  }
+   190→  if (typeof json !== "object" || json === null || Array.isArray(json)) {
+   191→    return { ok: false, error: "Backup file must be a JSON object." };
+   192→  }
+   193→  const obj = json as Record<string, unknown>;
+   194→  if (obj.version !== 1) {
+   195→    return { ok: false, error: `Unsupported backup version (expected 1, got ${String(obj.version)}).` };
+   196→  }
+   197→  if (typeof obj.tables !== "object" || obj.tables === null || Array.isArray(obj.tables)) {
+   198→    return { ok: false, error: "Backup file is missing the 'tables' object." };
+   199→  }
+   200→  const tables = obj.tables as Record<string, unknown>;
+   201→  for (const t of BACKUP_TABLE_LABELS) {
+   202→    if (!Array.isArray(tables[t.key])) {
+   203→      return { ok: false, error: `Backup file is missing the "${t.key}" table.` };
+   204→    }
+   205→  }
+   206→  return {
+   207→    ok: true,
+   208→    backup: {
+   209→      version: 1,
+   210→      exportedAt: typeof obj.exportedAt === "string" ? obj.exportedAt : undefined,
+   211→      tables: tables as Record<string, unknown[]>,
+   212→      bytes: fileSize,
+   213→    },
+   214→  };
+   215→}
+   216→
+   217→export function SettingsView() {
+   218→  const { data, loading, refresh } = useApi<SettingsResponse>("/api/settings");
+   219→  const { data: photoStats } = useApi<PhotoStats>("/api/photos/stats");
+   220→
+   221→  const [gstRate, setGstRate] = React.useState<string>("5");
+   222→  const [commissionRate, setCommissionRate] = React.useState<string>("5");
+   223→  const [brokerageOnGst, setBrokerageOnGst] = React.useState<boolean>(false);
+   224→  const [autoGen, setAutoGen] = React.useState<boolean>(true);
+   225→  const [saving, setSaving] = React.useState(false);
+   226→  const [seedOpen, setSeedOpen] = React.useState(false);
+   227→  const [seeding, setSeeding] = React.useState(false);
+   228→
+   229→  // Backup / restore state
+   230→  const [downloading, setDownloading] = React.useState(false);
+   231→  const [autoBackup, setAutoBackup] = React.useState(false);
+   232→  const [autoBackupSaving, setAutoBackupSaving] = React.useState(false);
+   233→  const [restoreOpen, setRestoreOpen] = React.useState(false);
+   234→  const [restoring, setRestoring] = React.useState(false);
+   235→  const [parsedBackup, setParsedBackup] = React.useState<ParsedBackup | null>(null);
+   236→  const [fileInputKey, setFileInputKey] = React.useState(0);
+   237→  const fileInputRef = React.useRef<HTMLInputElement>(null);
+   238→
+   239→  // Track the original loaded values so we can show a "dirty" indicator.
+   240→  const [original, setOriginal] = React.useState({ gstRate: "5", commissionRate: "5", brokerageOnGst: false, autoGen: true });
+   241→
+   242→  React.useEffect(() => {
+   243→    if (!data) return;
+   244→    const g = String(data.defaults.defaultGstRate);
+   245→    const c = String(data.defaults.defaultCommissionRate);
+   246→    const b = data.defaults.brokerageOnGst;
+   247→    const a = data.defaults.autoGenerateNotifications;
+   248→    setGstRate(g);
+   249→    setCommissionRate(c);
+   250→    setBrokerageOnGst(b);
+   251→    setAutoGen(a);
+   252→    setAutoBackup(data.defaults.autoBackupEnabled);
+   253→    setOriginal({ gstRate: g, commissionRate: c, brokerageOnGst: b, autoGen: a });
+   254→  }, [data]);
+   255→
+   256→  const dirty =
+   257→    gstRate !== original.gstRate ||
+   258→    commissionRate !== original.commissionRate ||
+   259→    brokerageOnGst !== original.brokerageOnGst ||
+   260→    autoGen !== original.autoGen;
+   261→
+   262→  const save = async () => {
+   263→    const gstNum = Number(gstRate);
+   264→    const commNum = Number(commissionRate);
+   265→    if (!Number.isFinite(gstNum) || gstNum < 0 || gstNum > 100) {
+   266→      toast.error("Default GST rate must be a number between 0 and 100");
+   267→      return;
+   268→    }
+   269→    if (!Number.isFinite(commNum) || commNum < 0 || commNum > 100) {
+   270→      toast.error("Default commission rate must be a number between 0 and 100");
+   271→      return;
+   272→    }
+   273→
+   274→    setSaving(true);
+   275→    const changes: { key: string; value: string; notes?: string }[] = [];
+   276→    if (gstRate !== original.gstRate) {
+   277→      changes.push({ key: "default_gst_rate", value: gstRate, notes: "Default GST % applied to bills." });
+   278→    }
+   279→    if (commissionRate !== original.commissionRate) {
+   280→      changes.push({ key: "default_commission_rate", value: commissionRate, notes: "Default broker commission %." });
+   281→    }
+   282→    if (brokerageOnGst !== original.brokerageOnGst) {
+   283→      changes.push({ key: "brokerage_on_gst", value: brokerageOnGst ? "true" : "false", notes: "Brokerage is computed on base amount, excluding GST." });
+   284→    }
+   285→    if (autoGen !== original.autoGen) {
+   286→      changes.push({ key: "auto_generate_notifications", value: autoGen ? "true" : "false", notes: "Auto-generate reminders on dashboard load and on-demand." });
+   287→    }
+   288→
+   289→    if (changes.length === 0) {
+   290→      toast.info("Nothing to save — no changes detected.");
+   291→      setSaving(false);
+   292→      return;
+   293→    }
+   294→
+   295→    try {
+   296→      for (const c of changes) {
+   297→        await api("/api/settings", { method: "POST", body: JSON.stringify(c) });
+   298→      }
+   299→      toast.success(`Saved ${changes.length} setting${changes.length > 1 ? "s" : ""}`);
+   300→      setOriginal({ gstRate, commissionRate, brokerageOnGst, autoGen });
+   301→      refresh();
+   302→    } catch (e) {
+   303→      toast.error(e instanceof Error ? e.message : "Failed to save settings");
+   304→    } finally {
+   305→      setSaving(false);
+   306→    }
+   307→  };
+   308→
+   309→  const runSeed = async () => {
+   310→    setSeeding(true);
+   311→    try {
+   312→      const res = await api<{ ok: boolean; message?: string; error?: string }>("/api/seed", { method: "POST" });
+   313→      if (res.ok) {
+   314→        toast.success("Database re-seeded. Refresh other views to see the fresh dataset.");
+   315→        setSeedOpen(false);
+   316→        refresh();
+   317→      } else {
+   318→        toast.error(res.error ?? "Re-seed failed");
+   319→      }
+   320→    } catch (e) {
+   321→      toast.error(e instanceof Error ? e.message : "Re-seed failed");
+   322→    } finally {
+   323→      setSeeding(false);
+   324→    }
+   325→  };
+   326→
+   327→  // ── Backup / restore handlers ─────────────────────────────────────────────
+   328→
+   329→  const handleDownload = async () => {
+   330→    setDownloading(true);
+   331→    try {
+   332→      // Use a fetch + blob + anchor click so we know when the download
+   333→      // finishes (so we can refresh `lastBackupAt`) without leaving the page.
+   334→      const res = await fetch("/api/backup", { method: "GET" });
+   335→      if (!res.ok) {
+   336→        const txt = await res.text().catch(() => "");
+   337→        throw new Error(`Backup failed (${res.status}): ${txt}`);
+   338→      }
+   339→      const blob = await res.blob();
+   340→      const url = URL.createObjectURL(blob);
+   341→      const a = document.createElement("a");
+   342→      a.href = url;
+   343→      const stamp = (() => {
+   344→        const d = new Date();
+   345→        const yyyy = d.getFullYear();
+   346→        const mm = String(d.getMonth() + 1).padStart(2, "0");
+   347→        const dd = String(d.getDate()).padStart(2, "0");
+   348→        return `${yyyy}-${mm}-${dd}`;
+   349→      })();
+   350→      a.download = `broker-os-backup-${stamp}.json`;
+   351→      document.body.appendChild(a);
+   352→      a.click();
+   353→      a.remove();
+   354→      URL.revokeObjectURL(url);
+   355→      toast.success("Backup downloaded — full DB snapshot saved.");
+   356→      // Give the audit log a tick to land, then refresh settings so the
+   357→      // "Last backup" timestamp updates.
+   358→      setTimeout(() => void refresh(), 400);
+   359→    } catch (e) {
+   360→      toast.error(e instanceof Error ? e.message : "Backup download failed");
+   361→    } finally {
+   362→      setDownloading(false);
+   363→    }
+   364→  };
+   365→
+   366→  const toggleAutoBackup = async (next: boolean) => {
+   367→    setAutoBackup(next);
+   368→    setAutoBackupSaving(true);
+   369→    try {
+   370→      await api("/api/settings", {
+   371→        method: "POST",
+   372→        body: JSON.stringify({
+   373→          key: "auto_backup_enabled",
+   374→          value: next ? "true" : "false",
+   375→          notes: "When enabled, a backup file will be downloaded automatically once per day when the app is opened.",
+   376→        }),
+   377→      });
+   378→      toast.success(`Auto-backup ${next ? "enabled" : "disabled"}`);
+   379→      refresh();
+   380→    } catch (e) {
+   381→      // Revert on failure
+   382→      setAutoBackup(!next);
+   383→      toast.error(e instanceof Error ? e.message : "Failed to save auto-backup setting");
+   384→    } finally {
+   385→      setAutoBackupSaving(false);
+   386→    }
+   387→  };
+   388→
+   389→  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+   390→    const file = e.target.files?.[0];
+   391→    if (!file) return;
+   392→    const text = await file.text();
+   393→    const result = parseBackupFile(text, file.name, file.size);
+   394→    if (!result.ok) {
+   395→      toast.error(result.error);
+   396→      // Reset the input so the same file can be re-selected later.
+   397→      setFileInputKey((k) => k + 1);
+   398→      setParsedBackup(null);
+   399→      return;
+   400→    }
+   401→    setParsedBackup(result.backup);
+   402→    toast.info(`Backup loaded — ${formatBytes(file.size)}, ${BACKUP_TABLE_LABELS.reduce((s, t) => s + ((result.backup.tables[t.key]?.length as number) ?? 0), 0)} rows total. Review and confirm below.`);
+   403→  };
+   404→
+   405→  const openRestoreConfirm = () => {
+   406→    if (!parsedBackup) {
+   407→      toast.error("Select a backup file first.");
+   408→      return;
+   409→    }
+   410→    setRestoreOpen(true);
+   411→  };
+   412→
+   413→  const handleRestore = async () => {
+   414→    if (!parsedBackup) return;
+   415→    setRestoring(true);
+   416→    try {
+   417→      // Send the parsed JSON as the request body (raw JSON).
+   418→      const payload = JSON.stringify({
+   419→        version: parsedBackup.version,
+   420→        exportedAt: parsedBackup.exportedAt,
+   421→        tables: parsedBackup.tables,
+   422→      });
+   423→      const res = await fetch("/api/backup", {
+   424→        method: "POST",
+   425→        headers: { "Content-Type": "application/json" },
+   426→        body: payload,
+   427→      });
+   428→      const data = await res.json().catch(() => ({})) as RestoreResponse;
+   429→      if (!res.ok || !data.success) {
+   430→        throw new Error(data.error ?? `Restore failed (HTTP ${res.status})`);
+   431→      }
+   432→      toast.success("Backup restored — reloading…");
+   433→      setRestoreOpen(false);
+   434→      // Wait 1.5s for the toast to land, then hard reload so all
+   435→      // client-side cached state is reset.
+   436→      setTimeout(() => window.location.reload(), 1500);
+   437→    } catch (e) {
+   438→      toast.error(e instanceof Error ? e.message : "Restore failed");
+   439→      setRestoring(false);
+   440→    }
+   441→  };
+   442→
+   443→  const cancelRestore = () => {
+   444→    if (restoring) return; // no cancel mid-restore
+   445→    setRestoreOpen(false);
+   446→  };
+   447→
+   448→  const clearSelectedBackup = () => {
+   449→    setParsedBackup(null);
+   450→    setFileInputKey((k) => k + 1);
+   451→  };
+   452→
+   453→  const lastBackupAt = data?.defaults.lastBackupAt ?? null;
+   454→
+   455→  return (
+   456→    <div className="space-y-6">
+   457→      <SectionHeader
+   458→        title="Settings"
+   459→        description="System defaults & business rules"
+   460→        action={
+   461→          <Button size="sm" onClick={save} disabled={saving || !dirty}>
+   462→            <Save className="mr-1.5 size-4" />
+   463→            {saving ? "Saving…" : "Save changes"}
+   464→          </Button>
+   465→        }
+   466→      />
+   467→
+   468→      {loading ? (
+   469→        <div className="grid gap-4 lg:grid-cols-2">
+   470→          <Skeleton className="h-72 rounded-2xl" />
+   471→          <Skeleton className="h-72 rounded-2xl" />
+   472→        </div>
+   473→      ) : (
+   474→        <div className="grid gap-6 lg:grid-cols-2">
+   475→          {/* Card 1 — System defaults form */}
+   476→          <GlassCard className="hover-lift p-6">
+   477→            <div className="flex items-center gap-2.5">
+   478→              <div className="grid size-9 place-items-center rounded-xl bg-primary/10 text-primary">
+   479→                <SettingsIcon className="size-4.5" />
+   480→              </div>
+   481→              <div>
+   482→                <h3 className="text-sm font-semibold text-foreground">System defaults</h3>
+   483→                <p className="text-xs text-muted-foreground">Default rates applied when no per-party override exists.</p>
+   484→              </div>
+   485→            </div>
+   486→
+   487→            <div className="mt-5 space-y-5">
+   488→              <div className="space-y-1.5">
+   489→                <Label htmlFor="gst-rate" className="text-xs font-medium text-muted-foreground">
+   490→                  Default GST rate (%)
+   491→                </Label>
+   492→                <Input
+   493→                  id="gst-rate"
+   494→                  type="number"
+   495→                  min={0}
+   496→                  max={100}
+   497→                  step="0.1"
+   498→                  value={gstRate}
+   499→                  onChange={(e) => setGstRate(e.target.value)}
+   500→                />
+   501→                <p className="text-[11px] text-muted-foreground">
+   502→                  Applied to new bills when no client/supplier GST rate is set.
+   503→                </p>
+   504→              </div>
+   505→
+   506→              <div className="space-y-1.5">
+   507→                <Label htmlFor="comm-rate" className="text-xs font-medium text-muted-foreground">
+   508→                  Default commission rate (%)
+   509→                </Label>
+   510→                <Input
+   511→                  id="comm-rate"
+   512→                  type="number"
+   513→                  min={0}
+   514→                  max={100}
+   515→                  step="0.1"
+   516→                  value={commissionRate}
+   517→                  onChange={(e) => setCommissionRate(e.target.value)}
+   518→                />
+   519→                <p className="text-[11px] text-muted-foreground">
+   520→                  Default broker commission % — overridden by per-supplier rates.
+   521→                </p>
+   522→              </div>
+   523→
+   524→              <div className="flex items-start justify-between gap-3 rounded-xl border border-border/50 bg-card/30 p-3">
+   525→                <div className="min-w-0 space-y-1">
+   526→                  <Label htmlFor="brokerage-gst" className="text-xs font-medium text-muted-foreground">
+   527→                    Brokerage on GST
+   528→                  </Label>
+   529→                  <p className="text-[11px] leading-relaxed text-muted-foreground">
+   530→                    Brokerage is always computed on the base amount <span className="font-semibold text-foreground">excluding GST</span>.
+   531→                    Toggle is informational only — the rule is enforced system-wide.
+   532→                  </p>
+   533→                </div>
+   534→                <Switch
+   535→                  id="brokerage-gst"
+   536→                  checked={brokerageOnGst}
+   537→                  onCheckedChange={setBrokerageOnGst}
+   538→                  aria-label="Brokerage on GST"
+   539→                />
+   540→              </div>
+   541→
+   542→              <div className="flex items-start justify-between gap-3 rounded-xl border border-border/50 bg-card/30 p-3">
+   543→                <div className="min-w-0 space-y-1">
+   544→                  <Label htmlFor="auto-gen" className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+   545→                    <BellRing className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+   546→                    Auto-generate reminders
+   547→                  </Label>
+   548→                  <p className="text-[11px] leading-relaxed text-muted-foreground">
+   549→                    When enabled, the dashboard fires a background scan on load that creates pending notifications for overdue visits, upcoming dispatches (≤ 7d), due payments (≤ 14d), and eligible brokerage payouts. The Notifications view always allows manual generation.
+   550→                  </p>
+   551→                </div>
+   552→                <Switch
+   553→                  id="auto-gen"
+   554→                  checked={autoGen}
+   555→                  onCheckedChange={setAutoGen}
+   556→                  aria-label="Auto-generate reminders"
+   557→                />
+   558→              </div>
+   559→
+   560→              {dirty && (
+   561→                <div className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] text-amber-700 dark:text-amber-300">
+   562→                  <AlertCircle className="size-3" />
+   563→                  Unsaved changes — click “Save changes” to persist.
+   564→                </div>
+   565→              )}
+   566→            </div>
+   567→          </GlassCard>
+   568→
+   569→          {/* Card 2 — Business rules reference */}
+   570→          <GlassCard className="hover-lift p-6">
+   571→            <div className="flex items-center gap-2.5">
+   572→              <div className="grid size-9 place-items-center rounded-xl bg-primary/10 text-primary">
+   573→                <ShieldCheck className="size-4.5" />
+   574→              </div>
+   575→              <div>
+   576→                <h3 className="text-sm font-semibold text-foreground">Business rules reference</h3>
+   577→                <p className="text-xs text-muted-foreground">Core financial rules enforced across the system (§7).</p>
+   578→              </div>
+   579→            </div>
+   580→
+   581→            <ul className="mt-5 space-y-3">
+   582→              {BUSINESS_RULES.map((rule) => (
+   583→                <RuleRow key={rule.title} {...rule} />
+   584→              ))}
+   585→            </ul>
+   586→          </GlassCard>
+   587→        </div>
+   588→      )}
+   589→
+   590→      {/* Card 3 — Data management */}
+   591→      <GlassCard className="hover-lift p-6">
+   592→        <div className="flex items-center gap-2.5">
+   593→          <div className="grid size-9 place-items-center rounded-xl bg-primary/10 text-primary">
+   594→            <Database className="size-4.5" />
+   595→          </div>
+   596→          <div>
+   597→            <h3 className="text-sm font-semibold text-foreground">Data management</h3>
+   598→            <p className="text-xs text-muted-foreground">Export data as CSV or reset the demo dataset.</p>
+   599→          </div>
+   600→        </div>
+   601→
+   602→        {/* Photo storage mini-stat — full-res originals + 400px JPEG thumbnails under public/uploads */}
+   603→        <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+   604→          <div className="glass flex items-center gap-3 rounded-xl border border-border/50 p-3">
+   605→            <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+   606→              <ImageIcon className="size-4" />
+   607→            </div>
+   608→            <div className="min-w-0">
+   609→              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Photos</p>
+   610→              <p className="kpi-num text-base font-semibold text-foreground">
+   611→                {photoStats ? photoStats.count : "—"}
+   612→                <span className="ml-1 text-[11px] font-normal text-muted-foreground">
+   613→                  {photoStats && photoStats.count === 1 ? "record" : "records"}
+   614→                </span>
+   615→              </p>
+   616→            </div>
+   617→          </div>
+   618→          <div className="glass flex items-center gap-3 rounded-xl border border-border/50 p-3">
+   619→            <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+   620→              <HardDrive className="size-4" />
+   621→            </div>
+   622→            <div className="min-w-0">
+   623→              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Storage used</p>
+   624→              <p className="kpi-num text-base font-semibold text-foreground">
+   625→                {photoStats ? `${photoStats.totalSizeMB} MB` : "—"}
+   626→                <span className="ml-1 text-[11px] font-normal text-muted-foreground">
+   627→                  {photoStats ? `(${photoStats.totalSizeBytes.toLocaleString()} bytes)` : "in /uploads"}
+   628→                </span>
+   629→              </p>
+   630→            </div>
+   631→          </div>
+   632→        </div>
+   633→        <p className="mt-2 text-[11px] text-muted-foreground">
+   634→          Originals are stored full-resolution in <code className="rounded bg-card/60 px-1 py-0.5 text-[10px]">public/uploads/</code>;
+   635→          a 400&nbsp;px JPEG thumbnail (q80) is generated on upload for fast gallery loading.
+   636→        </p>
+   637→
+   638→        <div className="mt-5">
+   639→          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Export data (CSV)</p>
+   640→          <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+   641→            {EXPORT_LINKS.map((link) => (
+   642→              <a
+   643→                key={link.type}
+   644→                href={`/api/export?type=${link.type}`}
+   645→                target="_blank"
+   646→                rel="noopener noreferrer"
+   647→                className="glass hover-lift inline-flex items-center gap-2 rounded-xl border border-border/50 px-3 py-2 text-xs font-medium text-foreground transition-colors hover:text-primary"
+   648→              >
+   649→                {link.icon}
+   650→                <span className="truncate">{link.label}</span>
+   651→                <Download className="ml-auto size-3 text-muted-foreground" />
+   652→              </a>
+   653→            ))}
+   654→          </div>
+   655→        </div>
+   656→
+   657→        <div className="mt-5">
+   658→          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Print-ready PDF reports</p>
+   659→          <p className="mt-1 text-[11px] text-muted-foreground">
+   660→            Opens a print-optimized page in a new tab — the browser's print dialog auto-launches, where you can choose “Save as PDF” as the destination.
+   661→          </p>
+   662→          <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
+   663→            {PDF_REPORTS.map((r) => {
+   664→              const isLink = r.href.length > 0;
+   665→              const cls = "glass hover-lift inline-flex items-start gap-2 rounded-xl border border-border/50 px-3 py-2 text-xs font-medium text-foreground transition-colors hover:text-primary";
+   666→              const inner = (
+   667→                <>
+   668→                  <span className="mt-0.5 text-emerald-600 dark:text-emerald-400">{r.icon}</span>
+   669→                  <span className="min-w-0 flex-1">
+   670→                    <span className="block truncate font-semibold">{r.label}</span>
+   671→                    <span className="block text-[10px] font-normal leading-snug text-muted-foreground">{r.hint}</span>
+   672→                  </span>
+   673→                  <Printer className="ml-auto size-3 shrink-0 text-muted-foreground" />
+   674→                </>
+   675→              );
+   676→              return isLink ? (
+   677→                <a key={r.label} href={r.href} target="_blank" rel="noopener noreferrer" className={cls}>
+   678→                  {inner}
+   679→                </a>
+   680→              ) : (
+   681→                <span key={r.label} className={`${cls} cursor-default opacity-80`}>
+   682→                  {inner}
+   683→                </span>
+   684→              );
+   685→            })}
+   686→          </div>
+   687→        </div>
+   688→
+   689→        <div className="mt-5 flex flex-col gap-3 border-t border-border/50 pt-4 sm:flex-row sm:items-center sm:justify-between">
+   690→          <div className="min-w-0">
+   691→            <p className="text-sm font-medium text-foreground">Re-seed database</p>
+   692→            <p className="text-[11px] text-muted-foreground">
+   693→              Wipes <span className="font-semibold">all</span> current data and writes a fresh demo dataset. Use only in development.
+   694→            </p>
+   695→          </div>
+   696→          <Button
+   697→            variant="outline"
+   698→            className="border-rose-500/30 text-rose-600 hover:text-rose-500 dark:text-rose-400"
+   699→            onClick={() => setSeedOpen(true)}
+   700→          >
+   701→            <RotateCcw className="mr-1.5 size-4" />Re-seed
+   702→          </Button>
+   703→        </div>
+   704→      </GlassCard>
+   705→
+   706→      {/* Re-seed confirm */}
+   707→      <AlertDialog open={seedOpen} onOpenChange={setSeedOpen}>
+   708→        <AlertDialogContent className="glass-strong max-w-md">
+   709→          <AlertDialogHeader>
+   710→            <AlertDialogTitle>Re-seed database?</AlertDialogTitle>
+   711→            <AlertDialogDescription>
+   712→              This will erase all current data (clients, suppliers, POs, bills, payments, brokerage, disputes, audit logs) and replace it with a fresh demo dataset. The action is irreversible.
+   713→            </AlertDialogDescription>
+   714→          </AlertDialogHeader>
+   715→          <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2.5 text-[11px] text-rose-700 dark:text-rose-300">
+   716→            <AlertCircle className="mr-1 inline size-3.5" />
+   717→            Make sure no one else is actively working in the system — running this mid-session will invalidate their data.
+   718→          </div>
+   719→          <AlertDialogFooter>
+   720→            <AlertDialogCancel disabled={seeding}>Cancel</AlertDialogCancel>
+   721→            <AlertDialogAction
+   722→              className="bg-rose-600 text-white hover:bg-rose-700"
+   723→              onClick={(e) => { e.preventDefault(); void runSeed(); }}
+   724→              disabled={seeding}
+   725→            >
+   726→              {seeding ? "Seeding…" : "Yes, re-seed everything"}
+   727→            </AlertDialogAction>
+   728→          </AlertDialogFooter>
+   729→        </AlertDialogContent>
+   730→      </AlertDialog>
+   731→    </div>
+   732→  );
+   733→}
+   734→
+   735→function RuleRow({
+   736→  icon,
+   737→  title,
+   738→  body,
+   739→  tone,
+   740→}: {
+   741→  icon: React.ReactNode;
+   742→  title: string;
+   743→  body: string;
+   744→  tone: "emerald" | "amber" | "teal" | "rose";
+   745→}) {
+   746→  const toneWrap: Record<string, string> = {
+   747→    emerald: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30",
+   748→    amber: "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30",
+   749→    teal: "bg-teal-500/15 text-teal-600 dark:text-teal-400 border-teal-500/30",
+   750→    rose: "bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/30",
+   751→  };
+   752→  return (
+   753→    <li className="flex items-start gap-3 rounded-xl border border-border/40 bg-card/30 p-3">
+   754→      <div className={`grid size-8 shrink-0 place-items-center rounded-lg border ${toneWrap[tone]}`}>
+   755→        {icon}
+   756→      </div>
+   757→      <div className="min-w-0">
+   758→        <p className="text-sm font-medium text-foreground">{title}</p>
+   759→        <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">{body}</p>
+   760→      </div>
+   761→    </li>
+   762→  );
+   763→}
+   764→

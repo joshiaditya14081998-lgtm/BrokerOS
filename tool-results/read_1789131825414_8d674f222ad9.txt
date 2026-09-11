@@ -1,0 +1,647 @@
+     1→"use client";
+     2→
+     3→import * as React from "react";
+     4→import {
+     5→  Plus, Calendar, Trash2, CheckCircle2, Phone,
+     6→  Package, ArrowRight, MoreHorizontal, Clock, Camera, ChevronDown, AlertCircle,
+     7→} from "lucide-react";
+     8→import { useApi, api } from "@/lib/api";
+     9→import { formatCurrency, formatDate, titleCase } from "@/lib/format";
+    10→import { GlassCard, SectionHeader, StatusChip, EmptyState } from "@/components/shared";
+    11→import { Button } from "@/components/ui/button";
+    12→import { Input } from "@/components/ui/input";
+    13→import { Label } from "@/components/ui/label";
+    14→import { Skeleton } from "@/components/ui/skeleton";
+    15→import { Textarea } from "@/components/ui/textarea";
+    16→import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
+    17→import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
+    18→import {
+    19→  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+    20→} from "@/components/ui/select";
+    21→import {
+    22→  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator, DropdownMenuLabel,
+    23→} from "@/components/ui/dropdown-menu";
+    24→import {
+    25→  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+    26→  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
+    27→} from "@/components/ui/alert-dialog";
+    28→import { PhotoUpload } from "@/components/photo-upload";
+    29→import { useUI } from "@/lib/ui-store";
+    30→import { useTranslation } from "@/hooks/use-translation";
+    31→import { toast } from "sonner";
+    32→
+    33→type VisitRow = {
+    34→  id: string;
+    35→  plannedDate: string;
+    36→  actualDate: string | null;
+    37→  status: string;
+    38→  notes: string | null;
+    39→  createdAt: string;
+    40→  client: { name: string; phone: string | null };
+    41→  bookings: {
+    42→    id: string;
+    43→    supplier: { name: string };
+    44→    purchaseOrder: { poNumber: string; status: string; totalValue: number } | null;
+    45→  }[];
+    46→};
+    47→
+    48→type ClientOption = { id: string; name: string; phone: string | null };
+    49→
+    50→export function VisitsView() {
+    51→  const { t } = useTranslation();
+    52→  const { data, loading, refresh } = useApi<{ visits: VisitRow[] }>("/api/visits");
+    53→  const [q, setQ] = React.useState("");
+    54→  const [open, setOpen] = React.useState(false);
+    55→  const { newEntityTrigger } = useUI();
+    56→
+    57→  // "n p" keyboard shortcut → trigger the booking/PO flow. POs are created
+    58→  // from a visit via "Record booking", so we navigate here (handled in
+    59→  // `triggerNewEntity`) and auto-open the RecordBookingDialog for the first
+    60→  // occurred visit. If none exists yet, surface a toast guiding the user to
+    61→  // mark a visit as occurred first.
+    62→  const [bookingOpen, setBookingOpen] = React.useState(false);
+    63→  const [bookingVisitId, setBookingVisitId] = React.useState<string | null>(null);
+    64→
+    65→  React.useEffect(() => {
+    66→    if (newEntityTrigger?.view !== "pos") return;
+    67→    const occurred = (data?.visits ?? []).find((v) => v.status === "occurred");
+    68→    if (occurred) {
+    69→      setBookingVisitId(occurred.id);
+    70→      setBookingOpen(true);
+    71→      toast.info("Recording a booking against the most recent occurred visit");
+    72→    } else {
+    73→      toast.error("No occurred visits yet — mark a visit as 'Occurred' first, then record a booking.");
+    74→    }
+    75→  }, [newEntityTrigger, data]);
+    76→
+    77→  const rows = (data?.visits ?? []).filter((v) =>
+    78→    v.client.name.toLowerCase().includes(q.toLowerCase()) ||
+    79→    v.status.toLowerCase().includes(q.toLowerCase()) ||
+    80→    (v.notes ?? "").toLowerCase().includes(q.toLowerCase())
+    81→  );
+    82→
+    83→  return (
+    84→    <div className="space-y-5">
+    85→      <SectionHeader
+    86→        title={t("visits.title")}
+    87→        description={t("visits.subtitle")}
+    88→        action={
+    89→          <Dialog open={open} onOpenChange={setOpen}>
+    90→            <DialogTrigger asChild>
+    91→              <Button size="sm"><Plus className="mr-1.5 size-4" />{t("visits.new")}</Button>
+    92→            </DialogTrigger>
+    93→            <NewVisitDialog onDone={() => { setOpen(false); refresh(); }} />
+    94→          </Dialog>
+    95→        }
+    96→      />
+    97→
+    98→      <GlassCard className="p-3">
+    99→        <Input
+   100→          placeholder={t("visits.searchPlaceholder")}
+   101→          value={q}
+   102→          onChange={(e) => setQ(e.target.value)}
+   103→          className="border-0 bg-transparent shadow-none focus-visible:ring-1"
+   104→        />
+   105→      </GlassCard>
+   106→
+   107→      {loading ? (
+   108→        <div className="space-y-2">
+   109→          {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-2xl" />)}
+   110→        </div>
+   111→      ) : rows.length === 0 ? (
+   112→        <GlassCard className="p-8">
+   113→          <EmptyState
+   114→            title={t("visits.noVisitsYet")}
+   115→            hint={t("visits.noVisitsHint")}
+   116→            icon={<Calendar className="size-5" />}
+   117→          />
+   118→        </GlassCard>
+   119→      ) : (
+   120→        <div className="space-y-3">
+   121→          {rows.map((v) => (
+   122→            <VisitCard
+   123→              key={v.id}
+   124→              visit={v}
+   125→              onChange={() => refresh()}
+   126→            />
+   127→          ))}
+   128→        </div>
+   129→      )}
+   130→
+   131→      {/* Global "Record booking" dialog opened by the "n p" keyboard shortcut.
+   132→          Rendered at the view level (rather than inside a VisitCard) because
+   133→          the shortcut needs to pick which visit to book against on the fly. */}
+   134→      <Dialog
+   135→        open={bookingOpen}
+   136→        onOpenChange={(o) => {
+   137→          setBookingOpen(o);
+   138→          if (!o) setBookingVisitId(null);
+   139→        }}
+   140→      >
+   141→        {bookingVisitId && (
+   142→          <RecordBookingDialog
+   143→            visitId={bookingVisitId}
+   144→            onDone={() => {
+   145→              setBookingOpen(false);
+   146→              setBookingVisitId(null);
+   147→              refresh();
+   148→            }}
+   149→          />
+   150→        )}
+   151→      </Dialog>
+   152→    </div>
+   153→  );
+   154→}
+   155→
+   156→function VisitCard({
+   157→  visit, onChange,
+   158→}: {
+   159→  visit: VisitRow;
+   160→  onChange: () => void;
+   161→}) {
+   162→  const { t } = useTranslation();
+   163→  const [bookingOpen, setBookingOpen] = React.useState(false);
+   164→  const [photosOpen, setPhotosOpen] = React.useState(false);
+   165→
+   166→  const updateStatus = async (status: string) => {
+   167→    const patch: Record<string, unknown> = { status };
+   168→    if (status === "occurred") patch.actualDate = new Date().toISOString();
+   169→    try {
+   170→      await api(`/api/visits/${visit.id}`, { method: "PATCH", body: JSON.stringify(patch) });
+   171→      toast.success(`Marked as ${titleCase(status)}`);
+   172→      onChange();
+   173→    } catch (e) {
+   174→      toast.error(e instanceof Error ? e.message : "Failed to update visit");
+   175→    }
+   176→  };
+   177→
+   178→  const del = async () => {
+   179→    try {
+   180→      await api(`/api/visits/${visit.id}`, { method: "DELETE" });
+   181→      toast.success("Visit deleted");
+   182→      onChange();
+   183→    } catch (e) {
+   184→      toast.error(e instanceof Error ? e.message : "Failed to delete");
+   185→    }
+   186→  };
+   187→
+   188→  const canRecord = visit.status === "occurred";
+   189→
+   190→  return (
+   191→    <GlassCard className="p-5">
+   192→      <div className="flex items-start justify-between gap-3">
+   193→        <div className="min-w-0 flex-1">
+   194→          <div className="flex items-center gap-2">
+   195→            <p className="truncate text-base font-semibold text-foreground">{visit.client.name}</p>
+   196→            <StatusChip status={visit.status} />
+   197→          </div>
+   198→          <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+   199→            <span className="inline-flex items-center gap-1">
+   200→              <Calendar className="size-3" />{t("visits.plannedDate")}: {formatDate(visit.plannedDate)}
+   201→            </span>
+   202→            {visit.actualDate ? (
+   203→              <span className="inline-flex items-center gap-1">
+   204→                <CheckCircle2 className="size-3 text-emerald-500" />{t("visits.actualDate")}: {formatDate(visit.actualDate)}
+   205→              </span>
+   206→            ) : null}
+   207→            {visit.client.phone ? (
+   208→              <span className="inline-flex items-center gap-1">
+   209→                <Phone className="size-3" />{visit.client.phone}
+   210→              </span>
+   211→            ) : null}
+   212→          </div>
+   213→          {visit.notes ? (
+   214→            <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">“{visit.notes}”</p>
+   215→          ) : null}
+   216→        </div>
+   217→
+   218→        <div className="flex shrink-0 items-center gap-2">
+   219→          {canRecord ? (
+   220→            <Dialog open={bookingOpen} onOpenChange={setBookingOpen}>
+   221→              <DialogTrigger asChild>
+   222→                <Button size="sm" variant="default">
+   223→                  <Package className="mr-1.5 size-4" />{t("visits.recordBooking")}
+   224→                </Button>
+   225→              </DialogTrigger>
+   226→              <RecordBookingDialog
+   227→                visitId={visit.id}
+   228→                onDone={() => { setBookingOpen(false); onChange(); }}
+   229→              />
+   230→            </Dialog>
+   231→          ) : null}
+   232→
+   233→          <DropdownMenu>
+   234→            <DropdownMenuTrigger asChild>
+   235→              <Button size="icon" variant="ghost" aria-label="Visit actions">
+   236→                <MoreHorizontal className="size-4" />
+   237→              </Button>
+   238→            </DropdownMenuTrigger>
+   239→            <DropdownMenuContent align="end" className="w-44">
+   240→              <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-muted-foreground">
+   241→                {t("visits.updateStatus")}
+   242→              </DropdownMenuLabel>
+   243→              <DropdownMenuItem onClick={() => updateStatus("scheduled")} disabled={visit.status === "scheduled"}>
+   244→                <Clock className="mr-2 size-3.5" />{t("status.scheduled")}
+   245→              </DropdownMenuItem>
+   246→              <DropdownMenuItem onClick={() => updateStatus("followed_up")} disabled={visit.status === "followed_up"}>
+   247→                <ArrowRight className="mr-2 size-3.5" />{t("status.followed_up")}
+   248→              </DropdownMenuItem>
+   249→              <DropdownMenuItem onClick={() => updateStatus("occurred")} disabled={visit.status === "occurred"}>
+   250→                <CheckCircle2 className="mr-2 size-3.5" />{t("status.occurred")}
+   251→              </DropdownMenuItem>
+   252→              <DropdownMenuItem onClick={() => updateStatus("no_show")} disabled={visit.status === "no_show"}>
+   253→                <Calendar className="mr-2 size-3.5" />{t("status.no_show")}
+   254→              </DropdownMenuItem>
+   255→              <DropdownMenuSeparator />
+   256→              <AlertDialog>
+   257→                <AlertDialogTrigger asChild>
+   258→                  <DropdownMenuItem onSelect={(e) => e.preventDefault()} className="text-rose-600 dark:text-rose-400">
+   259→                    <Trash2 className="mr-2 size-3.5" />{t("visits.deleteVisit")}
+   260→                  </DropdownMenuItem>
+   261→                </AlertDialogTrigger>
+   262→                <AlertDialogContent>
+   263→                  <AlertDialogHeader>
+   264→                    <AlertDialogTitle>{t("visits.deleteVisitConfirm")}</AlertDialogTitle>
+   265→                    <AlertDialogDescription>
+   266→                      This permanently removes the visit. Bookings and linked POs will also be deleted. This cannot be undone.
+   267→                    </AlertDialogDescription>
+   268→                  </AlertDialogHeader>
+   269→                  <AlertDialogFooter>
+   270→                    <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+   271→                    <AlertDialogAction onClick={del} className="bg-rose-600 hover:bg-rose-700">{t("common.delete")}</AlertDialogAction>
+   272→                  </AlertDialogFooter>
+   273→                </AlertDialogContent>
+   274→              </AlertDialog>
+   275→            </DropdownMenuContent>
+   276→          </DropdownMenu>
+   277→        </div>
+   278→      </div>
+   279→
+   280→      {visit.bookings.length > 0 ? (
+   281→        <div className="mt-3 space-y-2 border-t border-border/50 pt-3">
+   282→          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t("visits.bookings")} · {visit.bookings.length}</p>
+   283→          {visit.bookings.map((b) => (
+   284→            <div
+   285→              key={b.id}
+   286→              className="flex items-center justify-between gap-2 rounded-xl border border-border/40 bg-card/40 px-3 py-2"
+   287→            >
+   288→              <div className="flex min-w-0 items-center gap-2">
+   289→                <span className="truncate text-sm font-medium">{b.supplier.name}</span>
+   290→                <ArrowRight className="size-3 shrink-0 text-muted-foreground" />
+   291→                <span className="truncate text-sm text-muted-foreground">
+   292→                  {b.purchaseOrder?.poNumber ?? t("visits.poPending")}
+   293→                </span>
+   294→              </div>
+   295→              {b.purchaseOrder ? (
+   296→                <div className="flex shrink-0 items-center gap-2">
+   297→                  <span className="kpi-num text-sm font-semibold">{formatCurrency(b.purchaseOrder.totalValue, { compact: true })}</span>
+   298→                  <StatusChip status={b.purchaseOrder.status} />
+   299→                </div>
+   300→              ) : null}
+   301→            </div>
+   302→          ))}
+   303→        </div>
+   304→      ) : null}
+   305→
+   306→      {/* Collapsible visit photos section */}
+   307→      <Collapsible open={photosOpen} onOpenChange={setPhotosOpen} className="mt-3 border-t border-border/50 pt-3">
+   308→        <CollapsibleTrigger asChild>
+   309→          <Button
+   310→            type="button"
+   311→            variant="outline"
+   312→            size="sm"
+   313→            className="h-8 w-full justify-between gap-2 text-[11px]"
+   314→            aria-label={photosOpen ? "Hide visit photos" : "Show visit photos"}
+   315→          >
+   316→            <span className="inline-flex items-center gap-1.5">
+   317→              <Camera className="size-3.5" />
+   318→              {t("visits.visitPhotos")}
+   319→            </span>
+   320→            <ChevronDown className={`size-3.5 text-muted-foreground transition-transform ${photosOpen ? "rotate-180" : ""}`} />
+   321→          </Button>
+   322→        </CollapsibleTrigger>
+   323→        <CollapsibleContent className="mt-3 data-[state=closed]:animate-none">
+   324→          <PhotoUpload
+   325→            entityType="Visit"
+   326→            entityId={visit.id}
+   327→            stage="visit"
+   328→            label={t("visits.visitPhotos")}
+   329→            hint="Storefront, displays, product samples, meeting notes — capture the visit for the audit trail."
+   330→          />
+   331→        </CollapsibleContent>
+   332→      </Collapsible>
+   333→    </GlassCard>
+   334→  );
+   335→}
+   336→
+   337→function NewVisitDialog({ onDone }: { onDone: () => void }) {
+   338→  const { t } = useTranslation();
+   339→  const { data: clientsData } = useApi<{ clients: ClientOption[] }>("/api/clients");
+   340→  const clients = clientsData?.clients ?? [];
+   341→
+   342→  const [form, setForm] = React.useState({
+   343→    clientId: "",
+   344→    plannedDate: new Date().toISOString().slice(0, 10),
+   345→    status: "scheduled" as "scheduled" | "followed_up" | "occurred" | "no_show",
+   346→    notes: "",
+   347→  });
+   348→  const [saving, setSaving] = React.useState(false);
+   349→  // Gap 11 — inline field validation. Both clientId (Select) and plannedDate
+   350→  // (date Input) are required; we surface a rose border / error text under the
+   351→  // field and also keep the toast as a secondary cue.
+   352→  const [formErrors, setFormErrors] = React.useState<Record<string, string>>({});
+   353→
+   354→  const submit = async () => {
+   355→    const errors: Record<string, string> = {};
+   356→    if (!form.clientId) errors.clientId = "Select a client";
+   357→    if (!form.plannedDate) errors.plannedDate = "Planned date is required";
+   358→    if (Object.keys(errors).length > 0) {
+   359→      setFormErrors(errors);
+   360→      toast.error("Please fix the highlighted fields");
+   361→      return;
+   362→    }
+   363→    setFormErrors({});
+   364→    setSaving(true);
+   365→    try {
+   366→      await api("/api/visits", {
+   367→        method: "POST",
+   368→        body: JSON.stringify({
+   369→          clientId: form.clientId,
+   370→          plannedDate: new Date(form.plannedDate).toISOString(),
+   371→          status: form.status,
+   372→          notes: form.notes || null,
+   373→        }),
+   374→      });
+   375→      toast.success("Visit scheduled");
+   376→      onDone();
+   377→    } catch (e) {
+   378→      toast.error(e instanceof Error ? e.message : "Failed to create visit");
+   379→    } finally { setSaving(false); }
+   380→  };
+   381→
+   382→  const clearField = (field: string) => {
+   383→    setFormErrors((prev) => {
+   384→      if (!prev[field]) return prev;
+   385→      const next = { ...prev };
+   386→      delete next[field];
+   387→      return next;
+   388→    });
+   389→  };
+   390→
+   391→  return (
+   392→    <DialogContent className="glass-strong max-h-[90vh] max-w-lg overflow-y-auto">
+   393→      <DialogHeader>
+   394→        <DialogTitle>{t("visits.new")}</DialogTitle>
+   395→        <DialogDescription className="sr-only">Schedule a new client visit with planned date and status.</DialogDescription>
+   396→      </DialogHeader>
+   397→      <div className="grid gap-4 py-2">
+   398→        <Field label={`${t("visits.client")} *`} error={formErrors.clientId}>
+   399→          <Select
+   400→            value={form.clientId}
+   401→            onValueChange={(v) => { setForm({ ...form, clientId: v }); clearField("clientId"); }}
+   402→          >
+   403→            <SelectTrigger className={formErrors.clientId ? "border-rose-500 focus-visible:ring-rose-500" : ""}>
+   404→              <SelectValue placeholder={t("visits.selectClient")} />
+   405→            </SelectTrigger>
+   406→            <SelectContent>
+   407→              {clients.map((c) => (
+   408→                <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+   409→              ))}
+   410→            </SelectContent>
+   411→          </Select>
+   412→        </Field>
+   413→        <div className="grid grid-cols-2 gap-3">
+   414→          <Field label={`${t("visits.plannedDate")} *`} error={formErrors.plannedDate}>
+   415→            <Input
+   416→              type="date"
+   417→              value={form.plannedDate}
+   418→              onChange={(e) => { setForm({ ...form, plannedDate: e.target.value }); clearField("plannedDate"); }}
+   419→              className={formErrors.plannedDate ? "border-rose-500 focus-visible:ring-rose-500" : ""}
+   420→            />
+   421→          </Field>
+   422→          <Field label={t("common.status")}>
+   423→            <Select value={form.status} onValueChange={(v) => setForm({ ...form, status: v as typeof form.status })}>
+   424→              <SelectTrigger><SelectValue /></SelectTrigger>
+   425→              <SelectContent>
+   426→                <SelectItem value="scheduled">{t("status.scheduled")}</SelectItem>
+   427→                <SelectItem value="followed_up">{t("status.followed_up")}</SelectItem>
+   428→                <SelectItem value="occurred">{t("status.occurred")}</SelectItem>
+   429→                <SelectItem value="no_show">{t("status.no_show")}</SelectItem>
+   430→              </SelectContent>
+   431→            </Select>
+   432→          </Field>
+   433→        </div>
+   434→        <Field label={t("visits.notes")}>
+   435→          <Textarea
+   436→            value={form.notes}
+   437→            onChange={(e) => setForm({ ...form, notes: e.target.value })}
+   438→            placeholder={t("visits.notesPlaceholder")}
+   439→          />
+   440→        </Field>
+   441→      </div>
+   442→      <DialogFooter>
+   443→        <Button onClick={submit} disabled={saving}>{saving ? t("common.saving") : t("visits.scheduleVisit")}</Button>
+   444→      </DialogFooter>
+   445→    </DialogContent>
+   446→  );
+   447→}
+   448→
+   449→type SupplierOption = {
+   450→  id: string; name: string; defaultCommissionRate: number; defaultGstRate: number;
+   451→};
+   452→
+   453→type LineItemDraft = {
+   454→  styleName: string; color: string; setQty: string; unitPrice: string;
+   455→};
+   456→
+   457→function RecordBookingDialog({
+   458→  visitId, onDone,
+   459→}: {
+   460→  visitId: string;
+   461→  onDone: () => void;
+   462→}) {
+   463→  const { t } = useTranslation();
+   464→  const { data: suppliersData } = useApi<{ suppliers: SupplierOption[] }>("/api/suppliers");
+   465→  const suppliers = suppliersData?.suppliers ?? [];
+   466→
+   467→  const [supplierId, setSupplierId] = React.useState("");
+   468→  const [commissionRate, setCommissionRate] = React.useState<string>("");
+   469→  const [notes, setNotes] = React.useState("");
+   470→  const [items, setItems] = React.useState<LineItemDraft[]>([
+   471→    { styleName: "", color: "", setQty: "", unitPrice: "" },
+   472→  ]);
+   473→  const [saving, setSaving] = React.useState(false);
+   474→
+   475→  // When supplier chosen, prefill commission rate
+   476→  React.useEffect(() => {
+   477→    if (!supplierId) return;
+   478→    const s = suppliers.find((x) => x.id === supplierId);
+   479→    if (s) setCommissionRate(String(s.defaultCommissionRate));
+   480→  }, [supplierId, suppliers]);
+   481→
+   482→  const addLine = () => setItems((prev) => [...prev, { styleName: "", color: "", setQty: "", unitPrice: "" }]);
+   483→  const removeLine = (i: number) => setItems((prev) => prev.filter((_, idx) => idx !== i));
+   484→  const updateLine = (i: number, patch: Partial<LineItemDraft>) =>
+   485→    setItems((prev) => prev.map((it, idx) => (idx === i ? { ...it, ...patch } : it)));
+   486→
+   487→  const total = items.reduce((s, it) => s + (Number(it.setQty) || 0) * (Number(it.unitPrice) || 0), 0);
+   488→
+   489→  const submit = async () => {
+   490→    if (!supplierId) { toast.error("Select a supplier"); return; }
+   491→    const cleaned = items
+   492→      .map((it) => ({
+   493→        styleName: it.styleName.trim(),
+   494→        color: it.color.trim() || null,
+   495→        setQty: Number(it.setQty),
+   496→        unitPrice: Number(it.unitPrice),
+   497→      }))
+   498→      .filter((it) => it.styleName && it.setQty >= 1 && Number.isFinite(it.unitPrice) && it.unitPrice >= 0);
+   499→    if (cleaned.length === 0) {
+   500→      toast.error("Add at least one valid line item (style, qty ≥ 1, price ≥ 0)");
+   501→      return;
+   502→    }
+   503→    setSaving(true);
+   504→    try {
+   505→      const res = await api<{ po: { poNumber: string } }>("/api/bookings", {
+   506→        method: "POST",
+   507→        body: JSON.stringify({
+   508→          visitId,
+   509→          supplierId,
+   510→          commissionRate: commissionRate === "" ? null : Number(commissionRate),
+   511→          notes: notes || null,
+   512→          lineItems: cleaned,
+   513→        }),
+   514→      });
+   515→      toast.success(`Booking recorded — PO ${res.po.poNumber} generated`);
+   516→      onDone();
+   517→    } catch (e) {
+   518→      toast.error(e instanceof Error ? e.message : "Failed to record booking");
+   519→    } finally { setSaving(false); }
+   520→  };
+   521→
+   522→  return (
+   523→    <DialogContent className="glass-strong max-h-[92vh] max-w-2xl overflow-y-auto">
+   524→      <DialogHeader>
+   525→        <DialogTitle>{t("visits.recordBooking")}</DialogTitle>
+   526→        <DialogDescription className="sr-only">Record a supplier booking with line items. A purchase order is generated automatically upon save.</DialogDescription>
+   527→      </DialogHeader>
+   528→      <div className="grid gap-4 py-2">
+   529→        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+   530→          <Field label={`${t("portals.supplier")} *`}>
+   531→            <Select value={supplierId} onValueChange={setSupplierId}>
+   532→              <SelectTrigger><SelectValue placeholder={t("portals.selectSupplier")} /></SelectTrigger>
+   533→              <SelectContent>
+   534→                {suppliers.map((s) => (
+   535→                  <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+   536→                ))}
+   537→              </SelectContent>
+   538→            </Select>
+   539→          </Field>
+   540→          <Field label={`${t("brokerage.commissionRate")} %`}>
+   541→            <Input
+   542→              type="number"
+   543→              step="0.1"
+   544→              min="0"
+   545→              placeholder={t("visits.supplierDefaultPlaceholder")}
+   546→              value={commissionRate}
+   547→              onChange={(e) => setCommissionRate(e.target.value)}
+   548→            />
+   549→          </Field>
+   550→        </div>
+   551→
+   552→        <div>
+   553→          <div className="mb-2 flex items-center justify-between">
+   554→            <Label className="text-xs font-medium text-muted-foreground">{t("visits.lineItems")}</Label>
+   555→            <Button size="sm" variant="outline" onClick={addLine}>
+   556→              <Plus className="mr-1 size-3.5" />{t("common.add")}
+   557→            </Button>
+   558→          </div>
+   559→          <div className="space-y-2">
+   560→            <div className="hidden grid-cols-[1fr_1fr_80px_100px_36px] gap-2 px-1 text-[10px] uppercase tracking-wider text-muted-foreground sm:grid">
+   561→              <span>{t("visits.style")}</span>
+   562→              <span>{t("visits.color")}</span>
+   563→              <span>{t("visits.sets")}</span>
+   564→              <span>{t("visits.unitPrice")}</span>
+   565→              <span />
+   566→            </div>
+   567→            {items.map((it, i) => (
+   568→              <div key={i} className="grid grid-cols-2 gap-2 sm:grid-cols-[1fr_1fr_80px_100px_36px]">
+   569→                <Input
+   570→                  placeholder={t("visits.styleNamePlaceholder")}
+   571→                  value={it.styleName}
+   572→                  onChange={(e) => updateLine(i, { styleName: e.target.value })}
+   573→                />
+   574→                <Input
+   575→                  placeholder={t("visits.color")}
+   576→                  value={it.color}
+   577→                  onChange={(e) => updateLine(i, { color: e.target.value })}
+   578→                />
+   579→                <Input
+   580→                  type="number"
+   581→                  min="1"
+   582→                  placeholder={t("visits.qtyPlaceholder")}
+   583→                  value={it.setQty}
+   584→                  onChange={(e) => updateLine(i, { setQty: e.target.value })}
+   585→                />
+   586→                <Input
+   587→                  type="number"
+   588→                  min="0"
+   589→                  step="0.01"
+   590→                  placeholder={t("visits.pricePlaceholder")}
+   591→                  value={it.unitPrice}
+   592→                  onChange={(e) => updateLine(i, { unitPrice: e.target.value })}
+   593→                />
+   594→                <Button
+   595→                  type="button"
+   596→                  size="icon"
+   597→                  variant="ghost"
+   598→                  onClick={() => items.length > 1 ? removeLine(i) : null}
+   599→                  disabled={items.length === 1}
+   600→                  aria-label="Remove line item"
+   601→                  className="text-rose-500 hover:text-rose-600"
+   602→                >
+   603→                  <Trash2 className="size-4" />
+   604→                </Button>
+   605→              </div>
+   606→            ))}
+   607→          </div>
+   608→          <div className="mt-3 flex items-center justify-end gap-2 rounded-xl border border-border/40 bg-card/40 px-3 py-2 text-sm">
+   609→            <span className="text-xs text-muted-foreground">{t("visits.bookingTotal")}</span>
+   610→            <span className="kpi-num text-base font-semibold text-emerald-600 dark:text-emerald-400">
+   611→              {formatCurrency(total, { compact: true })}
+   612→            </span>
+   613→          </div>
+   614→        </div>
+   615→
+   616→        <Field label={t("visits.notes")}>
+   617→          <Textarea
+   618→            value={notes}
+   619→            onChange={(e) => setNotes(e.target.value)}
+   620→            placeholder={t("visits.bookingNotesPlaceholder")}
+   621→          />
+   622→        </Field>
+   623→      </div>
+   624→      <DialogFooter>
+   625→        <Button onClick={submit} disabled={saving}>
+   626→          {saving ? t("visits.creatingPo") : `${t("visits.recordBooking")} & PO`}
+   627→        </Button>
+   628→      </DialogFooter>
+   629→    </DialogContent>
+   630→  );
+   631→}
+   632→
+   633→function Field({ label, children, error }: { label: string; children: React.ReactNode; error?: string }) {
+   634→  return (
+   635→    <div className="space-y-1.5">
+   636→      <Label className="text-xs font-medium text-muted-foreground">{label}</Label>
+   637→      {children}
+   638→      {error ? (
+   639→        <p className="inline-flex items-center gap-1 text-xs text-rose-500">
+   640→          <AlertCircle className="size-3" />
+   641→          {error}
+   642→        </p>
+   643→      ) : null}
+   644→    </div>
+   645→  );
+   646→}
+   647→

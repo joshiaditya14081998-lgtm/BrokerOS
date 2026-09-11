@@ -1,0 +1,1497 @@
+     1→"use client";
+     2→
+     3→import * as React from "react";
+     4→import {
+     5→  Award, TrendingUp, Clock, BarChart3,
+     6→  Factory, Users, Wallet, ArrowDownRight,
+     7→  Calendar, Star, Zap, AlertCircle,
+     8→  Tag as TagIcon, Filter, X, PieChart,
+     9→} from "lucide-react";
+    10→import {
+    11→  ResponsiveContainer, BarChart, Bar, AreaChart, Area, XAxis, YAxis,
+    12→  Tooltip, CartesianGrid, Cell, ComposedChart, Line, ReferenceLine, Legend,
+    13→} from "recharts";
+    14→import { useApi } from "@/lib/api";
+    15→import { formatCurrency, formatNumber, formatDate, daysBetween } from "@/lib/format";
+    16→import { GlassCard, KpiCard, SectionHeader, EmptyState } from "@/components/shared";
+    17→import { Skeleton } from "@/components/ui/skeleton";
+    18→import { Badge } from "@/components/ui/badge";
+    19→import { Button } from "@/components/ui/button";
+    20→import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+    21→import { TagBadge, type TagLike } from "@/components/tag-badge";
+    22→import { TAG_COLOR_CLASS, TAG_SWATCH_CLASS } from "@/lib/tags";
+    23→import { cn } from "@/lib/utils";
+    24→import { useUrlState } from "@/hooks/use-url-state";
+    25→import { ShareLinkButton } from "@/components/share-link-button";
+    26→import {
+    27→  Table, TableHeader, TableBody, TableHead, TableRow, TableCell,
+    28→} from "@/components/ui/table";
+    29→
+    30→// ─────────────────────────────────────────────────────────────────────────────
+    31→// Types — match the API response shape exactly.
+    32→// ─────────────────────────────────────────────────────────────────────────────
+    33→type Tier = "excellent" | "good" | "average" | "needs attention";
+    34→
+    35→type SupplierScore = {
+    36→  supplierId: string;
+    37→  name: string;
+    38→  score: number;
+    39→  fulfillment: number;
+    40→  onTimeRate: number;
+    41→  shortShipmentRate: number;
+    42→  disputeRate: number;
+    43→  dispatchCount: number;
+    44→  totalSupplied: number;
+    45→  tier: Tier;
+    46→};
+    47→
+    48→type ClientExposure = {
+    49→  clientId: string;
+    50→  name: string;
+    51→  outstanding: number;
+    52→  exposureTrend: { month: string; value: number }[];
+    53→  avgPaymentDelay: number;
+    54→  returnRate: number;
+    55→  billCount: number;
+    56→};
+    57→
+    58→type BrokerageForecast = {
+    59→  pendingTotal: number;
+    60→  eligibleUnpaidTotal: number;
+    61→  projectedByMonth: { month: string; amount: number }[];
+    62→  byCadence: { immediate: number; "4_month": number; "12_month": number };
+    63→};
+    64→
+    65→type VolumeTrends = {
+    66→  monthlyBilled: { month: string; value: number }[];
+    67→  monthlyDispatched: { month: string; value: number }[];
+    68→  topPairs: { clientName: string; supplierName: string; value: number }[];
+    69→};
+    70→
+    71→type SeasonKey = "festive" | "wedding" | "summer" | "winter" | "normal";
+    72→
+    73→type Brokerage6MonthPoint = { month: string; projected: number; upper: number; lower: number };
+    74→
+    75→type SeasonalTrendPoint = {
+    76→  month: string;
+    77→  value: number;
+    78→  growthRate: number;
+    79→  seasonLabel: string;
+    80→  seasonKey: SeasonKey;
+    81→  isPeak: boolean;
+    82→  isLow: boolean;
+    83→};
+    84→
+    85→type ClientVelocityPoint = {
+    86→  clientId: string;
+    87→  name: string;
+    88→  lastOrderDate: string | null;
+    89→  avgDaysBetweenOrders: number;
+    90→  predictedNextOrderDate: string | null;
+    91→  orderCount: number;
+    92→};
+    93→
+    94→type SupplierCapacityPoint = {
+    95→  supplierId: string;
+    96→  name: string;
+    97→  avgLeadTimeDays: number;
+    98→  pendingPOs: number;
+    99→  monthlyAvgPOs: number;
+   100→  status: "normal" | "high" | "overloaded";
+   101→};
+   102→
+   103→type Forecast = {
+   104→  brokerage6Month: Brokerage6MonthPoint[];
+   105→  seasonalTrends: SeasonalTrendPoint[];
+   106→  clientVelocity: ClientVelocityPoint[];
+   107→  supplierCapacity: SupplierCapacityPoint[];
+   108→};
+   109→
+   110→// Tag filter shape returned by the API when a tag filter is active.
+   111→type AppliedFilter = {
+   112→  tagId: string;
+   113→  tagName: string;
+   114→  tagColor: string;
+   115→  entityType: "Client" | "Supplier" | "PurchaseOrder" | null;
+   116→  clientCount: number;
+   117→  supplierCount: number;
+   118→  purchaseOrderCount: number;
+   119→};
+   120→
+   121→type ClientComparison = {
+   122→  taggedCount: number;
+   123→  totalCount: number;
+   124→  taggedBusiness: number;
+   125→  allBusiness: number;
+   126→  taggedOutstanding: number;
+   127→  allOutstanding: number;
+   128→  taggedBrokerage: number;
+   129→  allBrokerage: number;
+   130→  taggedAvgOutstanding: number;
+   131→  allAvgOutstanding: number;
+   132→};
+   133→
+   134→type SupplierComparison = {
+   135→  taggedCount: number;
+   136→  totalCount: number;
+   137→  taggedSupplied: number;
+   138→  allSupplied: number;
+   139→  taggedFulfillment: number;
+   140→  allFulfillment: number;
+   141→};
+   142→
+   143→type PoComparison = {
+   144→  taggedCount: number;
+   145→  totalCount: number;
+   146→  taggedValue: number;
+   147→  allValue: number;
+   148→  taggedFulfillment: number;
+   149→  allFulfillment: number;
+   150→};
+   151→
+   152→type TagInsights = {
+   153→  client: ClientComparison | null;
+   154→  supplier: SupplierComparison | null;
+   155→  purchaseOrder: PoComparison | null;
+   156→};
+   157→
+   158→type AnalyticsData = {
+   159→  appliedFilter: AppliedFilter | null;
+   160→  tagInsights: TagInsights | null;
+   161→  totals: { supplierCount: number; clientCount: number; purchaseOrderCount: number };
+   162→  suppliers: SupplierScore[];
+   163→  clients: ClientExposure[];
+   164→  brokerage: BrokerageForecast;
+   165→  volume: VolumeTrends;
+   166→  forecast: Forecast;
+   167→};
+   168→
+   169→type EntityTypeFilter = "all" | "Client" | "Supplier" | "PurchaseOrder";
+   170→
+   171→type TagWithCounts = TagLike & {
+   172→  counts?: { clients: number; suppliers: number; purchaseOrders: number; total: number };
+   173→};
+   174→
+   175→// ─────────────────────────────────────────────────────────────────────────────
+   176→// Chart palette — emerald / teal / amber / rose / plum (no indigo / blue).
+   177→// ─────────────────────────────────────────────────────────────────────────────
+   178→const COLORS = {
+   179→  emerald: "oklch(0.7 0.15 162)",
+   180→  teal: "oklch(0.65 0.12 200)",
+   181→  amber: "oklch(0.78 0.14 85)",
+   182→  rose: "oklch(0.65 0.2 27)",
+   183→  plum: "oklch(0.62 0.15 340)",
+   184→};
+   185→
+   186→const TIER_STYLES: Record<Tier, { badge: string; label: string }> = {
+   187→  excellent: { badge: "border-emerald-500/30 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300", label: "Excellent" },
+   188→  good: { badge: "border-teal-500/30 bg-teal-500/15 text-teal-700 dark:text-teal-300", label: "Good" },
+   189→  average: { badge: "border-amber-500/30 bg-amber-500/15 text-amber-700 dark:text-amber-300", label: "Average" },
+   190→  "needs attention": { badge: "border-rose-500/30 bg-rose-500/15 text-rose-700 dark:text-rose-300", label: "Needs attention" },
+   191→};
+   192→
+   193→// ─────────────────────────────────────────────────────────────────────────────
+   194→// Season palette — Indian garment-industry mapping.
+   195→//   festive → emerald (Oct–Nov, Dussehra/Diwali)
+   196→//   wedding → rose    (Dec–Jan)
+   197→//   summer  → amber   (Apr–May)
+   198→//   winter  → teal    (Aug–Sep)
+   199→//   normal  → muted
+   200→// ─────────────────────────────────────────────────────────────────────────────
+   201→const SEASON_STYLES: Record<SeasonKey, { color: string; badge: string; label: string }> = {
+   202→  festive: { color: COLORS.emerald, badge: "border-emerald-500/30 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300", label: "Festive" },
+   203→  wedding: { color: COLORS.rose, badge: "border-rose-500/30 bg-rose-500/15 text-rose-700 dark:text-rose-300", label: "Wedding" },
+   204→  summer: { color: COLORS.amber, badge: "border-amber-500/30 bg-amber-500/15 text-amber-700 dark:text-amber-300", label: "Summer" },
+   205→  winter: { color: COLORS.teal, badge: "border-teal-500/30 bg-teal-500/15 text-teal-700 dark:text-teal-300", label: "Winter" },
+   206→  normal: { color: "oklch(0.7 0.02 165)", badge: "border-zinc-500/30 bg-zinc-500/15 text-zinc-600 dark:text-zinc-300", label: "Regular" },
+   207→};
+   208→
+   209→const SUPPLIER_STATUS_STYLES: Record<SupplierCapacityPoint["status"], { badge: string; label: string; dot: string }> = {
+   210→  normal: { badge: "border-emerald-500/30 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300", label: "Normal", dot: COLORS.emerald },
+   211→  high: { badge: "border-amber-500/30 bg-amber-500/15 text-amber-700 dark:text-amber-300", label: "High load", dot: COLORS.amber },
+   212→  overloaded: { badge: "border-rose-500/30 bg-rose-500/15 text-rose-700 dark:text-rose-300", label: "Overloaded", dot: COLORS.rose },
+   213→};
+   214→
+   215→// ─────────────────────────────────────────────────────────────────────────────
+   216→// ScoreRing — circular SVG progress for the supplier reliability score.
+   217→// ─────────────────────────────────────────────────────────────────────────────
+   218→function ScoreRing({ score, size = 48 }: { score: number; size?: number }) {
+   219→  const radius = (size - 8) / 2;
+   220→  const circumference = 2 * Math.PI * radius;
+   221→  const offset = circumference - (score / 100) * circumference;
+   222→  const color = score >= 85 ? COLORS.emerald
+   223→    : score >= 70 ? COLORS.teal
+   224→    : score >= 55 ? COLORS.amber
+   225→    : COLORS.rose;
+   226→  return (
+   227→    <div className="relative" style={{ width: size, height: size }}>
+   228→      <svg width={size} height={size} className="-rotate-90">
+   229→        <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="oklch(0.7 0.02 160 / 0.2)" strokeWidth={4} />
+   230→        <circle
+   231→          cx={size / 2}
+   232→          cy={size / 2}
+   233→          r={radius}
+   234→          fill="none"
+   235→          stroke={color}
+   236→          strokeWidth={4}
+   237→          strokeDasharray={circumference}
+   238→          strokeDashoffset={offset}
+   239→          strokeLinecap="round"
+   240→          className="transition-all duration-500"
+   241→        />
+   242→      </svg>
+   243→      <span className="absolute inset-0 grid place-items-center text-xs font-semibold kpi-num" style={{ color }}>
+   244→        {score}
+   245→      </span>
+   246→    </div>
+   247→  );
+   248→}
+   249→
+   250→// ─────────────────────────────────────────────────────────────────────────────
+   251→// Tag filter bar — entity-type ToggleGroup + tag pills. Single-select on the
+   252→// tag for v1 (clicking the active pill clears it). The tagId + entityType
+   253→// state is URL-persisted by the parent via useUrlState (Task 19-b).
+   254→// ─────────────────────────────────────────────────────────────────────────────
+   255→function AnalyticsTagFilterBar({
+   256→  tags,
+   257→  tagId,
+   258→  entityType,
+   259→  onTagChange,
+   260→  onEntityTypeChange,
+   261→  onClear,
+   262→}: {
+   263→  tags: TagWithCounts[];
+   264→  // `tagId` is an empty string when no tag is selected (was `null` before
+   265→  // Task 19-b — switched to "" so it serialises cleanly to the URL param
+   266→  // `?tagId=`). All `if (tagId)` / `tagId ? ... : ...` checks treat "" as
+   267→  // falsy, matching the old null semantics.
+   268→  tagId: string;
+   269→  entityType: EntityTypeFilter;
+   270→  onTagChange: (id: string) => void;
+   271→  onEntityTypeChange: (t: EntityTypeFilter) => void;
+   272→  onClear: () => void;
+   273→}) {
+   274→  if (tags.length === 0) return null;
+   275→
+   276→  const entityOptions: { value: EntityTypeFilter; label: string }[] = [
+   277→    { value: "all", label: "All" },
+   278→    { value: "Client", label: "Clients" },
+   279→    { value: "Supplier", label: "Suppliers" },
+   280→    { value: "PurchaseOrder", label: "POs" },
+   281→  ];
+   282→
+   283→  return (
+   284→    <GlassCard className="p-4">
+   285→      <div className="flex flex-col gap-3">
+   286→        <div className="flex flex-wrap items-center justify-between gap-3">
+   287→          <div className="flex items-center gap-2">
+   288→            <span className="inline-flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+   289→              <Filter className="size-3.5" />
+   290→              Filter by tag
+   291→            </span>
+   292→            <ToggleGroup
+   293→              type="single"
+   294→              value={entityType}
+   295→              onValueChange={(v) => {
+   296→                if (v) onEntityTypeChange(v as EntityTypeFilter);
+   297→              }}
+   298→              variant="outline"
+   299→              size="sm"
+   300→              className="rounded-full border border-border/60 bg-card/40"
+   301→            >
+   302→              {entityOptions.map((o) => (
+   303→                <ToggleGroupItem
+   304→                  key={o.value}
+   305→                  value={o.value}
+   306→                  className="rounded-full px-3 text-xs data-[state=on]:border-emerald-500/40 data-[state=on]:bg-emerald-500/15 data-[state=on]:text-emerald-700 dark:data-[state=on]:text-emerald-300"
+   307→                >
+   308→                  {o.label}
+   309→                </ToggleGroupItem>
+   310→              ))}
+   311→            </ToggleGroup>
+   312→          </div>
+   313→          {tagId ? (
+   314→            <Button
+   315→              size="sm"
+   316→              variant="ghost"
+   317→              onClick={onClear}
+   318→              className="h-7 gap-1 px-2 text-xs text-muted-foreground hover:bg-rose-500/10 hover:text-rose-700 dark:hover:text-rose-300"
+   319→            >
+   320→              <X className="size-3" />
+   321→              Clear filter
+   322→            </Button>
+   323→          ) : null}
+   324→        </div>
+   325→
+   326→        <div className="flex flex-wrap items-center gap-1.5">
+   327→          <span className="inline-flex items-center gap-1 pr-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+   328→            <TagIcon className="size-3" />Tags
+   329→          </span>
+   330→          {tags.map((t) => {
+   331→            const active = tagId === t.id;
+   332→            const relevantCount = entityType === "all"
+   333→              ? t.counts?.total ?? 0
+   334→              : entityType === "Client"
+   335→                ? t.counts?.clients ?? 0
+   336→                : entityType === "Supplier"
+   337→                  ? t.counts?.suppliers ?? 0
+   338→                  : t.counts?.purchaseOrders ?? 0;
+   339→            return (
+   340→              <TagBadge
+   341→                key={t.id}
+   342→                tag={t}
+   343→                size="sm"
+   344→                active={active}
+   345→                onClick={() => onTagChange(active ? "" : t.id)}
+   346→                className={cn(relevantCount === 0 && !active && "opacity-50")}
+   347→              />
+   348→            );
+   349→          })}
+   350→        </div>
+   351→      </div>
+   352→    </GlassCard>
+   353→  );
+   354→}
+   355→
+   356→// ─────────────────────────────────────────────────────────────────────────────
+   357→// TagInsightsCard — top-of-view summary card shown when a tag filter is
+   358→// active. Surfaces tag name + color, entity counts, total business value,
+   359→// average-metric comparison, and a tagged-vs-all share bar.
+   360→// ─────────────────────────────────────────────────────────────────────────────
+   361→function TagInsightsCard({ appliedFilter, insights }: { appliedFilter: AppliedFilter; insights: TagInsights }) {
+   362→  const swatchClass = TAG_SWATCH_CLASS[appliedFilter.tagColor] ?? TAG_SWATCH_CLASS.emerald;
+   363→  const colorClass = TAG_COLOR_CLASS[appliedFilter.tagColor] ?? TAG_COLOR_CLASS.emerald;
+   364→
+   365→  // Build the comparison "share of total" bars for the included entity types.
+   366→  type ShareRow = {
+   367→    label: string;
+   368→    tagged: number;
+   369→    total: number;
+   370→    icon: React.ReactNode;
+   371→  };
+   372→  const shareRows: ShareRow[] = [];
+   373→  if (insights.client) {
+   374→    shareRows.push({
+   375→      label: "Clients",
+   376→      tagged: insights.client.taggedCount,
+   377→      total: insights.client.totalCount,
+   378→      icon: <Users className="size-3.5" />,
+   379→    });
+   380→  }
+   381→  if (insights.supplier) {
+   382→    shareRows.push({
+   383→      label: "Suppliers",
+   384→      tagged: insights.supplier.taggedCount,
+   385→      total: insights.supplier.totalCount,
+   386→      icon: <Factory className="size-3.5" />,
+   387→    });
+   388→  }
+   389→  if (insights.purchaseOrder) {
+   390→    shareRows.push({
+   391→      label: "Purchase Orders",
+   392→      tagged: insights.purchaseOrder.taggedCount,
+   393→      total: insights.purchaseOrder.totalCount,
+   394→      icon: <BarChart3 className="size-3.5" />,
+   395→    });
+   396→  }
+   397→
+   398→  // Average-metric comparison insights (one per included entity type).
+   399→  type InsightRow = {
+   400→    label: string;
+   401→    taggedValue: string;
+   402→    allValue: string;
+   403→    delta: number; // % difference vs all
+   404→  };
+   405→  const insightRows: InsightRow[] = [];
+   406→  if (insights.client) {
+   407→    const delta = insights.client.allAvgOutstanding > 0
+   408→      ? Math.round(((insights.client.taggedAvgOutstanding - insights.client.allAvgOutstanding) / insights.client.allAvgOutstanding) * 100)
+   409→      : 0;
+   410→    insightRows.push({
+   411→      label: "Avg outstanding / client",
+   412→      taggedValue: formatCurrency(insights.client.taggedAvgOutstanding, { compact: true }),
+   413→      allValue: formatCurrency(insights.client.allAvgOutstanding, { compact: true }),
+   414→      delta,
+   415→    });
+   416→  }
+   417→  if (insights.supplier) {
+   418→    const delta = insights.supplier.allFulfillment > 0
+   419→      ? insights.supplier.taggedFulfillment - insights.supplier.allFulfillment
+   420→      : 0;
+   421→    insightRows.push({
+   422→      label: "Avg fulfillment / supplier",
+   423→      taggedValue: `${insights.supplier.taggedFulfillment}%`,
+   424→      allValue: `${insights.supplier.allFulfillment}%`,
+   425→      delta,
+   426→    });
+   427→  }
+   428→  if (insights.purchaseOrder) {
+   429→    const avgTagged = insights.purchaseOrder.taggedCount > 0
+   430→      ? insights.purchaseOrder.taggedValue / insights.purchaseOrder.taggedCount
+   431→      : 0;
+   432→    const avgAll = insights.purchaseOrder.totalCount > 0
+   433→      ? insights.purchaseOrder.allValue / insights.purchaseOrder.totalCount
+   434→      : 0;
+   435→    const delta = avgAll > 0 ? Math.round(((avgTagged - avgAll) / avgAll) * 100) : 0;
+   436→    insightRows.push({
+   437→      label: "Avg PO value",
+   438→      taggedValue: formatCurrency(Math.round(avgTagged), { compact: true }),
+   439→      allValue: formatCurrency(Math.round(avgAll), { compact: true }),
+   440→      delta,
+   441→    });
+   442→  }
+   443→
+   444→  return (
+   445→    <GlassCard className="relative overflow-hidden p-5">
+   446→      <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-emerald-500/5 to-transparent" />
+   447→      <div className="relative">
+   448→        <div className="flex flex-wrap items-start justify-between gap-3">
+   449→          <div className="flex items-center gap-3">
+   450→            <div className={cn("grid size-10 place-items-center rounded-xl border", colorClass)}>
+   451→              <TagIcon className="size-5" />
+   452→            </div>
+   453→            <div>
+   454→              <div className="flex items-center gap-2">
+   455→                <h3 className="text-lg font-semibold tracking-tight text-foreground">
+   456→                  {appliedFilter.tagName}
+   457→                </h3>
+   458→                <span className={cn("size-2.5 rounded-full", swatchClass)} aria-hidden />
+   459→              </div>
+   460→              <p className="text-xs text-muted-foreground">
+   461→                {appliedFilter.entityType === null
+   462→                  ? "Filter applied across Clients, Suppliers & Purchase Orders"
+   463→                  : `Filter scoped to ${appliedFilter.entityType === "PurchaseOrder" ? "Purchase Orders" : `${appliedFilter.entityType}s`}`}
+   464→              </p>
+   465→            </div>
+   466→          </div>
+   467→          <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+   468→            <PieChart className="size-3" />
+   469→            Tag insights
+   470→          </Badge>
+   471→        </div>
+   472→
+   473→        {/* Share-of-total bars */}
+   474→        <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+   475→          {shareRows.map((row) => {
+   476→            const pct = row.total > 0 ? Math.round((row.tagged / row.total) * 100) : 0;
+   477→            return (
+   478→              <div key={row.label} className="rounded-xl border border-border/50 bg-card/40 p-3">
+   479→                <div className="flex items-center justify-between gap-2">
+   480→                  <span className="inline-flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+   481→                    {row.icon}
+   482→                    {row.label}
+   483→                  </span>
+   484→                  <span className="kpi-num text-xs text-muted-foreground">
+   485→                    {row.tagged} of {row.total}
+   486→                  </span>
+   487→                </div>
+   488→                <div className="mt-2 flex items-center gap-2">
+   489→                  <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
+   490→                    <div
+   491→                      className="h-full rounded-full bg-emerald-500 transition-all duration-500"
+   492→                      style={{ width: `${Math.max(2, pct)}%` }}
+   493→                    />
+   494→                  </div>
+   495→                  <span className="kpi-num w-10 text-right text-xs font-medium text-foreground">{pct}%</span>
+   496→                </div>
+   497→              </div>
+   498→            );
+   499→          })}
+   500→        </div>
+   501→
+   502→        {/* Tagged vs all comparison metrics */}
+   503→        <div className="mt-4">
+   504→          <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+   505→            Tagged vs. all entities
+   506→          </p>
+   507→          <div className="overflow-x-auto rounded-xl border border-border/50">
+   508→            <Table>
+   509→              <TableHeader>
+   510→                <TableRow>
+   511→                  <TableHead>Metric</TableHead>
+   512→                  <TableHead className="text-right">Tagged</TableHead>
+   513→                  <TableHead className="text-right">All</TableHead>
+   514→                  <TableHead className="text-right">Δ vs. all</TableHead>
+   515→                </TableRow>
+   516→              </TableHeader>
+   517→              <TableBody>
+   518→                {insightRows.map((row) => {
+   519→                  const positive = row.delta > 0;
+   520→                  const neutral = row.delta === 0;
+   521→                  const tone = neutral
+   522→                    ? "text-muted-foreground"
+   523→                    : positive
+   524→                      ? "text-emerald-600 dark:text-emerald-400"
+   525→                      : "text-rose-600 dark:text-rose-400";
+   526→                  return (
+   527→                    <TableRow key={row.label} className="hover-lift">
+   528→                      <TableCell className="font-medium text-foreground">{row.label}</TableCell>
+   529→                      <TableCell className="text-right kpi-num text-foreground">{row.taggedValue}</TableCell>
+   530→                      <TableCell className="text-right kpi-num text-muted-foreground">{row.allValue}</TableCell>
+   531→                      <TableCell className="text-right kpi-num">
+   532→                        <span className={tone}>
+   533→                          {neutral ? "—" : `${positive ? "+" : ""}${row.delta}${row.label.includes("fulfillment") ? "pp" : "%"}`}
+   534→                        </span>
+   535→                      </TableCell>
+   536→                    </TableRow>
+   537→                  );
+   538→                })}
+   539→              </TableBody>
+   540→            </Table>
+   541→          </div>
+   542→        </div>
+   543→      </div>
+   544→    </GlassCard>
+   545→  );
+   546→}
+   547→
+   548→// ─────────────────────────────────────────────────────────────────────────────
+   549→// TagComparisonChart — grouped BarChart comparing Tagged vs All across the
+   550→// key metrics for each included entity type.
+   551→// ─────────────────────────────────────────────────────────────────────────────
+   552→function TagComparisonChart({ insights, tagColor }: { insights: TagInsights; tagColor: string }) {
+   553→  // Build chart data — one row per entity-type/metric.
+   554→  type ChartRow = { metric: string; tagged: number; all: number };
+   555→  const rows: ChartRow[] = [];
+   556→  if (insights.client) {
+   557→    rows.push({ metric: "Client · Business", tagged: insights.client.taggedBusiness, all: insights.client.allBusiness });
+   558→    rows.push({ metric: "Client · Outstanding", tagged: insights.client.taggedOutstanding, all: insights.client.allOutstanding });
+   559→    rows.push({ metric: "Client · Brokerage", tagged: insights.client.taggedBrokerage, all: insights.client.allBrokerage });
+   560→  }
+   561→  if (insights.supplier) {
+   562→    rows.push({ metric: "Supplier · Supplied", tagged: insights.supplier.taggedSupplied, all: insights.supplier.allSupplied });
+   563→    // Fulfillment is a % — scale to ₹10k-per-% so it shows up on the same axis
+   564→    // (we surface the raw % in the tooltip via formatter).
+   565→    rows.push({
+   566→      metric: "Supplier · Fulfillment",
+   567→      tagged: insights.supplier.taggedFulfillment * 1000,
+   568→      all: insights.supplier.allFulfillment * 1000,
+   569→    });
+   570→  }
+   571→  if (insights.purchaseOrder) {
+   572→    rows.push({ metric: "PO · Value", tagged: insights.purchaseOrder.taggedValue, all: insights.purchaseOrder.allValue });
+   573→    rows.push({
+   574→      metric: "PO · Fulfillment",
+   575→      tagged: insights.purchaseOrder.taggedFulfillment * 1000,
+   576→      all: insights.purchaseOrder.allFulfillment * 1000,
+   577→    });
+   578→  }
+   579→
+   580→  if (rows.length === 0) return null;
+   581→
+   582→  const tagSwatchColor = TAG_SWATCH_CLASS[tagColor] ? COLORS[colorsKeyFor(tagColor)] : COLORS.emerald;
+   583→  const tooltipFormatter = (value: number, name: string, item: { payload?: { metric?: string } }) => {
+   584→    const metric = item?.payload?.metric ?? "";
+   585→    if (metric.includes("Fulfillment")) {
+   586→      return [`${Math.round(value / 1000)}%`, name];
+   587→    }
+   588→    return [formatCurrency(value), name];
+   589→  };
+   590→
+   591→  return (
+   592→    <GlassCard className="p-5">
+   593→      <SectionHeader
+   594→        title="Tagged vs. All — Comparison"
+   595→        description="Side-by-side view of how the tagged segment stacks up against the full portfolio"
+   596→        action={
+   597→          <div className="hidden items-center gap-3 text-xs sm:flex">
+   598→            <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+   599→              <span className="size-2.5 rounded-full" style={{ background: tagSwatchColor }} />
+   600→              Tagged
+   601→            </span>
+   602→            <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+   603→              <span className="size-2.5 rounded-full" style={{ background: COLORS.teal }} />
+   604→              All
+   605→            </span>
+   606→          </div>
+   607→        }
+   608→      />
+   609→      <div className="mt-4 h-72 w-full">
+   610→        <ResponsiveContainer width="100%" height="100%">
+   611→          <BarChart data={rows} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+   612→            <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.7 0.02 160 / 0.2)" vertical={false} />
+   613→            <XAxis
+   614→              dataKey="metric"
+   615→              tick={{ fontSize: 10, fill: "oklch(0.5 0.02 165)" }}
+   616→              axisLine={false}
+   617→              tickLine={false}
+   618→              interval={0}
+   619→              angle={-25}
+   620→              textAnchor="end"
+   621→              height={60}
+   622→            />
+   623→            <YAxis
+   624→              tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }}
+   625→              axisLine={false}
+   626→              tickLine={false}
+   627→              tickFormatter={(v) => formatCurrency(v as number, { compact: true })}
+   628→              width={55}
+   629→            />
+   630→            <Tooltip
+   631→              cursor={{ fill: "oklch(0.7 0.02 160 / 0.08)" }}
+   632→              contentStyle={{ background: "oklch(0.16 0.012 170 / 0.92)", border: "1px solid oklch(1 0 0 / 0.12)", borderRadius: 12, color: "white", backdropFilter: "blur(12px)" }}
+   633→              formatter={(v: number, name: string, item) => tooltipFormatter(v, name, item as { payload?: { metric?: string } })}
+   634→            />
+   635→            <Legend
+   636→              wrapperStyle={{ fontSize: 11 }}
+   637→              formatter={(v) => (v === "tagged" ? "Tagged" : "All")}
+   638→            />
+   639→            <Bar dataKey="tagged" name="tagged" fill={tagSwatchColor} radius={[4, 4, 0, 0]} />
+   640→            <Bar dataKey="all" name="all" fill={COLORS.teal} radius={[4, 4, 0, 0]} fillOpacity={0.55} />
+   641→          </BarChart>
+   642→        </ResponsiveContainer>
+   643→      </div>
+   644→      <p className="mt-2 text-[11px] text-muted-foreground">
+   645→        Fulfillment metrics are scaled for visual comparison — hover for the true percentage.
+   646→      </p>
+   647→    </GlassCard>
+   648→  );
+   649→}
+   650→
+   651→// Maps a tag color name (from the shared palette) to the oklch chart color so
+   652→// the TagComparisonChart bars match the tag's pill swatch.
+   653→function colorsKeyFor(color: string): keyof typeof COLORS {
+   654→  if (color === "emerald") return "emerald";
+   655→  if (color === "amber") return "amber";
+   656→  if (color === "rose") return "rose";
+   657→  if (color === "teal") return "teal";
+   658→  if (color === "plum") return "plum";
+   659→  return "emerald";
+   660→}
+   661→
+   662→// ─────────────────────────────────────────────────────────────────────────────
+   663→// Main view
+   664→// ─────────────────────────────────────────────────────────────────────────────
+   665→export function AnalyticsView() {
+   666→  // URL-persisted tag filter state (Task 19-b). `tagId` syncs to `?tagId=`
+   667→  // and `entityType` syncs to `?entityType=` so a refresh or shared link
+   668→  // preserves the tag filter. Empty `tagId` means "no tag selected" (was
+   669→  // `null` before — the existing `if (tagId)` / `tagId ? ... : ...` checks
+   670→  // treat "" as falsy, matching the old null semantics).
+   671→  //
+   672→  // `entityType` keeps "all" as its default (not "" as the spec suggested)
+   673→  // because the ToggleGroup's first option has value="all" — using "" as
+   674→  // the default would leave nothing highlighted on initial load. This is a
+   675→  // minor deviation from the spec; the URL key (`entityType`) matches.
+   676→  const [tagId, setTagId] = useUrlState<string>("tagId", "");
+   677→  const [entityType, setEntityType] = useUrlState<EntityTypeFilter>("entityType", "all");
+   678→
+   679→  // Build the analytics URL with optional query params.
+   680→  const analyticsPath = React.useMemo(() => {
+   681→    if (!tagId) return "/api/analytics";
+   682→    const params = new URLSearchParams();
+   683→    params.set("tagId", tagId);
+   684→    if (entityType !== "all") params.set("entityType", entityType);
+   685→    return `/api/analytics?${params.toString()}`;
+   686→  }, [tagId, entityType]);
+   687→
+   688→  const { data, loading } = useApi<AnalyticsData>(analyticsPath, {
+   689→    refreshKey: `${tagId}-${entityType}`,
+   690→  });
+   691→  const { data: tagsData } = useApi<{ tags: TagWithCounts[] }>("/api/tags");
+   692→  const tags = tagsData?.tags ?? [];
+   693→
+   694→  const clearFilter = React.useCallback(() => {
+   695→    setTagId("");
+   696→    setEntityType("all");
+   697→  }, [setTagId, setEntityType]);
+   698→
+   699→  if (loading || !data) {
+   700→    return (
+   701→      <div className="space-y-6">
+   702→        <Skeleton className="h-10 w-full max-w-md rounded-lg" />
+   703→        <Skeleton className="h-20 rounded-2xl" />
+   704→        <Skeleton className="h-64 rounded-2xl" />
+   705→        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+   706→          {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-2xl" />)}
+   707→        </div>
+   708→        <Skeleton className="h-72 rounded-2xl" />
+   709→        <Skeleton className="h-72 rounded-2xl" />
+   710→        <Skeleton className="h-72 rounded-2xl" />
+   711→      </div>
+   712→    );
+   713→  }
+   714→
+   715→  const { suppliers, clients, brokerage, volume, forecast, appliedFilter, tagInsights, totals } = data;
+   716→  const filterActive = !!appliedFilter;
+   717→
+   718→  // KPI mini-cards for brokerage forecast
+   719→  const projected3moTotal = brokerage.projectedByMonth.reduce((s, m) => s + m.amount, 0);
+   720→
+   721→  // Outstanding-by-client bar data (top 6)
+   722→  const outstandingByClient = clients.slice(0, 6).map((c) => ({ name: c.name, value: c.outstanding }));
+   723→
+   724→  // Combined volume area chart data
+   725→  const volumeCombined = volume.monthlyBilled.map((b, i) => ({
+   726→    month: b.month,
+   727→    billed: b.value,
+   728→    dispatched: volume.monthlyDispatched[i]?.value ?? 0,
+   729→  }));
+   730→
+   731→  // Filtered-count helpers for the section-header "(N of M)" badges.
+   732→  const filteredSupplierCount = appliedFilter && (appliedFilter.entityType === null || appliedFilter.entityType === "Supplier")
+   733→    ? appliedFilter.supplierCount
+   734→    : suppliers.length;
+   735→  const filteredClientCount = appliedFilter && (appliedFilter.entityType === null || appliedFilter.entityType === "Client")
+   736→    ? appliedFilter.clientCount
+   737→    : clients.length;
+   738→
+   739→  return (
+   740→    <div className="space-y-6">
+   741→      <SectionHeader
+   742→        title="Analytics"
+   743→        description="Performance insights & forecasting"
+   744→        action={
+   745→          <div className="flex items-center gap-2">
+   746→            <ShareLinkButton />
+   747→            {filterActive ? (
+   748→              <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+   749→                <TagIcon className="size-3" />
+   750→                Filtered by: {appliedFilter.tagName}
+   751→              </Badge>
+   752→            ) : null}
+   753→          </div>
+   754→        }
+   755→      />
+   756→
+   757→      {/* Tag filter bar */}
+   758→      <AnalyticsTagFilterBar
+   759→        tags={tags}
+   760→        tagId={tagId}
+   761→        entityType={entityType}
+   762→        onTagChange={setTagId}
+   763→        onEntityTypeChange={setEntityType}
+   764→        onClear={clearFilter}
+   765→      />
+   766→
+   767→      {/* Tag insights + comparison chart — only when a tag filter is active */}
+   768→      {filterActive && tagInsights ? (
+   769→        <>
+   770→          <TagInsightsCard appliedFilter={appliedFilter} insights={tagInsights} />
+   771→          <TagComparisonChart insights={tagInsights} tagColor={appliedFilter.tagColor} />
+   772→        </>
+   773→      ) : null}
+   774→
+   775→      {/* ──────────────────────────────────────────────────────────────────── */}
+   776→      {/* (a) Supplier Reliability                                            */}
+   777→      {/* ──────────────────────────────────────────────────────────────────── */}
+   778→      <GlassCard className="p-5">
+   779→        <SectionHeader
+   780→          title="Supplier Reliability"
+   781→          description="Composite score from fulfillment · on-time dispatch · short-ship · dispute rates"
+   782→          action={
+   783→            <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+   784→              <Award className="size-3" />
+   785→              {filterActive && filteredSupplierCount !== totals.supplierCount
+   786→                ? `${suppliers.length} of ${totals.supplierCount} suppliers`
+   787→                : `${suppliers.length} suppliers`}
+   788→            </Badge>
+   789→          }
+   790→        />
+   791→        <div className="mt-4">
+   792→          {suppliers.length === 0 ? (
+   793→            <EmptyState title="No suppliers yet" hint="Add suppliers to compute reliability scores." icon={<Factory className="size-5" />} />
+   794→          ) : (
+   795→            <Table>
+   796→              <TableHeader>
+   797→                <TableRow>
+   798→                  <TableHead className="min-w-[160px]">Supplier</TableHead>
+   799→                  <TableHead>Score</TableHead>
+   800→                  <TableHead>Tier</TableHead>
+   801→                  <TableHead className="text-right">Fulfillment</TableHead>
+   802→                  <TableHead className="text-right">On-time</TableHead>
+   803→                  <TableHead className="text-right">Short-ship</TableHead>
+   804→                  <TableHead className="text-right">Disputes</TableHead>
+   805→                  <TableHead className="text-right">Dispatches</TableHead>
+   806→                  <TableHead className="text-right">Supplied</TableHead>
+   807→                </TableRow>
+   808→              </TableHeader>
+   809→              <TableBody>
+   810→                {suppliers.map((s) => (
+   811→                  <TableRow key={s.supplierId} className="hover-lift">
+   812→                    <TableCell className="font-medium text-foreground">{s.name}</TableCell>
+   813→                    <TableCell>
+   814→                      <div className="flex items-center gap-2">
+   815→                        <ScoreRing score={s.score} />
+   816→                      </div>
+   817→                    </TableCell>
+   818→                    <TableCell>
+   819→                      <Badge variant="outline" className={TIER_STYLES[s.tier].badge}>
+   820→                        {TIER_STYLES[s.tier].label}
+   821→                      </Badge>
+   822→                    </TableCell>
+   823→                    <TableCell className="text-right kpi-num">
+   824→                      <span className={s.fulfillment >= 85 ? "text-emerald-600 dark:text-emerald-400" : s.fulfillment >= 70 ? "" : "text-amber-600 dark:text-amber-400"}>
+   825→                        {s.fulfillment}%
+   826→                      </span>
+   827→                    </TableCell>
+   828→                    <TableCell className="text-right kpi-num">
+   829→                      <span className={s.onTimeRate >= 85 ? "text-emerald-600 dark:text-emerald-400" : s.onTimeRate < 60 ? "text-rose-600 dark:text-rose-400" : ""}>
+   830→                        {s.onTimeRate}%
+   831→                      </span>
+   832→                    </TableCell>
+   833→                    <TableCell className="text-right kpi-num">
+   834→                      <span className={s.shortShipmentRate === 0 ? "text-emerald-600 dark:text-emerald-400" : s.shortShipmentRate >= 20 ? "text-rose-600 dark:text-rose-400" : "text-amber-600 dark:text-amber-400"}>
+   835→                        {s.shortShipmentRate}%
+   836→                      </span>
+   837→                    </TableCell>
+   838→                    <TableCell className="text-right kpi-num">
+   839→                      <span className={s.disputeRate === 0 ? "text-emerald-600 dark:text-emerald-400" : s.disputeRate >= 30 ? "text-rose-600 dark:text-rose-400" : "text-amber-600 dark:text-amber-400"}>
+   840→                        {s.disputeRate}%
+   841→                      </span>
+   842→                    </TableCell>
+   843→                    <TableCell className="text-right kpi-num text-muted-foreground">{formatNumber(s.dispatchCount)}</TableCell>
+   844→                    <TableCell className="text-right kpi-num text-muted-foreground">{formatCurrency(s.totalSupplied, { compact: true })}</TableCell>
+   845→                  </TableRow>
+   846→                ))}
+   847→              </TableBody>
+   848→            </Table>
+   849→          )}
+   850→        </div>
+   851→      </GlassCard>
+   852→
+   853→      {/* ──────────────────────────────────────────────────────────────────── */}
+   854→      {/* (b) Client Credit Exposure                                          */}
+   855→      {/* ──────────────────────────────────────────────────────────────────── */}
+   856→      <div className="grid gap-4 lg:grid-cols-5">
+   857→        <GlassCard className="p-5 lg:col-span-3">
+   858→          <SectionHeader
+   859→            title="Client Credit Exposure"
+   860→            description="Outstanding receivables · payment delays · return rates"
+   861→            action={
+   862→              <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300">
+   863→                <Wallet className="size-3" />
+   864→                {filterActive && filteredClientCount !== totals.clientCount
+   865→                  ? `${clients.length} of ${totals.clientCount} clients`
+   866→                  : formatCurrency(clients.reduce((s, c) => s + c.outstanding, 0), { compact: true })}
+   867→              </Badge>
+   868→            }
+   869→          />
+   870→          <div className="mt-4">
+   871→            {clients.length === 0 ? (
+   872→              <EmptyState title="No clients yet" hint="Add clients to see credit exposure." icon={<Users className="size-5" />} />
+   873→            ) : (
+   874→              <Table>
+   875→                <TableHeader>
+   876→                  <TableRow>
+   877→                    <TableHead className="min-w-[160px]">Client</TableHead>
+   878→                    <TableHead className="text-right">Outstanding</TableHead>
+   879→                    <TableHead className="text-right">Avg delay</TableHead>
+   880→                    <TableHead className="text-right">Return rate</TableHead>
+   881→                    <TableHead className="text-right">Bills</TableHead>
+   882→                  </TableRow>
+   883→                </TableHeader>
+   884→                <TableBody>
+   885→                  {clients.map((c) => {
+   886→                    const tone = c.outstanding > 100000
+   887→                      ? "text-rose-600 dark:text-rose-400"
+   888→                      : c.outstanding > 50000
+   889→                        ? "text-amber-600 dark:text-amber-400"
+   890→                        : "text-foreground";
+   891→                    return (
+   892→                      <TableRow key={c.clientId} className="hover-lift">
+   893→                        <TableCell className="font-medium text-foreground">{c.name}</TableCell>
+   894→                        <TableCell className={`text-right kpi-num ${tone}`}>{formatCurrency(c.outstanding, { compact: true })}</TableCell>
+   895→                        <TableCell className="text-right kpi-num">
+   896→                          <span className={c.avgPaymentDelay > 120 ? "text-rose-600 dark:text-rose-400" : c.avgPaymentDelay > 60 ? "text-amber-600 dark:text-amber-400" : ""}>
+   897→                            {c.avgPaymentDelay > 0 ? `${c.avgPaymentDelay}d` : "—"}
+   898→                          </span>
+   899→                        </TableCell>
+   900→                        <TableCell className="text-right kpi-num">
+   901→                          <span className={c.returnRate === 0 ? "text-emerald-600 dark:text-emerald-400" : c.returnRate >= 10 ? "text-rose-600 dark:text-rose-400" : "text-amber-600 dark:text-amber-400"}>
+   902→                            {c.returnRate}%
+   903→                          </span>
+   904→                        </TableCell>
+   905→                        <TableCell className="text-right kpi-num text-muted-foreground">{formatNumber(c.billCount)}</TableCell>
+   906→                      </TableRow>
+   907→                    );
+   908→                  })}
+   909→                </TableBody>
+   910→              </Table>
+   911→            )}
+   912→          </div>
+   913→        </GlassCard>
+   914→
+   915→        <GlassCard className="p-5 lg:col-span-2">
+   916→          <SectionHeader title="Outstanding by Client" description="Top 6 by outstanding balance" />
+   917→          <div className="mt-4 h-64 w-full">
+   918→            {outstandingByClient.length === 0 || outstandingByClient.every((d) => d.value === 0) ? (
+   919→              <EmptyState title="No outstanding receivables" hint="All client bills are fully paid." icon={<Wallet className="size-5" />} />
+   920→            ) : (
+   921→              <ResponsiveContainer width="100%" height="100%">
+   922→                <BarChart data={outstandingByClient} layout="vertical" margin={{ top: 0, right: 16, bottom: 0, left: 8 }}>
+   923→                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.7 0.02 160 / 0.2)" horizontal={false} />
+   924→                  <XAxis type="number" tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCurrency(v as number, { compact: true })} />
+   925→                  <YAxis type="category" dataKey="name" tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} width={110} />
+   926→                  <Tooltip
+   927→                    cursor={{ fill: "oklch(0.7 0.02 160 / 0.08)" }}
+   928→                    contentStyle={{ background: "oklch(0.16 0.012 170 / 0.92)", border: "1px solid oklch(1 0 0 / 0.12)", borderRadius: 12, color: "white" }}
+   929→                    formatter={(v: number) => formatCurrency(v)}
+   930→                  />
+   931→                  <Bar dataKey="value" name="Outstanding" radius={[0, 6, 6, 0]}>
+   932→                    {outstandingByClient.map((d, i) => (
+   933→                      <Cell
+   934→                        key={i}
+   935→                        fill={d.value > 100000 ? COLORS.rose : d.value > 50000 ? COLORS.amber : COLORS.emerald}
+   936→                        stroke="none"
+   937→                      />
+   938→                    ))}
+   939→                  </Bar>
+   940→                </BarChart>
+   941→              </ResponsiveContainer>
+   942→            )}
+   943→          </div>
+   944→        </GlassCard>
+   945→      </div>
+   946→
+   947→      {/* ──────────────────────────────────────────────────────────────────── */}
+   948→      {/* (c) Brokerage Forecast                                              */}
+   949→      {/* ──────────────────────────────────────────────────────────────────── */}
+   950→      <GlassCard className="p-5">
+   951→        <SectionHeader
+   952→          title="Brokerage Forecast"
+   953→          description="Pending eligibility · eligible unpaid · projected payouts by client cadence"
+   954→          action={
+   955→            <div className="flex items-center gap-2">
+   956→              {filterActive ? (
+   957→                <span className="text-[11px] text-muted-foreground">
+   958→                  {appliedFilter.entityType === null || appliedFilter.entityType === "PurchaseOrder"
+   959→                    ? `${appliedFilter.purchaseOrderCount} of ${totals.purchaseOrderCount} POs`
+   960→                    : null}
+   961→                </span>
+   962→              ) : null}
+   963→              <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+   964→                <TrendingUp className="size-3" />
+   965→                Next 3 mo: {formatCurrency(projected3moTotal, { compact: true })}
+   966→              </Badge>
+   967→            </div>
+   968→          }
+   969→        />
+   970→
+   971→        {/* KPI mini-cards */}
+   972→        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+   973→          <KpiCard
+   974→            label="Pending (not eligible)"
+   975→            value={formatCurrency(brokerage.pendingTotal, { compact: true })}
+   976→            sub="Will accrue once bills are fully paid"
+   977→            icon={<Clock className="size-5" />}
+   978→            accent="rose"
+   979→          />
+   980→          <KpiCard
+   981→            label="Eligible unpaid"
+   982→            value={formatCurrency(brokerage.eligibleUnpaidTotal, { compact: true })}
+   983→            sub="Awaiting payout batch"
+   984→            icon={<Wallet className="size-5" />}
+   985→            accent="amber"
+   986→          />
+   987→          <KpiCard
+   988→            label="Projected next 3 mo"
+   989→            value={formatCurrency(projected3moTotal, { compact: true })}
+   990→            sub="Spread by client cadence"
+   991→            icon={<TrendingUp className="size-5" />}
+   992→            accent="emerald"
+   993→          />
+   994→        </div>
+   995→
+   996→        {/* Projected payout chart + cadence breakdown */}
+   997→        <div className="mt-4 grid gap-4 lg:grid-cols-5">
+   998→          <div className="lg:col-span-3">
+   999→            <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">Projected monthly payouts (next 3 months)</p>
+  1000→            <div className="h-56 w-full">
+  1001→              <ResponsiveContainer width="100%" height="100%">
+  1002→                <BarChart data={brokerage.projectedByMonth} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+  1003→                  <defs>
+  1004→                    <linearGradient id="gPayout" x1="0" y1="0" x2="0" y2="1">
+  1005→                      <stop offset="0%" stopColor={COLORS.emerald} stopOpacity={0.9} />
+  1006→                      <stop offset="100%" stopColor={COLORS.emerald} stopOpacity={0.55} />
+  1007→                    </linearGradient>
+  1008→                  </defs>
+  1009→                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.7 0.02 160 / 0.2)" vertical={false} />
+  1010→                  <XAxis dataKey="month" tick={{ fontSize: 12, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} />
+  1011→                  <YAxis tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCurrency(v as number, { compact: true })} width={50} />
+  1012→                  <Tooltip
+  1013→                    cursor={{ fill: "oklch(0.7 0.02 160 / 0.08)" }}
+  1014→                    contentStyle={{ background: "oklch(0.16 0.012 170 / 0.92)", border: "1px solid oklch(1 0 0 / 0.12)", borderRadius: 12, color: "white" }}
+  1015→                    formatter={(v: number) => formatCurrency(v)}
+  1016→                  />
+  1017→                  <Bar dataKey="amount" name="Projected payout" fill="url(#gPayout)" radius={[6, 6, 0, 0]} />
+  1018→                </BarChart>
+  1019→              </ResponsiveContainer>
+  1020→            </div>
+  1021→          </div>
+  1022→
+  1023→          <div className="lg:col-span-2">
+  1024→            <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">Breakdown by cadence (eligible unpaid)</p>
+  1025→            <div className="space-y-2.5">
+  1026→              <CadenceRow
+  1027→                label="Immediate"
+  1028→                hint="Paid on bill settlement"
+  1029→                amount={brokerage.byCadence.immediate}
+  1030→                color={COLORS.emerald}
+  1031→              />
+  1032→              <CadenceRow
+  1033→                label="4-month cumulative"
+  1034→                hint="Quarterly payout batches"
+  1035→                amount={brokerage.byCadence["4_month"]}
+  1036→                color={COLORS.teal}
+  1037→              />
+  1038→              <CadenceRow
+  1039→                label="12-month cumulative"
+  1040→                hint="Annual payout batches"
+  1041→                amount={brokerage.byCadence["12_month"]}
+  1042→                color={COLORS.plum}
+  1043→              />
+  1044→            </div>
+  1045→          </div>
+  1046→        </div>
+  1047→      </GlassCard>
+  1048→
+  1049→      {/* ──────────────────────────────────────────────────────────────────── */}
+  1050→      {/* (e) Forecasting — deep 6-mo brokerage w/ confidence interval,        */}
+  1051→      {/*     12-mo seasonal trends, client velocity, supplier capacity.       */}
+  1052→      {/* ──────────────────────────────────────────────────────────────────── */}
+  1053→      <ForecastingSection forecast={forecast} />
+  1054→
+  1055→      {/* ──────────────────────────────────────────────────────────────────── */}
+  1056→      {/* (d) Business Volume Trends                                          */}
+  1057→      {/* ──────────────────────────────────────────────────────────────────── */}
+  1058→      <div className="grid gap-4 lg:grid-cols-5">
+  1059→        <GlassCard className="p-5 lg:col-span-3">
+  1060→          <SectionHeader
+  1061→            title="Volume Trends"
+  1062→            description="Last 12 months — billed vs. dispatched value"
+  1063→            action={
+  1064→              <div className="flex flex-wrap items-center gap-3 text-xs">
+  1065→                {filterActive && (appliedFilter.entityType === null || appliedFilter.entityType === "PurchaseOrder") ? (
+  1066→                  <span className="text-[11px] text-muted-foreground">
+  1067→                    {appliedFilter.purchaseOrderCount} of {totals.purchaseOrderCount} POs
+  1068→                  </span>
+  1069→                ) : null}
+  1070→                <span className="hidden items-center gap-1.5 text-muted-foreground sm:flex">
+  1071→                  <span className="size-2.5 rounded-full" style={{ background: COLORS.emerald }} />
+  1072→                  Billed
+  1073→                </span>
+  1074→                <span className="hidden items-center gap-1.5 text-muted-foreground sm:flex">
+  1075→                  <span className="size-2.5 rounded-full" style={{ background: COLORS.teal }} />
+  1076→                  Dispatched
+  1077→                </span>
+  1078→              </div>
+  1079→            }
+  1080→          />
+  1081→          <div className="mt-4 h-64 w-full">
+  1082→            {volumeCombined.every((d) => d.billed === 0 && d.dispatched === 0) ? (
+  1083→              <EmptyState title="No volume in the last 12 months" hint="Bills and dispatches will appear here." icon={<BarChart3 className="size-5" />} />
+  1084→            ) : (
+  1085→              <ResponsiveContainer width="100%" height="100%">
+  1086→                <AreaChart data={volumeCombined} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+  1087→                  <defs>
+  1088→                    <linearGradient id="gBilled" x1="0" y1="0" x2="0" y2="1">
+  1089→                      <stop offset="0%" stopColor={COLORS.emerald} stopOpacity={0.5} />
+  1090→                      <stop offset="100%" stopColor={COLORS.emerald} stopOpacity={0.02} />
+  1091→                    </linearGradient>
+  1092→                    <linearGradient id="gDispatched" x1="0" y1="0" x2="0" y2="1">
+  1093→                      <stop offset="0%" stopColor={COLORS.teal} stopOpacity={0.5} />
+  1094→                      <stop offset="100%" stopColor={COLORS.teal} stopOpacity={0.02} />
+  1095→                    </linearGradient>
+  1096→                  </defs>
+  1097→                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.7 0.02 160 / 0.2)" />
+  1098→                  <XAxis dataKey="month" tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} interval={Math.max(0, Math.floor(volumeCombined.length / 8))} minTickGap={4} />
+  1099→                  <YAxis tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCurrency(v as number, { compact: true })} width={50} />
+  1100→                  <Tooltip
+  1101→                    contentStyle={{ background: "oklch(0.16 0.012 170 / 0.92)", border: "1px solid oklch(1 0 0 / 0.12)", borderRadius: 12, color: "white", backdropFilter: "blur(12px)" }}
+  1102→                    formatter={(v: number) => formatCurrency(v)}
+  1103→                  />
+  1104→                  <Area type="monotone" dataKey="billed" name="Billed" stroke={COLORS.emerald} strokeWidth={2} fill="url(#gBilled)" />
+  1105→                  <Area type="monotone" dataKey="dispatched" name="Dispatched" stroke={COLORS.teal} strokeWidth={2} fill="url(#gDispatched)" />
+  1106→                </AreaChart>
+  1107→              </ResponsiveContainer>
+  1108→            )}
+  1109→          </div>
+  1110→        </GlassCard>
+  1111→
+  1112→        <GlassCard className="p-5 lg:col-span-2">
+  1113→          <SectionHeader title="Top Client–Supplier Pairs" description="By total billed value" />
+  1114→          <div className="mt-4">
+  1115→            {volume.topPairs.length === 0 ? (
+  1116→              <EmptyState title="No paired activity yet" hint="Bills will surface top client–supplier relationships." icon={<Users className="size-5" />} />
+  1117→            ) : (
+  1118→              <div className="space-y-2.5">
+  1119→                {volume.topPairs.map((p, i) => {
+  1120→                  const max = volume.topPairs[0]?.value || 1;
+  1121→                  const pct = Math.max(6, Math.round((p.value / max) * 100));
+  1122→                  return (
+  1123→                    <div key={`${p.clientName}-${p.supplierName}-${i}`} className="rounded-xl border border-border/50 bg-card/40 p-3">
+  1124→                      <div className="flex items-center justify-between gap-2">
+  1125→                        <div className="min-w-0">
+  1126→                          <p className="truncate text-sm font-medium text-foreground">{p.clientName}</p>
+  1127→                          <p className="truncate text-xs text-muted-foreground">
+  1128→                            <ArrowDownRight className="mr-0.5 inline size-3 text-muted-foreground/70" />
+  1129→                            {p.supplierName}
+  1130→                          </p>
+  1131→                        </div>
+  1132→                        <p className="kpi-num shrink-0 text-sm font-medium text-foreground">{formatCurrency(p.value, { compact: true })}</p>
+  1133→                      </div>
+  1134→                      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+  1135→                        <div
+  1136→                          className="h-full rounded-full transition-all duration-500"
+  1137→                          style={{ width: `${pct}%`, background: i === 0 ? COLORS.emerald : i === 1 ? COLORS.teal : i === 2 ? COLORS.amber : i === 3 ? COLORS.plum : COLORS.rose }}
+  1138→                        />
+  1139→                      </div>
+  1140→                    </div>
+  1141→                  );
+  1142→                })}
+  1143→              </div>
+  1144→            )}
+  1145→          </div>
+  1146→        </GlassCard>
+  1147→      </div>
+  1148→    </div>
+  1149→  );
+  1150→}
+  1151→
+  1152→// ─────────────────────────────────────────────────────────────────────────────
+  1153→// CadenceRow — breakdown row for brokerage forecast by client payout cadence.
+  1154→// ─────────────────────────────────────────────────────────────────────────────
+  1155→function CadenceRow({ label, hint, amount, color }: { label: string; hint: string; amount: number; color: string }) {
+  1156→  return (
+  1157→    <div className="rounded-xl border border-border/50 bg-card/40 p-3">
+  1158→      <div className="flex items-center justify-between gap-2">
+  1159→        <div className="flex items-center gap-2">
+  1160→          <span className="size-2.5 shrink-0 rounded-full" style={{ background: color }} />
+  1161→          <div>
+  1162→            <p className="text-sm font-medium text-foreground">{label}</p>
+  1163→            <p className="text-[11px] text-muted-foreground">{hint}</p>
+  1164→          </div>
+  1165→        </div>
+  1166→        <p className="kpi-num text-sm font-medium text-foreground">{formatCurrency(amount, { compact: true })}</p>
+  1167→      </div>
+  1168→    </div>
+  1169→  );
+  1170→}
+  1171→
+  1172→// ─────────────────────────────────────────────────────────────────────────────
+  1173→// ForecastingSection — 6-mo brokerage forecast with confidence interval,
+  1174→// 12-mo seasonal trends with growth-rate overlay, client velocity, supplier
+  1175→// capacity. The four deep-forecast sub-features requested by the broker.
+  1176→// ─────────────────────────────────────────────────────────────────────────────
+  1177→function ForecastingSection({ forecast }: { forecast: Forecast }) {
+  1178→  const { brokerage6Month, seasonalTrends, clientVelocity, supplierCapacity } = forecast;
+  1179→
+  1180→  // Insight card #1 — projected next-month brokerage + confidence range
+  1181→  const nextMonth = brokerage6Month[0];
+  1182→  const projectedNextMonth = nextMonth?.projected ?? 0;
+  1183→  const lowerNext = nextMonth?.lower ?? 0;
+  1184→  const upperNext = nextMonth?.upper ?? 0;
+  1185→
+  1186→  // Insight card #2 — peak season (highest-value month + its season label)
+  1187→  const peakMonth = seasonalTrends
+  1188→    .slice()
+  1189→    .sort((a, b) => b.value - a.value)
+  1190→    .find((m) => m.value > 0);
+  1191→  const peakLabel = peakMonth ? `${peakMonth.month} · ${peakMonth.seasonLabel}` : "—";
+  1192→
+  1193→  // Insight card #3 — next expected client order (closest predicted date)
+  1194→  const nextClient = clientVelocity
+  1195→    .filter((c) => c.predictedNextOrderDate)
+  1196→    .map((c) => ({
+  1197→      ...c,
+  1198→      daysOut: Math.max(0, daysBetween(new Date(c.predictedNextOrderDate as string), new Date())),
+  1199→    }))
+  1200→    .sort((a, b) => a.daysOut - b.daysOut)[0];
+  1201→
+  1202→  return (
+  1203→    <GlassCard className="p-5">
+  1204→      <SectionHeader
+  1205→        title="Forecasting"
+  1206→        description="6-month brokerage projection · seasonal trends · client velocity · supplier capacity"
+  1207→        action={
+  1208→          <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+  1209→            <Zap className="size-3" />
+  1210→            Deep forecast
+  1211→          </Badge>
+  1212→        }
+  1213→      />
+  1214→
+  1215→      {/* ── Insight cards (3) ─────────────────────────────────────────────── */}
+  1216→      <div className="mt-4 grid gap-3 sm:grid-cols-3">
+  1217→        <KpiCard
+  1218→          label="Projected next month brokerage"
+  1219→          value={formatCurrency(projectedNextMonth, { compact: true })}
+  1220→          sub={`Range: ${formatCurrency(lowerNext, { compact: true })} – ${formatCurrency(upperNext, { compact: true })}`}
+  1221→          icon={<TrendingUp className="size-5" />}
+  1222→          accent="emerald"
+  1223→        />
+  1224→        <KpiCard
+  1225→          label="Peak season"
+  1226→          value={<span className="text-xl font-medium">{peakLabel}</span>}
+  1227→          sub={peakMonth ? `Highest billing month (last 12 mo)` : "No billing data yet"}
+  1228→          icon={<Star className="size-5" />}
+  1229→          accent="amber"
+  1230→        />
+  1231→        <KpiCard
+  1232→          label="Next expected client order"
+  1233→          value={
+  1234→            nextClient ? (
+  1235→              <span className="text-xl font-medium">
+  1236→                {nextClient.name}
+  1237→                <span className="ml-1 text-sm font-normal text-muted-foreground">in {nextClient.daysOut}d</span>
+  1238→              </span>
+  1239→            ) : "—"
+  1240→          }
+  1241→          sub={nextClient?.predictedNextOrderDate ? `Predicted ${formatDate(nextClient.predictedNextOrderDate)}` : "No predictable cadence yet"}
+  1242→          icon={<Calendar className="size-5" />}
+  1243→          accent="teal"
+  1244→        />
+  1245→      </div>
+  1246→
+  1247→      {/* ── 6-Month Brokerage Forecast with Confidence Interval ──────────── */}
+  1248→      <div className="mt-6">
+  1249→        <div className="mb-2 flex items-center justify-between gap-2">
+  1250→          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+  1251→            6-Month Brokerage Forecast with Confidence Interval
+  1252→          </p>
+  1253→          <div className="hidden items-center gap-3 text-xs sm:flex">
+  1254→            <span className="flex items-center gap-1.5 text-muted-foreground">
+  1255→              <span className="size-2.5 rounded-full" style={{ background: COLORS.emerald }} />
+  1256→              Projected
+  1257→            </span>
+  1258→            <span className="flex items-center gap-1.5 text-muted-foreground">
+  1259→              <span className="size-2.5 rounded-full" style={{ background: COLORS.teal }} />
+  1260→              Upper bound
+  1261→            </span>
+  1262→            <span className="flex items-center gap-1.5 text-muted-foreground">
+  1263→              <span className="size-2.5 rounded-full" style={{ background: COLORS.amber }} />
+  1264→              Lower bound
+  1265→            </span>
+  1266→          </div>
+  1267→        </div>
+  1268→        <div className="h-64 w-full">
+  1269→          {brokerage6Month.every((d) => d.projected === 0 && d.upper === 0 && d.lower === 0) ? (
+  1270→            <EmptyState title="No forecast data yet" hint="Brokerage projections will appear once bills and brokerages are recorded." icon={<TrendingUp className="size-5" />} />
+  1271→          ) : (
+  1272→            <ResponsiveContainer width="100%" height="100%">
+  1273→              <AreaChart data={brokerage6Month} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+  1274→                <defs>
+  1275→                  <linearGradient id="gUpper" x1="0" y1="0" x2="0" y2="1">
+  1276→                    <stop offset="0%" stopColor={COLORS.teal} stopOpacity={0.25} />
+  1277→                    <stop offset="100%" stopColor={COLORS.teal} stopOpacity={0.02} />
+  1278→                  </linearGradient>
+  1279→                  <linearGradient id="gProjected" x1="0" y1="0" x2="0" y2="1">
+  1280→                    <stop offset="0%" stopColor={COLORS.emerald} stopOpacity={0.5} />
+  1281→                    <stop offset="100%" stopColor={COLORS.emerald} stopOpacity={0.05} />
+  1282→                  </linearGradient>
+  1283→                  <linearGradient id="gLower" x1="0" y1="0" x2="0" y2="1">
+  1284→                    <stop offset="0%" stopColor={COLORS.amber} stopOpacity={0.35} />
+  1285→                    <stop offset="100%" stopColor={COLORS.amber} stopOpacity={0.02} />
+  1286→                  </linearGradient>
+  1287→                </defs>
+  1288→                <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.7 0.02 160 / 0.2)" vertical={false} />
+  1289→                <XAxis dataKey="month" tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} />
+  1290→                <YAxis tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCurrency(v as number, { compact: true })} width={50} />
+  1291→                <Tooltip
+  1292→                  contentStyle={{ background: "oklch(0.16 0.012 170 / 0.92)", border: "1px solid oklch(1 0 0 / 0.12)", borderRadius: 12, color: "white", backdropFilter: "blur(12px)" }}
+  1293→                  formatter={(v: number) => formatCurrency(v)}
+  1294→                />
+  1295→                <Area type="monotone" dataKey="upper" name="Upper bound" stroke={COLORS.teal} strokeWidth={1.5} strokeDasharray="4 4" fill="url(#gUpper)" />
+  1296→                <Area type="monotone" dataKey="projected" name="Projected" stroke={COLORS.emerald} strokeWidth={2.5} fill="url(#gProjected)" />
+  1297→                <Area type="monotone" dataKey="lower" name="Lower bound" stroke={COLORS.amber} strokeWidth={1.5} strokeDasharray="4 4" fill="url(#gLower)" />
+  1298→              </AreaChart>
+  1299→            </ResponsiveContainer>
+  1300→          )}
+  1301→        </div>
+  1302→      </div>
+  1303→
+  1304→      {/* ── Seasonal Trends (12-mo bar + growth-rate line overlay) ────────── */}
+  1305→      <div className="mt-6">
+  1306→        <div className="mb-2 flex items-center justify-between gap-2">
+  1307→          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+  1308→            Seasonal Trends — last 12 months · color-coded by garment-industry season
+  1309→          </p>
+  1310→          <div className="hidden items-center gap-3 text-xs sm:flex">
+  1311→            <span className="flex items-center gap-1.5 text-muted-foreground">
+  1312→              <Star className="size-3 text-amber-500" />
+  1313→              Peak month
+  1314→            </span>
+  1315→            <span className="flex items-center gap-1.5 text-muted-foreground">
+  1316→              <span className="size-2.5 rounded-full" style={{ background: COLORS.rose }} />
+  1317→              Growth rate
+  1318→            </span>
+  1319→          </div>
+  1320→        </div>
+  1321→        <div className="h-72 w-full">
+  1322→          {seasonalTrends.every((d) => d.value === 0) ? (
+  1323→            <EmptyState title="No billing in the last 12 months" hint="Monthly billed value will surface here with season context." icon={<BarChart3 className="size-5" />} />
+  1324→          ) : (
+  1325→            <ResponsiveContainer width="100%" height="100%">
+  1326→              <ComposedChart data={seasonalTrends} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+  1327→                <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.7 0.02 160 / 0.2)" vertical={false} />
+  1328→                <XAxis dataKey="month" tick={{ fontSize: 10, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} interval={0} angle={-30} textAnchor="end" height={50} />
+  1329→                <YAxis yAxisId="left" tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCurrency(v as number, { compact: true })} width={50} />
+  1330→                <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11, fill: "oklch(0.5 0.02 165)" }} axisLine={false} tickLine={false} tickFormatter={(v) => `${v}%`} width={42} />
+  1331→                <Tooltip
+  1332→                  cursor={{ fill: "oklch(0.7 0.02 160 / 0.08)" }}
+  1333→                  contentStyle={{ background: "oklch(0.16 0.012 170 / 0.92)", border: "1px solid oklch(1 0 0 / 0.12)", borderRadius: 12, color: "white", backdropFilter: "blur(12px)" }}
+  1334→                  formatter={(v: number, name: string) => name === "Growth" ? `${v}%` : formatCurrency(v)}
+  1335→                />
+  1336→                <ReferenceLine y={0} yAxisId="right" stroke="oklch(0.7 0.02 165 / 0.4)" />
+  1337→                <Bar yAxisId="left" dataKey="value" name="Billed" radius={[4, 4, 0, 0]}>
+  1338→                  {seasonalTrends.map((d, i) => (
+  1339→                    <Cell
+  1340→                      key={i}
+  1341→                      fill={SEASON_STYLES[d.seasonKey].color}
+  1342→                      fillOpacity={d.isPeak ? 0.95 : d.isLow ? 0.55 : 0.75}
+  1343→                      stroke={d.isPeak ? COLORS.amber : "none"}
+  1344→                      strokeWidth={d.isPeak ? 2 : 0}
+  1345→                    />
+  1346→                  ))}
+  1347→                </Bar>
+  1348→                <Line yAxisId="right" type="monotone" dataKey="growthRate" name="Growth" stroke={COLORS.rose} strokeWidth={2} dot={{ r: 2.5, fill: COLORS.rose }} activeDot={{ r: 4 }} />
+  1349→              </ComposedChart>
+  1350→            </ResponsiveContainer>
+  1351→          )}
+  1352→        </div>
+  1353→
+  1354→        {/* Season legend + peak-month annotations */}
+  1355→        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
+  1356→          <span className="flex items-center gap-1.5">
+  1357→            <span className="size-2.5 rounded-full" style={{ background: SEASON_STYLES.festive.color }} />
+  1358→            Festive Season (Oct–Nov)
+  1359→          </span>
+  1360→          <span className="flex items-center gap-1.5">
+  1361→            <span className="size-2.5 rounded-full" style={{ background: SEASON_STYLES.wedding.color }} />
+  1362→            Wedding Season (Dec–Jan)
+  1363→          </span>
+  1364→          <span className="flex items-center gap-1.5">
+  1365→            <span className="size-2.5 rounded-full" style={{ background: SEASON_STYLES.summer.color }} />
+  1366→            Summer Transition (Apr–May)
+  1367→          </span>
+  1368→          <span className="flex items-center gap-1.5">
+  1369→            <span className="size-2.5 rounded-full" style={{ background: SEASON_STYLES.winter.color }} />
+  1370→            Winter Stock (Aug–Sep)
+  1371→          </span>
+  1372→        </div>
+  1373→        {seasonalTrends.filter((m) => m.isPeak).length > 0 && (
+  1374→          <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
+  1375→            <span className="text-muted-foreground">Peak months:</span>
+  1376→            {seasonalTrends.filter((m) => m.isPeak).map((m) => (
+  1377→              <Badge key={m.month} variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300">
+  1378→                <Star className="size-3" />
+  1379→                {m.month} — {m.seasonLabel}
+  1380→              </Badge>
+  1381→            ))}
+  1382→          </div>
+  1383→        )}
+  1384→      </div>
+  1385→
+  1386→      {/* ── Client Velocity + Supplier Capacity (side-by-side on large) ──── */}
+  1387→      <div className="mt-6 grid gap-4 lg:grid-cols-2">
+  1388→        {/* Client velocity table */}
+  1389→        <div>
+  1390→          <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+  1391→            Client Velocity — predicted next order
+  1392→          </p>
+  1393→          {clientVelocity.length === 0 ? (
+  1394→            <EmptyState title="No client orders yet" hint="POs will surface predicted reorder dates." icon={<Users className="size-5" />} />
+  1395→          ) : (
+  1396→            <div className="overflow-x-auto rounded-xl border border-border/50">
+  1397→              <Table>
+  1398→                <TableHeader>
+  1399→                  <TableRow>
+  1400→                    <TableHead className="min-w-[140px]">Client</TableHead>
+  1401→                    <TableHead className="text-right">Last order</TableHead>
+  1402→                    <TableHead className="text-right">Avg gap</TableHead>
+  1403→                    <TableHead className="text-right">Predicted next</TableHead>
+  1404→                  </TableRow>
+  1405→                </TableHeader>
+  1406→                <TableBody>
+  1407→                  {clientVelocity.map((c) => {
+  1408→                    const daysOut = c.predictedNextOrderDate
+  1409→                      ? Math.max(0, daysBetween(new Date(c.predictedNextOrderDate), new Date()))
+  1410→                      : null;
+  1411→                    const tone = daysOut === null
+  1412→                      ? "text-muted-foreground"
+  1413→                      : daysOut <= 14
+  1414→                        ? "text-emerald-600 dark:text-emerald-400"
+  1415→                        : daysOut <= 45
+  1416→                          ? "text-amber-600 dark:text-amber-400"
+  1417→                          : "text-muted-foreground";
+  1418→                    return (
+  1419→                      <TableRow key={c.clientId} className="hover-lift">
+  1420→                        <TableCell className="font-medium text-foreground">{c.name}</TableCell>
+  1421→                        <TableCell className="text-right kpi-num text-muted-foreground">
+  1422→                          {c.lastOrderDate ? formatDate(c.lastOrderDate) : "—"}
+  1423→                        </TableCell>
+  1424→                        <TableCell className="text-right kpi-num">
+  1425→                          {c.avgDaysBetweenOrders > 0 ? `${c.avgDaysBetweenOrders}d` : "—"}
+  1426→                        </TableCell>
+  1427→                        <TableCell className="text-right kpi-num">
+  1428→                          <span className={`inline-flex items-center gap-1.5 ${tone}`}>
+  1429→                            {daysOut !== null && daysOut <= 14 && (
+  1430→                              <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0 text-[10px] text-emerald-700 dark:text-emerald-300">
+  1431→                                Expected
+  1432→                              </Badge>
+  1433→                            )}
+  1434→                            {c.predictedNextOrderDate ? formatDate(c.predictedNextOrderDate) : "—"}
+  1435→                          </span>
+  1436→                        </TableCell>
+  1437→                      </TableRow>
+  1438→                    );
+  1439→                  })}
+  1440→                </TableBody>
+  1441→              </Table>
+  1442→            </div>
+  1443→          )}
+  1444→        </div>
+  1445→
+  1446→        {/* Supplier capacity table */}
+  1447→        <div>
+  1448→          <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+  1449→            Supplier Capacity — current load vs. historical avg
+  1450→          </p>
+  1451→          {supplierCapacity.length === 0 ? (
+  1452→            <EmptyState title="No suppliers yet" hint="Add suppliers to compute capacity utilisation." icon={<Factory className="size-5" />} />
+  1453→          ) : (
+  1454→            <div className="overflow-x-auto rounded-xl border border-border/50">
+  1455→              <Table>
+  1456→                <TableHeader>
+  1457→                  <TableRow>
+  1458→                    <TableHead className="min-w-[140px]">Supplier</TableHead>
+  1459→                    <TableHead className="text-right">Avg lead</TableHead>
+  1460→                    <TableHead className="text-right">Pending POs</TableHead>
+  1461→                    <TableHead className="text-right">Status</TableHead>
+  1462→                  </TableRow>
+  1463→                </TableHeader>
+  1464→                <TableBody>
+  1465→                  {supplierCapacity.map((s) => {
+  1466→                    const sty = SUPPLIER_STATUS_STYLES[s.status];
+  1467→                    return (
+  1468→                      <TableRow key={s.supplierId} className="hover-lift">
+  1469→                        <TableCell className="font-medium text-foreground">{s.name}</TableCell>
+  1470→                        <TableCell className="text-right kpi-num text-muted-foreground">
+  1471→                          {s.avgLeadTimeDays > 0 ? `${s.avgLeadTimeDays}d` : "—"}
+  1472→                        </TableCell>
+  1473→                        <TableCell className="text-right kpi-num">
+  1474→                          <span className={s.pendingPOs >= 5 ? "text-rose-600 dark:text-rose-400" : s.pendingPOs >= 3 ? "text-amber-600 dark:text-amber-400" : "text-foreground"}>
+  1475→                            {formatNumber(s.pendingPOs)}
+  1476→                          </span>
+  1477→                          <span className="ml-1 text-[11px] text-muted-foreground">/ {s.monthlyAvgPOs}/mo avg</span>
+  1478→                        </TableCell>
+  1479→                        <TableCell className="text-right">
+  1480→                          <Badge variant="outline" className={sty.badge}>
+  1481→                            {s.status === "overloaded" && <AlertCircle className="size-3" />}
+  1482→                            {sty.label}
+  1483→                          </Badge>
+  1484→                        </TableCell>
+  1485→                      </TableRow>
+  1486→                    );
+  1487→                  })}
+  1488→                </TableBody>
+  1489→              </Table>
+  1490→            </div>
+  1491→          )}
+  1492→        </div>
+  1493→      </div>
+  1494→    </GlassCard>
+  1495→  );
+  1496→}
+  1497→

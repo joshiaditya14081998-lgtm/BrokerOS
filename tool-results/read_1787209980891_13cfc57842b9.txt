@@ -1,0 +1,1608 @@
+     1→"use client";
+     2→
+     3→import * as React from "react";
+     4→import {
+     5→  Settings as SettingsIcon, Save, AlertCircle, Database, Download,
+     6→  Percent, Receipt, BadgePercent, ShieldCheck, FileText, RotateCcw,
+     7→  BellRing, Printer, ImageIcon, HardDrive, Upload, AlertTriangle,
+     8→  Shield, Clock, Loader2, Sparkles, Lightbulb, Mail, Coffee, ArrowRight,
+     9→  Calendar, Zap, RefreshCw, Timer, Coins,
+    10→} from "lucide-react";
+    11→import { useApi, api } from "@/lib/api";
+    12→import { useUI } from "@/lib/ui-store";
+    13→import { cn } from "@/lib/utils";
+    14→import { GlassCard, SectionHeader } from "@/components/shared";
+    15→import { Button } from "@/components/ui/button";
+    16→import { Input } from "@/components/ui/input";
+    17→import { Label } from "@/components/ui/label";
+    18→import { Skeleton } from "@/components/ui/skeleton";
+    19→import { Switch } from "@/components/ui/switch";
+    20→import { Badge } from "@/components/ui/badge";
+    21→import {
+    22→  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+    23→} from "@/components/ui/select";
+    24→import {
+    25→  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+    26→  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+    27→} from "@/components/ui/alert-dialog";
+    28→import { toast } from "sonner";
+    29→import { CURRENCIES, getCurrency, formatConversionPreview } from "@/lib/currency";
+    30→import { useCurrency } from "@/lib/currency-store";
+    31→
+    32→type SettingRow = {
+    33→  id: string;
+    34→  key: string;
+    35→  value: string;
+    36→  notes: string | null;
+    37→};
+    38→
+    39→type SettingsResponse = {
+    40→  settings: SettingRow[];
+    41→  defaults: {
+    42→    defaultGstRate: number;
+    43→    defaultCommissionRate: number;
+    44→    brokerageOnGst: boolean;
+    45→    autoGenerateNotifications: boolean;
+    46→    autoBackupEnabled: boolean;
+    47→    lastBackupAt: string | null;
+    48→    autoDigestEnabled: boolean;
+    49→    digestEmail: string;
+    50→  };
+    51→};
+    52→
+    53→type ParsedBackup = {
+    54→  version: number;
+    55→  exportedAt?: string;
+    56→  tables: Record<string, unknown[]>;
+    57→  bytes: number;
+    58→};
+    59→
+    60→type RestoreResponse = {
+    61→  success?: boolean;
+    62→  error?: string;
+    63→  sourceExportedAt?: string | null;
+    64→  counts?: Record<string, number>;
+    65→};
+    66→
+    67→type PhotoStats = {
+    68→  count: number;
+    69→  totalSizeBytes: number;
+    70→  totalSizeMB: number;
+    71→};
+    72→
+    73→// Scheduler mini-service health status (proxied via /api/scheduler).
+    74→// `status: "offline"` is returned when the scheduler service on port 3004 is
+    75→// unreachable — the UI renders an "Offline" badge in that case.
+    76→type SchedulerStatus = {
+    77→  status: "ok" | "offline";
+    78→  lastRun: string | null;
+    79→  nextRun: string | null;
+    80→  totalRuns: number;
+    81→  lastResult: {
+    82→    generated: number;
+    83→    skipped?: boolean;
+    84→    details: Record<string, number>;
+    85→  } | null;
+    86→};
+    87→
+    88→const EXPORT_LINKS: { type: string; label: string; icon: React.ReactNode }[] = [
+    89→  { type: "clients", label: "Clients", icon: <Database className="size-4" /> },
+    90→  { type: "suppliers", label: "Suppliers", icon: <Database className="size-4" /> },
+    91→  { type: "pos", label: "Purchase Orders", icon: <FileText className="size-4" /> },
+    92→  { type: "bills", label: "Bills", icon: <Receipt className="size-4" /> },
+    93→  { type: "payments", label: "Payments", icon: <Receipt className="size-4" /> },
+    94→  { type: "brokerage", label: "Brokerage", icon: <BadgePercent className="size-4" /> },
+    95→  { type: "audit", label: "Audit Trail", icon: <FileText className="size-4" /> },
+    96→];
+    97→
+    98→const PDF_REPORTS: { href: string; label: string; hint: string; icon: React.ReactNode }[] = [
+    99→  {
+   100→    href: "/api/reports?type=brokerage-statement&range=all",
+   101→    label: "Brokerage Statement",
+   102→    hint: "Monthly earnings, eligibility & payouts (all-time).",
+   103→    icon: <BadgePercent className="size-4" />,
+   104→  },
+   105→  {
+   106→    href: "",
+   107→    label: "Client Ledger",
+   108→    hint: "Open any client and click “Print ledger” in the sheet header.",
+   109→    icon: <Receipt className="size-4" />,
+   110→  },
+   111→  {
+   112→    href: "",
+   113→    label: "Supplier Summary",
+   114→    hint: "Open any supplier and click “Print summary” in the sheet header.",
+   115→    icon: <Database className="size-4" />,
+   116→  },
+   117→];
+   118→
+   119→const BUSINESS_RULES: {
+   120→  icon: React.ReactNode;
+   121→  title: string;
+   122→  body: string;
+   123→  tone: "emerald" | "amber" | "teal" | "rose";
+   124→}[] = [
+   125→  {
+   126→    icon: <BadgePercent className="size-4" />,
+   127→    title: "Brokerage excludes GST",
+   128→    body: "Brokerage is always computed on the bill's base amount (PO value − short-shipment − returns), never on the GST component.",
+   129→    tone: "emerald",
+   130→  },
+   131→  {
+   132→    icon: <ShieldCheck className="size-4" />,
+   133→    title: "Eligible only on full payment",
+   134→    body: "A brokerage entry stays 'accrued' until the linked bill is fully paid. The moment status becomes fully_paid, brokerage auto-flips to 'eligible'.",
+   135→    tone: "teal",
+   136→  },
+   137→  {
+   138→    icon: <RotateCcw className="size-4" />,
+   139→    title: "Payout follows client cadence",
+   140→    body: "Eligible brokerages are batched into a payout following the client's cadence — immediate, 4-month cumulative, or 12-month cumulative.",
+   141→    tone: "amber",
+   142→  },
+   143→  {
+   144→    icon: <Percent className="size-4" />,
+   145→    title: "Commission set per supplier",
+   146→    body: "Each supplier has a default commission % (defaults to 5%). It can be overridden per booking/PO at record time; the snapshot is used for brokerage.",
+   147→    tone: "emerald",
+   148→  },
+   149→  {
+   150→    icon: <Receipt className="size-4" />,
+   151→    title: "Adjustments before GST & brokerage",
+   152→    body: "Short-shipment and resolved defective returns reduce the base amount BEFORE GST and brokerage are computed — never after.",
+   153→    tone: "rose",
+   154→  },
+   155→];
+   156→
+   157→const BACKUP_TABLE_LABELS: { key: string; label: string }[] = [
+   158→  { key: "clients", label: "Clients" },
+   159→  { key: "suppliers", label: "Suppliers" },
+   160→  { key: "visits", label: "Visits" },
+   161→  { key: "bookings", label: "Bookings" },
+   162→  { key: "bookingLineItems", label: "Booking line items" },
+   163→  { key: "purchaseOrders", label: "Purchase orders" },
+   164→  { key: "dispatchDateLogs", label: "Dispatch date logs" },
+   165→  { key: "dispatches", label: "Dispatches" },
+   166→  { key: "bills", label: "Bills" },
+   167→  { key: "payments", label: "Payments" },
+   168→  { key: "brokerages", label: "Brokerages" },
+   169→  { key: "brokeragePayouts", label: "Brokerage payouts" },
+   170→  { key: "disputes", label: "Disputes" },
+   171→  { key: "photos", label: "Photos" },
+   172→  { key: "notifications", label: "Notifications" },
+   173→  { key: "auditLogs", label: "Audit logs" },
+   174→  { key: "systemSettings", label: "System settings" },
+   175→];
+   176→
+   177→function formatBytes(bytes: number): string {
+   178→  if (bytes < 1024) return `${bytes} B`;
+   179→  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+   180→  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+   181→}
+   182→
+   183→function formatRelative(iso: string | null): string {
+   184→  if (!iso) return "Never";
+   185→  const t = new Date(iso).getTime();
+   186→  if (Number.isNaN(t)) return "Never";
+   187→  const diff = Date.now() - t;
+   188→  const sec = Math.floor(diff / 1000);
+   189→  if (sec < 60) return "Just now";
+   190→  const min = Math.floor(sec / 60);
+   191→  if (min < 60) return `${min} min ago`;
+   192→  const hr = Math.floor(min / 60);
+   193→  if (hr < 24) return `${hr} hr ago`;
+   194→  const day = Math.floor(hr / 24);
+   195→  if (day < 30) return `${day} day${day === 1 ? "" : "s"} ago`;
+   196→  const mon = Math.floor(day / 30);
+   197→  if (mon < 12) return `${mon} month${mon === 1 ? "" : "s"} ago`;
+   198→  return new Date(iso).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+   199→}
+   200→
+   201→function formatDateTime(iso: string | null | undefined): string {
+   202→  if (!iso) return "Unknown";
+   203→  const d = new Date(iso);
+   204→  if (Number.isNaN(d.getTime())) return "Unknown";
+   205→  return d.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
+   206→}
+   207→
+   208→function parseBackupFile(text: string, fileName: string, fileSize: number): { ok: true; backup: ParsedBackup } | { ok: false; error: string } {
+   209→  let json: unknown;
+   210→  try {
+   211→    json = JSON.parse(text);
+   212→  } catch {
+   213→    return { ok: false, error: `"${fileName}" is not valid JSON.` };
+   214→  }
+   215→  if (typeof json !== "object" || json === null || Array.isArray(json)) {
+   216→    return { ok: false, error: "Backup file must be a JSON object." };
+   217→  }
+   218→  const obj = json as Record<string, unknown>;
+   219→  if (obj.version !== 1) {
+   220→    return { ok: false, error: `Unsupported backup version (expected 1, got ${String(obj.version)}).` };
+   221→  }
+   222→  if (typeof obj.tables !== "object" || obj.tables === null || Array.isArray(obj.tables)) {
+   223→    return { ok: false, error: "Backup file is missing the 'tables' object." };
+   224→  }
+   225→  const tables = obj.tables as Record<string, unknown>;
+   226→  for (const t of BACKUP_TABLE_LABELS) {
+   227→    if (!Array.isArray(tables[t.key])) {
+   228→      return { ok: false, error: `Backup file is missing the "${t.key}" table.` };
+   229→    }
+   230→  }
+   231→  return {
+   232→    ok: true,
+   233→    backup: {
+   234→      version: 1,
+   235→      exportedAt: typeof obj.exportedAt === "string" ? obj.exportedAt : undefined,
+   236→      tables: tables as Record<string, unknown[]>,
+   237→      bytes: fileSize,
+   238→    },
+   239→  };
+   240→}
+   241→
+   242→export function SettingsView() {
+   243→  const { data, loading, refresh } = useApi<SettingsResponse>("/api/settings");
+   244→  const { data: photoStats } = useApi<PhotoStats>("/api/photos/stats");
+   245→  const { setView } = useUI();
+   246→
+   247→  const [gstRate, setGstRate] = React.useState<string>("5");
+   248→  const [commissionRate, setCommissionRate] = React.useState<string>("5");
+   249→  const [brokerageOnGst, setBrokerageOnGst] = React.useState<boolean>(false);
+   250→  const [autoGen, setAutoGen] = React.useState<boolean>(true);
+   251→  const [saving, setSaving] = React.useState(false);
+   252→  const [seedOpen, setSeedOpen] = React.useState(false);
+   253→  const [seeding, setSeeding] = React.useState(false);
+   254→
+   255→  // Onboarding replay / demo-load state
+   256→  const [replayOpen, setReplayOpen] = React.useState(false);
+   257→  const [replaying, setReplaying] = React.useState(false);
+   258→  const [loadDemoOpen, setLoadDemoOpen] = React.useState(false);
+   259→  const [loadingDemo, setLoadingDemo] = React.useState(false);
+   260→
+   261→  // Backup / restore state
+   262→  const [downloading, setDownloading] = React.useState(false);
+   263→  const [autoBackup, setAutoBackup] = React.useState(false);
+   264→  const [autoBackupSaving, setAutoBackupSaving] = React.useState(false);
+   265→  const [restoreOpen, setRestoreOpen] = React.useState(false);
+   266→  const [restoring, setRestoring] = React.useState(false);
+   267→  const [parsedBackup, setParsedBackup] = React.useState<ParsedBackup | null>(null);
+   268→  const [fileInputKey, setFileInputKey] = React.useState(0);
+   269→
+   270→  // Daily digest state
+   271→  const [autoDigest, setAutoDigest] = React.useState(true);
+   272→  const [autoDigestSaving, setAutoDigestSaving] = React.useState(false);
+   273→  const [digestEmail, setDigestEmail] = React.useState("");
+   274→  const [digestEmailSaving, setDigestEmailSaving] = React.useState(false);
+   275→
+   276→  // Track the original loaded values so we can show a "dirty" indicator.
+   277→  const [original, setOriginal] = React.useState({ gstRate: "5", commissionRate: "5", brokerageOnGst: false, autoGen: true });
+   278→
+   279→  React.useEffect(() => {
+   280→    if (!data) return;
+   281→    const g = String(data.defaults.defaultGstRate);
+   282→    const c = String(data.defaults.defaultCommissionRate);
+   283→    const b = data.defaults.brokerageOnGst;
+   284→    const a = data.defaults.autoGenerateNotifications;
+   285→    setGstRate(g);
+   286→    setCommissionRate(c);
+   287→    setBrokerageOnGst(b);
+   288→    setAutoGen(a);
+   289→    setAutoBackup(data.defaults.autoBackupEnabled);
+   290→    setAutoDigest(data.defaults.autoDigestEnabled);
+   291→    setDigestEmail(data.defaults.digestEmail ?? "");
+   292→    setOriginal({ gstRate: g, commissionRate: c, brokerageOnGst: b, autoGen: a });
+   293→  }, [data]);
+   294→
+   295→  const dirty =
+   296→    gstRate !== original.gstRate ||
+   297→    commissionRate !== original.commissionRate ||
+   298→    brokerageOnGst !== original.brokerageOnGst ||
+   299→    autoGen !== original.autoGen;
+   300→
+   301→  const save = async () => {
+   302→    const gstNum = Number(gstRate);
+   303→    const commNum = Number(commissionRate);
+   304→    if (!Number.isFinite(gstNum) || gstNum < 0 || gstNum > 100) {
+   305→      toast.error("Default GST rate must be a number between 0 and 100");
+   306→      return;
+   307→    }
+   308→    if (!Number.isFinite(commNum) || commNum < 0 || commNum > 100) {
+   309→      toast.error("Default commission rate must be a number between 0 and 100");
+   310→      return;
+   311→    }
+   312→
+   313→    setSaving(true);
+   314→    const changes: { key: string; value: string; notes?: string }[] = [];
+   315→    if (gstRate !== original.gstRate) {
+   316→      changes.push({ key: "default_gst_rate", value: gstRate, notes: "Default GST % applied to bills." });
+   317→    }
+   318→    if (commissionRate !== original.commissionRate) {
+   319→      changes.push({ key: "default_commission_rate", value: commissionRate, notes: "Default broker commission %." });
+   320→    }
+   321→    if (brokerageOnGst !== original.brokerageOnGst) {
+   322→      changes.push({ key: "brokerage_on_gst", value: brokerageOnGst ? "true" : "false", notes: "Brokerage is computed on base amount, excluding GST." });
+   323→    }
+   324→    if (autoGen !== original.autoGen) {
+   325→      changes.push({ key: "auto_generate_notifications", value: autoGen ? "true" : "false", notes: "Auto-generate reminders on dashboard load and on-demand." });
+   326→    }
+   327→
+   328→    if (changes.length === 0) {
+   329→      toast.info("Nothing to save — no changes detected.");
+   330→      setSaving(false);
+   331→      return;
+   332→    }
+   333→
+   334→    try {
+   335→      for (const c of changes) {
+   336→        await api("/api/settings", { method: "POST", body: JSON.stringify(c) });
+   337→      }
+   338→      toast.success(`Saved ${changes.length} setting${changes.length > 1 ? "s" : ""}`);
+   339→      setOriginal({ gstRate, commissionRate, brokerageOnGst, autoGen });
+   340→      refresh();
+   341→    } catch (e) {
+   342→      toast.error(e instanceof Error ? e.message : "Failed to save settings");
+   343→    } finally {
+   344→      setSaving(false);
+   345→    }
+   346→  };
+   347→
+   348→  const runSeed = async () => {
+   349→    setSeeding(true);
+   350→    try {
+   351→      const res = await api<{ ok: boolean; message?: string; error?: string }>("/api/seed", { method: "POST" });
+   352→      if (res.ok) {
+   353→        toast.success("Database re-seeded. Refresh other views to see the fresh dataset.");
+   354→        setSeedOpen(false);
+   355→        refresh();
+   356→      } else {
+   357→        toast.error(res.error ?? "Re-seed failed");
+   358→      }
+   359→    } catch (e) {
+   360→      toast.error(e instanceof Error ? e.message : "Re-seed failed");
+   361→    } finally {
+   362→      setSeeding(false);
+   363→    }
+   364→  };
+   365→
+   366→  // ── Onboarding handlers ───────────────────────────────────────────────────
+   367→  // POST /api/onboarding { action: "reset" } clears the `onboarding_completed`
+   368→  // setting so the wizard shows again on the next page load.
+   369→  const runReplay = async () => {
+   370→    setReplaying(true);
+   371→    try {
+   372→      await api<{ ok: boolean }>("/api/onboarding", {
+   373→        method: "POST",
+   374→        body: JSON.stringify({ action: "reset" }),
+   375→      });
+   376→      toast.success("Onboarding reset — reloading…");
+   377→      setReplayOpen(false);
+   378→      // Hard reload so the wizard overlay re-appears (page.tsx checks
+   379→      // /api/onboarding on mount).
+   380→      setTimeout(() => window.location.reload(), 900);
+   381→    } catch (e) {
+   382→      toast.error(e instanceof Error ? e.message : "Failed to reset onboarding");
+   383→      setReplaying(false);
+   384→    }
+   385→  };
+   386→
+   387→  // POST /api/onboarding { action: "load_demo" } re-runs the seed script AND
+   388→  // marks onboarding complete in one shot. Useful for testing without having
+   389→  // to walk through the wizard.
+   390→  const runLoadDemo = async () => {
+   391→    setLoadingDemo(true);
+   392→    try {
+   393→      const res = await api<{ ok: boolean; error?: string; message?: string }>(
+   394→        "/api/onboarding",
+   395→        { method: "POST", body: JSON.stringify({ action: "load_demo" }) },
+   396→      );
+   397→      if (res.ok) {
+   398→        toast.success(res.message ?? "Demo data loaded — reloading…");
+   399→        setLoadDemoOpen(false);
+   400→        setTimeout(() => window.location.reload(), 1200);
+   401→      } else {
+   402→        toast.error(res.error ?? "Load demo failed");
+   403→        setLoadingDemo(false);
+   404→      }
+   405→    } catch (e) {
+   406→      toast.error(e instanceof Error ? e.message : "Load demo failed");
+   407→      setLoadingDemo(false);
+   408→    }
+   409→  };
+   410→
+   411→  // ── Backup / restore handlers ─────────────────────────────────────────────
+   412→
+   413→  const handleDownload = async () => {
+   414→    setDownloading(true);
+   415→    try {
+   416→      // Use a fetch + blob + anchor click so we know when the download
+   417→      // finishes (so we can refresh `lastBackupAt`) without leaving the page.
+   418→      const res = await fetch("/api/backup", { method: "GET" });
+   419→      if (!res.ok) {
+   420→        const txt = await res.text().catch(() => "");
+   421→        throw new Error(`Backup failed (${res.status}): ${txt}`);
+   422→      }
+   423→      const blob = await res.blob();
+   424→      const url = URL.createObjectURL(blob);
+   425→      const a = document.createElement("a");
+   426→      a.href = url;
+   427→      const stamp = (() => {
+   428→        const d = new Date();
+   429→        const yyyy = d.getFullYear();
+   430→        const mm = String(d.getMonth() + 1).padStart(2, "0");
+   431→        const dd = String(d.getDate()).padStart(2, "0");
+   432→        return `${yyyy}-${mm}-${dd}`;
+   433→      })();
+   434→      a.download = `broker-os-backup-${stamp}.json`;
+   435→      document.body.appendChild(a);
+   436→      a.click();
+   437→      a.remove();
+   438→      URL.revokeObjectURL(url);
+   439→      toast.success("Backup downloaded — full DB snapshot saved.");
+   440→      // Give the audit log a tick to land, then refresh settings so the
+   441→      // "Last backup" timestamp updates.
+   442→      setTimeout(() => void refresh(), 400);
+   443→    } catch (e) {
+   444→      toast.error(e instanceof Error ? e.message : "Backup download failed");
+   445→    } finally {
+   446→      setDownloading(false);
+   447→    }
+   448→  };
+   449→
+   450→  const toggleAutoBackup = async (next: boolean) => {
+   451→    setAutoBackup(next);
+   452→    setAutoBackupSaving(true);
+   453→    try {
+   454→      await api("/api/settings", {
+   455→        method: "POST",
+   456→        body: JSON.stringify({
+   457→          key: "auto_backup_enabled",
+   458→          value: next ? "true" : "false",
+   459→          notes: "When enabled, a backup file will be downloaded automatically once per day when the app is opened.",
+   460→        }),
+   461→      });
+   462→      toast.success(`Auto-backup ${next ? "enabled" : "disabled"}`);
+   463→      refresh();
+   464→    } catch (e) {
+   465→      // Revert on failure
+   466→      setAutoBackup(!next);
+   467→      toast.error(e instanceof Error ? e.message : "Failed to save auto-backup setting");
+   468→    } finally {
+   469→      setAutoBackupSaving(false);
+   470→    }
+   471→  };
+   472→
+   473→  // Daily digest auto-generate toggle — immediately persists.
+   474→  const toggleAutoDigest = async (next: boolean) => {
+   475→    setAutoDigest(next);
+   476→    setAutoDigestSaving(true);
+   477→    try {
+   478→      await api("/api/settings", {
+   479→        method: "POST",
+   480→        body: JSON.stringify({
+   481→          key: "auto_digest_enabled",
+   482→          value: next ? "true" : "false",
+   483→          notes: "When enabled, the AI brief generates automatically when you open the Digest view.",
+   484→        }),
+   485→      });
+   486→      toast.success(`Daily digest auto-generate ${next ? "enabled" : "disabled"}`);
+   487→      refresh();
+   488→    } catch (e) {
+   489→      setAutoDigest(!next);
+   490→      toast.error(e instanceof Error ? e.message : "Failed to save digest setting");
+   491→    } finally {
+   492→      setAutoDigestSaving(false);
+   493→    }
+   494→  };
+   495→
+   496→  // Digest recipient email — save on blur (or Enter) so the broker can type
+   497→  // freely without a "Save changes" round-trip per keystroke.
+   498→  const saveDigestEmail = async () => {
+   499→    const trimmed = digestEmail.trim();
+   500→    // Light validation — empty string is allowed (clears the value).
+   501→    if (trimmed && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+   502→      toast.error("Enter a valid email address (e.g. broker@example.com)");
+   503→      return;
+   504→    }
+   505→    // Skip the round-trip if nothing actually changed vs. the loaded value.
+   506→    if (trimmed === (data?.defaults.digestEmail ?? "")) return;
+   507→    setDigestEmailSaving(true);
+   508→    try {
+   509→      await api("/api/settings", {
+   510→        method: "POST",
+   511→        body: JSON.stringify({
+   512→          key: "digest_email",
+   513→          value: trimmed,
+   514→          notes: "Recipient email for future automated daily digest delivery.",
+   515→        }),
+   516→      });
+   517→      toast.success(trimmed ? "Digest email saved" : "Digest email cleared");
+   518→      refresh();
+   519→    } catch (e) {
+   520→      toast.error(e instanceof Error ? e.message : "Failed to save digest email");
+   521→    } finally {
+   522→      setDigestEmailSaving(false);
+   523→    }
+   524→  };
+   525→
+   526→  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+   527→    const file = e.target.files?.[0];
+   528→    if (!file) return;
+   529→    const text = await file.text();
+   530→    const result = parseBackupFile(text, file.name, file.size);
+   531→    if (!result.ok) {
+   532→      toast.error(result.error);
+   533→      // Reset the input so the same file can be re-selected later.
+   534→      setFileInputKey((k) => k + 1);
+   535→      setParsedBackup(null);
+   536→      return;
+   537→    }
+   538→    setParsedBackup(result.backup);
+   539→    toast.info(`Backup loaded — ${formatBytes(file.size)}, ${BACKUP_TABLE_LABELS.reduce((s, t) => s + ((result.backup.tables[t.key]?.length as number) ?? 0), 0)} rows total. Review and confirm below.`);
+   540→  };
+   541→
+   542→  const openRestoreConfirm = () => {
+   543→    if (!parsedBackup) {
+   544→      toast.error("Select a backup file first.");
+   545→      return;
+   546→    }
+   547→    setRestoreOpen(true);
+   548→  };
+   549→
+   550→  const handleRestore = async () => {
+   551→    if (!parsedBackup) return;
+   552→    setRestoring(true);
+   553→    try {
+   554→      // Send the parsed JSON as the request body (raw JSON).
+   555→      const payload = JSON.stringify({
+   556→        version: parsedBackup.version,
+   557→        exportedAt: parsedBackup.exportedAt,
+   558→        tables: parsedBackup.tables,
+   559→      });
+   560→      const res = await fetch("/api/backup", {
+   561→        method: "POST",
+   562→        headers: { "Content-Type": "application/json" },
+   563→        body: payload,
+   564→      });
+   565→      const data = await res.json().catch(() => ({})) as RestoreResponse;
+   566→      if (!res.ok || !data.success) {
+   567→        throw new Error(data.error ?? `Restore failed (HTTP ${res.status})`);
+   568→      }
+   569→      toast.success("Backup restored — reloading…");
+   570→      setRestoreOpen(false);
+   571→      // Wait 1.5s for the toast to land, then hard reload so all
+   572→      // client-side cached state is reset.
+   573→      setTimeout(() => window.location.reload(), 1500);
+   574→    } catch (e) {
+   575→      toast.error(e instanceof Error ? e.message : "Restore failed");
+   576→      setRestoring(false);
+   577→    }
+   578→  };
+   579→
+   580→  const cancelRestore = () => {
+   581→    if (restoring) return; // no cancel mid-restore
+   582→    setRestoreOpen(false);
+   583→  };
+   584→
+   585→  const clearSelectedBackup = () => {
+   586→    setParsedBackup(null);
+   587→    setFileInputKey((k) => k + 1);
+   588→  };
+   589→
+   590→  const lastBackupAt = data?.defaults.lastBackupAt ?? null;
+   591→
+   592→  return (
+   593→    <div className="space-y-6">
+   594→      <SectionHeader
+   595→        title="Settings"
+   596→        description="System defaults & business rules"
+   597→        action={
+   598→          <Button size="sm" onClick={save} disabled={saving || !dirty}>
+   599→            <Save className="mr-1.5 size-4" />
+   600→            {saving ? "Saving…" : "Save changes"}
+   601→          </Button>
+   602→        }
+   603→      />
+   604→
+   605→      {loading ? (
+   606→        <div className="grid gap-4 lg:grid-cols-2">
+   607→          <Skeleton className="h-72 rounded-2xl" />
+   608→          <Skeleton className="h-72 rounded-2xl" />
+   609→        </div>
+   610→      ) : (
+   611→        <div className="grid gap-6 lg:grid-cols-2">
+   612→          {/* Card 1 — System defaults form */}
+   613→          <GlassCard className="hover-lift p-6">
+   614→            <div className="flex items-center gap-2.5">
+   615→              <div className="grid size-9 place-items-center rounded-xl bg-primary/10 text-primary">
+   616→                <SettingsIcon className="size-4.5" />
+   617→              </div>
+   618→              <div>
+   619→                <h3 className="text-sm font-semibold text-foreground">System defaults</h3>
+   620→                <p className="text-xs text-muted-foreground">Default rates applied when no per-party override exists.</p>
+   621→              </div>
+   622→            </div>
+   623→
+   624→            <div className="mt-5 space-y-5">
+   625→              <div className="space-y-1.5">
+   626→                <Label htmlFor="gst-rate" className="text-xs font-medium text-muted-foreground">
+   627→                  Default GST rate (%)
+   628→                </Label>
+   629→                <Input
+   630→                  id="gst-rate"
+   631→                  type="number"
+   632→                  min={0}
+   633→                  max={100}
+   634→                  step="0.1"
+   635→                  value={gstRate}
+   636→                  onChange={(e) => setGstRate(e.target.value)}
+   637→                />
+   638→                <p className="text-[11px] text-muted-foreground">
+   639→                  Applied to new bills when no client/supplier GST rate is set.
+   640→                </p>
+   641→              </div>
+   642→
+   643→              <div className="space-y-1.5">
+   644→                <Label htmlFor="comm-rate" className="text-xs font-medium text-muted-foreground">
+   645→                  Default commission rate (%)
+   646→                </Label>
+   647→                <Input
+   648→                  id="comm-rate"
+   649→                  type="number"
+   650→                  min={0}
+   651→                  max={100}
+   652→                  step="0.1"
+   653→                  value={commissionRate}
+   654→                  onChange={(e) => setCommissionRate(e.target.value)}
+   655→                />
+   656→                <p className="text-[11px] text-muted-foreground">
+   657→                  Default broker commission % — overridden by per-supplier rates.
+   658→                </p>
+   659→              </div>
+   660→
+   661→              <div className="flex items-start justify-between gap-3 rounded-xl border border-border/50 bg-card/30 p-3">
+   662→                <div className="min-w-0 space-y-1">
+   663→                  <Label htmlFor="brokerage-gst" className="text-xs font-medium text-muted-foreground">
+   664→                    Brokerage on GST
+   665→                  </Label>
+   666→                  <p className="text-[11px] leading-relaxed text-muted-foreground">
+   667→                    Brokerage is always computed on the base amount <span className="font-semibold text-foreground">excluding GST</span>.
+   668→                    Toggle is informational only — the rule is enforced system-wide.
+   669→                  </p>
+   670→                </div>
+   671→                <Switch
+   672→                  id="brokerage-gst"
+   673→                  checked={brokerageOnGst}
+   674→                  onCheckedChange={setBrokerageOnGst}
+   675→                  aria-label="Brokerage on GST"
+   676→                />
+   677→              </div>
+   678→
+   679→              <div className="flex items-start justify-between gap-3 rounded-xl border border-border/50 bg-card/30 p-3">
+   680→                <div className="min-w-0 space-y-1">
+   681→                  <Label htmlFor="auto-gen" className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+   682→                    <BellRing className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+   683→                    Auto-generate reminders
+   684→                  </Label>
+   685→                  <p className="text-[11px] leading-relaxed text-muted-foreground">
+   686→                    When enabled, the dashboard fires a background scan on load that creates pending notifications for overdue visits, upcoming dispatches (≤ 7d), due payments (≤ 14d), and eligible brokerage payouts. The Notifications view always allows manual generation.
+   687→                  </p>
+   688→                </div>
+   689→                <Switch
+   690→                  id="auto-gen"
+   691→                  checked={autoGen}
+   692→                  onCheckedChange={setAutoGen}
+   693→                  aria-label="Auto-generate reminders"
+   694→                />
+   695→              </div>
+   696→
+   697→              {dirty && (
+   698→                <div className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] text-amber-700 dark:text-amber-300">
+   699→                  <AlertCircle className="size-3" />
+   700→                  Unsaved changes — click “Save changes” to persist.
+   701→                </div>
+   702→              )}
+   703→            </div>
+   704→          </GlassCard>
+   705→
+   706→          {/* Card 2 — Business rules reference */}
+   707→          <GlassCard className="hover-lift p-6">
+   708→            <div className="flex items-center gap-2.5">
+   709→              <div className="grid size-9 place-items-center rounded-xl bg-primary/10 text-primary">
+   710→                <ShieldCheck className="size-4.5" />
+   711→              </div>
+   712→              <div>
+   713→                <h3 className="text-sm font-semibold text-foreground">Business rules reference</h3>
+   714→                <p className="text-xs text-muted-foreground">Core financial rules enforced across the system (§7).</p>
+   715→              </div>
+   716→            </div>
+   717→
+   718→            <ul className="mt-5 space-y-3">
+   719→              {BUSINESS_RULES.map((rule) => (
+   720→                <RuleRow key={rule.title} {...rule} />
+   721→              ))}
+   722→            </ul>
+   723→          </GlassCard>
+   724→        </div>
+   725→      )}
+   726→
+   727→      {/* Card — Display currency (multi-currency display layer) */}
+   728→      <DisplayCurrencyCard />
+   729→
+   730→      {/* Card 3 — Data management */}
+   731→      <GlassCard className="hover-lift p-6">
+   732→        <div className="flex items-center gap-2.5">
+   733→          <div className="grid size-9 place-items-center rounded-xl bg-primary/10 text-primary">
+   734→            <Database className="size-4.5" />
+   735→          </div>
+   736→          <div>
+   737→            <h3 className="text-sm font-semibold text-foreground">Data management</h3>
+   738→            <p className="text-xs text-muted-foreground">Export data as CSV or reset the demo dataset.</p>
+   739→          </div>
+   740→        </div>
+   741→
+   742→        {/* Photo storage mini-stat — full-res originals + 400px JPEG thumbnails under public/uploads */}
+   743→        <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+   744→          <div className="glass flex items-center gap-3 rounded-xl border border-border/50 p-3">
+   745→            <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+   746→              <ImageIcon className="size-4" />
+   747→            </div>
+   748→            <div className="min-w-0">
+   749→              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Photos</p>
+   750→              <p className="kpi-num text-base font-semibold text-foreground">
+   751→                {photoStats ? photoStats.count : "—"}
+   752→                <span className="ml-1 text-[11px] font-normal text-muted-foreground">
+   753→                  {photoStats && photoStats.count === 1 ? "record" : "records"}
+   754→                </span>
+   755→              </p>
+   756→            </div>
+   757→          </div>
+   758→          <div className="glass flex items-center gap-3 rounded-xl border border-border/50 p-3">
+   759→            <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+   760→              <HardDrive className="size-4" />
+   761→            </div>
+   762→            <div className="min-w-0">
+   763→              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Storage used</p>
+   764→              <p className="kpi-num text-base font-semibold text-foreground">
+   765→                {photoStats ? `${photoStats.totalSizeMB} MB` : "—"}
+   766→                <span className="ml-1 text-[11px] font-normal text-muted-foreground">
+   767→                  {photoStats ? `(${photoStats.totalSizeBytes.toLocaleString()} bytes)` : "in /uploads"}
+   768→                </span>
+   769→              </p>
+   770→            </div>
+   771→          </div>
+   772→        </div>
+   773→        <p className="mt-2 text-[11px] text-muted-foreground">
+   774→          Originals are stored full-resolution in <code className="rounded bg-card/60 px-1 py-0.5 text-[10px]">public/uploads/</code>;
+   775→          a 400&nbsp;px JPEG thumbnail (q80) is generated on upload for fast gallery loading.
+   776→        </p>
+   777→
+   778→        <div className="mt-5">
+   779→          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Export data (CSV)</p>
+   780→          <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+   781→            {EXPORT_LINKS.map((link) => (
+   782→              <a
+   783→                key={link.type}
+   784→                href={`/api/export?type=${link.type}`}
+   785→                target="_blank"
+   786→                rel="noopener noreferrer"
+   787→                className="glass hover-lift inline-flex items-center gap-2 rounded-xl border border-border/50 px-3 py-2 text-xs font-medium text-foreground transition-colors hover:text-primary"
+   788→              >
+   789→                {link.icon}
+   790→                <span className="truncate">{link.label}</span>
+   791→                <Download className="ml-auto size-3 text-muted-foreground" />
+   792→              </a>
+   793→            ))}
+   794→          </div>
+   795→        </div>
+   796→
+   797→        <div className="mt-5">
+   798→          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Print-ready PDF reports</p>
+   799→          <p className="mt-1 text-[11px] text-muted-foreground">
+   800→            Opens a print-optimized page in a new tab — the browser's print dialog auto-launches, where you can choose “Save as PDF” as the destination.
+   801→          </p>
+   802→          <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
+   803→            {PDF_REPORTS.map((r) => {
+   804→              const isLink = r.href.length > 0;
+   805→              const cls = "glass hover-lift inline-flex items-start gap-2 rounded-xl border border-border/50 px-3 py-2 text-xs font-medium text-foreground transition-colors hover:text-primary";
+   806→              const inner = (
+   807→                <>
+   808→                  <span className="mt-0.5 text-emerald-600 dark:text-emerald-400">{r.icon}</span>
+   809→                  <span className="min-w-0 flex-1">
+   810→                    <span className="block truncate font-semibold">{r.label}</span>
+   811→                    <span className="block text-[10px] font-normal leading-snug text-muted-foreground">{r.hint}</span>
+   812→                  </span>
+   813→                  <Printer className="ml-auto size-3 shrink-0 text-muted-foreground" />
+   814→                </>
+   815→              );
+   816→              return isLink ? (
+   817→                <a key={r.label} href={r.href} target="_blank" rel="noopener noreferrer" className={cls}>
+   818→                  {inner}
+   819→                </a>
+   820→              ) : (
+   821→                <span key={r.label} className={`${cls} cursor-default opacity-80`}>
+   822→                  {inner}
+   823→                </span>
+   824→              );
+   825→            })}
+   826→          </div>
+   827→        </div>
+   828→
+   829→        <div className="mt-5 flex flex-col gap-3 border-t border-border/50 pt-4 sm:flex-row sm:items-center sm:justify-between">
+   830→          <div className="min-w-0">
+   831→            <p className="text-sm font-medium text-foreground">Re-seed database</p>
+   832→            <p className="text-[11px] text-muted-foreground">
+   833→              Wipes <span className="font-semibold">all</span> current data and writes a fresh demo dataset. Use only in development.
+   834→            </p>
+   835→          </div>
+   836→          <Button
+   837→            variant="outline"
+   838→            className="border-rose-500/30 text-rose-600 hover:text-rose-500 dark:text-rose-400"
+   839→            onClick={() => setSeedOpen(true)}
+   840→          >
+   841→            <RotateCcw className="mr-1.5 size-4" />Re-seed
+   842→          </Button>
+   843→        </div>
+   844→      </GlassCard>
+   845→
+   846→      {/* Card 4 — Backup & Restore (export = emerald/safe, import = rose/danger) */}
+   847→      <GlassCard className="hover-lift p-6">
+   848→        <div className="flex items-center gap-2.5">
+   849→          <div className="grid size-9 place-items-center rounded-xl bg-primary/10 text-primary">
+   850→            <Shield className="size-4.5" />
+   851→          </div>
+   852→          <div>
+   853→            <h3 className="text-sm font-semibold text-foreground">Backup &amp; Restore</h3>
+   854→            <p className="text-xs text-muted-foreground">Export the entire database as JSON, or restore from a backup file.</p>
+   855→          </div>
+   856→        </div>
+   857→
+   858→        <div className="mt-5 grid gap-4 lg:grid-cols-2">
+   859→          {/* ── Export (glass + emerald accent — safe) ── */}
+   860→          <div className="glass rounded-xl border border-emerald-500/30 p-4">
+   861→            <div className="flex items-center gap-2">
+   862→              <div className="grid size-7 place-items-center rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+   863→                <Download className="size-4" />
+   864→              </div>
+   865→              <p className="text-sm font-medium text-foreground">Export database</p>
+   866→            </div>
+   867→            <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+   868→              Downloads every table — clients, suppliers, visits, bookings, POs, dispatches, bills, payments, brokerage, payouts, disputes, photos, notifications, audit logs &amp; settings — as a single JSON file.
+   869→            </p>
+   870→
+   871→            <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
+   872→              <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+   873→                <Clock className="mr-1 size-3" />
+   874→                Last backup: {loading ? "…" : formatRelative(lastBackupAt)}
+   875→              </Badge>
+   876→              <Badge variant="outline" className="border-border/60 bg-card/40 text-muted-foreground">
+   877→                <HardDrive className="mr-1 size-3" />
+   878→                JSON snapshot (full DB)
+   879→              </Badge>
+   880→            </div>
+   881→
+   882→            <Button
+   883→              className="mt-4 w-full bg-emerald-600 text-white hover:bg-emerald-700"
+   884→              onClick={handleDownload}
+   885→              disabled={downloading}
+   886→            >
+   887→              {downloading ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <Download className="mr-1.5 size-4" />}
+   888→              {downloading ? "Preparing…" : "Download backup"}
+   889→            </Button>
+   890→
+   891→            {/* Auto-backup toggle — immediately persists (no "Save changes" needed). */}
+   892→            <div className="mt-4 flex items-start justify-between gap-3 rounded-lg border border-border/40 bg-card/30 p-3">
+   893→              <div className="min-w-0 space-y-1">
+   894→                <Label htmlFor="auto-backup" className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+   895→                  <Shield className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+   896→                  Auto-backup (daily)
+   897→                </Label>
+   898→                <p className="text-[11px] leading-relaxed text-muted-foreground">
+   899→                  A backup file will be downloaded automatically once per day when you open the app. (Daily trigger is a future enhancement — for now, toggle the preference and use “Download backup” above.)
+   900→                </p>
+   901→              </div>
+   902→              <Switch
+   903→                id="auto-backup"
+   904→                checked={autoBackup}
+   905→                onCheckedChange={toggleAutoBackup}
+   906→                disabled={autoBackupSaving}
+   907→                aria-label="Auto-backup daily"
+   908→              />
+   909→            </div>
+   910→          </div>
+   911→
+   912→          {/* ── Import (rose-tinted danger zone — destructive) ── */}
+   913→          <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 p-4">
+   914→            <div className="flex items-center gap-2">
+   915→              <div className="grid size-7 place-items-center rounded-lg bg-rose-500/15 text-rose-600 dark:text-rose-400">
+   916→                <AlertTriangle className="size-4" />
+   917→              </div>
+   918→              <p className="text-sm font-medium text-foreground">Restore from backup</p>
+   919→            </div>
+   920→
+   921→            <div className="mt-2 flex items-start gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-700 dark:text-rose-300">
+   922→              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+   923→              <span>
+   924→                <span className="font-semibold">WARNING:</span> This will replace ALL current data with the backup. This cannot be undone.
+   925→              </span>
+   926→            </div>
+   927→
+   928→            <Label htmlFor="backup-file" className="mt-3 block text-xs font-medium text-muted-foreground">
+   929→              Backup file (.json)
+   930→            </Label>
+   931→            <Input
+   932→              key={fileInputKey}
+   933→              id="backup-file"
+   934→              type="file"
+   935→              accept=".json,application/json"
+   936→              onChange={handleFileSelect}
+   937→              className="mt-1 cursor-pointer text-xs file:mr-3 file:rounded-md file:border-0 file:bg-rose-500/15 file:px-3 file:py-1.5 file:text-rose-700 hover:file:bg-rose-500/25 dark:file:text-rose-300"
+   938→            />
+   939→
+   940→            {parsedBackup && (
+   941→              <div className="mt-3 rounded-lg border border-border/60 bg-card/40 p-3">
+   942→                <div className="flex items-center justify-between gap-2">
+   943→                  <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Backup metadata</p>
+   944→                  <button
+   945→                    type="button"
+   946→                    onClick={clearSelectedBackup}
+   947→                    className="text-[10px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+   948→                  >
+   949→                    Clear
+   950→                  </button>
+   951→                </div>
+   952→                <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px]">
+   953→                  <dt className="text-muted-foreground">Version</dt>
+   954→                  <dd className="font-medium text-foreground">{parsedBackup.version}</dd>
+   955→                  <dt className="text-muted-foreground">Exported at</dt>
+   956→                  <dd className="font-medium text-foreground">{formatDateTime(parsedBackup.exportedAt)}</dd>
+   957→                  <dt className="text-muted-foreground">File size</dt>
+   958→                  <dd className="font-medium text-foreground">{formatBytes(parsedBackup.bytes)}</dd>
+   959→                </dl>
+   960→                <p className="mt-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Row counts</p>
+   961→                <div className="mt-1.5 max-h-32 overflow-y-auto pr-1">
+   962→                  <div className="flex flex-wrap gap-1.5">
+   963→                    {BACKUP_TABLE_LABELS.map((t) => {
+   964→                      const n = (parsedBackup.tables[t.key]?.length as number) ?? 0;
+   965→                      if (n === 0) return null;
+   966→                      return (
+   967→                        <Badge key={t.key} variant="outline" className="border-border/60 bg-card/40 text-[10px] font-normal text-foreground">
+   968→                          {t.label}: <span className="ml-0.5 font-semibold">{n}</span>
+   969→                        </Badge>
+   970→                      );
+   971→                    })}
+   972→                  </div>
+   973→                </div>
+   974→              </div>
+   975→            )}
+   976→
+   977→            <Button
+   978→              variant="outline"
+   979→              className="mt-4 w-full border-rose-500/40 text-rose-600 hover:bg-rose-500/10 hover:text-rose-700 dark:text-rose-400 dark:hover:text-rose-300"
+   980→              onClick={openRestoreConfirm}
+   981→              disabled={!parsedBackup || restoring}
+   982→            >
+   983→              {restoring ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <Upload className="mr-1.5 size-4" />}
+   984→              {restoring ? "Restoring…" : "Restore from backup"}
+   985→            </Button>
+   986→          </div>
+   987→        </div>
+   988→      </GlassCard>
+   989→
+   990→      {/* Card 5 — Daily Digest */}
+   991→      <GlassCard className="hover-lift p-6">
+   992→        <div className="flex items-center gap-2.5">
+   993→          <div className="grid size-9 place-items-center rounded-xl bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+   994→            <Coffee className="size-4.5" />
+   995→          </div>
+   996→          <div>
+   997→            <h3 className="text-sm font-semibold text-foreground">Daily Digest</h3>
+   998→            <p className="text-xs text-muted-foreground">AI-powered morning brief & email-ready summary of today&apos;s priorities.</p>
+   999→          </div>
+  1000→        </div>
+  1001→
+  1002→        <div className="mt-5 grid gap-4 lg:grid-cols-2">
+  1003→          {/* Auto-generate toggle */}
+  1004→          <div className="glass flex flex-col gap-3 rounded-xl border border-border/50 p-4">
+  1005→            <div className="flex items-start justify-between gap-3">
+  1006→              <div className="min-w-0 space-y-1">
+  1007→                <Label htmlFor="auto-digest" className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+  1008→                  <Coffee className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+  1009→                  Auto-generate daily digest
+  1010→                </Label>
+  1011→                <p className="text-[11px] leading-relaxed text-muted-foreground">
+  1012→                  When enabled, the AI brief generates automatically when you open the Digest view. Disable if you prefer to generate on-demand.
+  1013→                </p>
+  1014→              </div>
+  1015→              <Switch
+  1016→                id="auto-digest"
+  1017→                checked={autoDigest}
+  1018→                onCheckedChange={toggleAutoDigest}
+  1019→                disabled={autoDigestSaving}
+  1020→                aria-label="Auto-generate daily digest"
+  1021→              />
+  1022→            </div>
+  1023→            <Button
+  1024→              variant="outline"
+  1025→              className="w-full border-emerald-500/30 text-emerald-700 hover:bg-emerald-500/10 hover:text-emerald-700 dark:text-emerald-300 dark:hover:bg-emerald-500/10 dark:hover:text-emerald-200"
+  1026→              onClick={() => setView("digest")}
+  1027→            >
+  1028→              <Mail className="mr-1.5 size-4" />
+  1029→              Generate now
+  1030→              <ArrowRight className="ml-1.5 size-3.5" />
+  1031→            </Button>
+  1032→          </div>
+  1033→
+  1034→          {/* Recipient email */}
+  1035→          <div className="glass flex flex-col gap-3 rounded-xl border border-border/50 p-4">
+  1036→            <div className="space-y-1">
+  1037→              <Label htmlFor="digest-email" className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+  1038→                <Mail className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+  1039→                Send digest to
+  1040→              </Label>
+  1041→              <p className="text-[11px] leading-relaxed text-muted-foreground">
+  1042→                Email address to receive the daily digest automatically (future enhancement).
+  1043→              </p>
+  1044→            </div>
+  1045→            <div className="flex gap-2">
+  1046→              <Input
+  1047→                id="digest-email"
+  1048→                type="email"
+  1049→                placeholder="broker@example.com"
+  1050→                value={digestEmail}
+  1051→                onChange={(e) => setDigestEmail(e.target.value)}
+  1052→                onBlur={saveDigestEmail}
+  1053→                onKeyDown={(e) => {
+  1054→                  if (e.key === "Enter") {
+  1055→                    e.preventDefault();
+  1056→                    (e.target as HTMLInputElement).blur();
+  1057→                  }
+  1058→                }}
+  1059→                disabled={digestEmailSaving}
+  1060→                className="text-sm"
+  1061→              />
+  1062→              <Button
+  1063→                size="sm"
+  1064→                variant="outline"
+  1065→                onClick={saveDigestEmail}
+  1066→                disabled={digestEmailSaving}
+  1067→                className="shrink-0"
+  1068→              >
+  1069→                {digestEmailSaving ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}
+  1070→                <span className="sr-only">Save email</span>
+  1071→              </Button>
+  1072→            </div>
+  1073→            <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300">
+  1074→              <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+  1075→              <span>
+  1076→                Email sending coming soon — for now, use the <span className="font-semibold">Copy</span> buttons in the Digest view.
+  1077→              </span>
+  1078→            </div>
+  1079→          </div>
+  1080→        </div>
+  1081→      </GlassCard>
+  1082→
+  1083→      {/* Card 6 — Notification Scheduler */}
+  1084→      <SchedulerCard />
+  1085→
+  1086→      {/* Card 7 — Onboarding & help */}
+  1087→      <GlassCard className="hover-lift p-6">
+  1088→        <div className="flex items-center gap-2.5">
+  1089→          <div className="grid size-9 place-items-center rounded-xl bg-primary/10 text-primary">
+  1090→            <Sparkles className="size-4.5" />
+  1091→          </div>
+  1092→          <div>
+  1093→            <h3 className="text-sm font-semibold text-foreground">Onboarding &amp; help</h3>
+  1094→            <p className="text-xs text-muted-foreground">Replay the first-run wizard or load demo data for testing.</p>
+  1095→          </div>
+  1096→        </div>
+  1097→
+  1098→        <div className="mt-5 grid gap-3 sm:grid-cols-2">
+  1099→          {/* Replay onboarding */}
+  1100→          <div className="glass flex flex-col gap-3 rounded-xl border border-border/50 p-4">
+  1101→            <div className="flex items-start gap-2.5">
+  1102→              <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+  1103→                <RotateCcw className="size-4" />
+  1104→              </div>
+  1105→              <div className="min-w-0">
+  1106→                <p className="text-sm font-medium text-foreground">Replay onboarding</p>
+  1107→                <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+  1108→                  Re-opens the welcome wizard so you can walk through the guided setup again.
+  1109→                  No data is touched — only the onboarding flag is reset.
+  1110→                </p>
+  1111→              </div>
+  1112→            </div>
+  1113→            <Button
+  1114→              variant="outline"
+  1115→              className="border-emerald-500/30 text-emerald-700 hover:text-emerald-600 dark:text-emerald-300 dark:hover:text-emerald-200"
+  1116→              onClick={() => setReplayOpen(true)}
+  1117→            >
+  1118→              <Sparkles className="mr-1.5 size-4" />
+  1119→              Replay onboarding
+  1120→            </Button>
+  1121→          </div>
+  1122→
+  1123→          {/* Load demo data */}
+  1124→          <div className="glass flex flex-col gap-3 rounded-xl border border-border/50 p-4">
+  1125→            <div className="flex items-start gap-2.5">
+  1126→              <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-amber-500/15 text-amber-600 dark:text-amber-400">
+  1127→                <Database className="size-4" />
+  1128→              </div>
+  1129→              <div className="min-w-0">
+  1130→                <p className="text-sm font-medium text-foreground">Load demo data</p>
+  1131→                <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+  1132→                  Wipes all current data and writes a fresh demo dataset, then marks onboarding
+  1133→                  complete. Handy for testing without walking through the wizard.
+  1134→                </p>
+  1135→              </div>
+  1136→            </div>
+  1137→            <Button
+  1138→              variant="outline"
+  1139→              className="border-rose-500/30 text-rose-600 hover:text-rose-500 dark:text-rose-400"
+  1140→              onClick={() => setLoadDemoOpen(true)}
+  1141→            >
+  1142→              <Database className="mr-1.5 size-4" />
+  1143→              Load demo data
+  1144→            </Button>
+  1145→          </div>
+  1146→        </div>
+  1147→
+  1148→        {/* Inline quick-tips reference */}
+  1149→        <div className="mt-5 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
+  1150→          <div className="flex items-center gap-2">
+  1151→            <Lightbulb className="size-4 text-emerald-600 dark:text-emerald-400" />
+  1152→            <p className="text-xs font-semibold text-foreground">Quick tips</p>
+  1153→          </div>
+  1154→          <ul className="mt-2.5 grid gap-2 sm:grid-cols-2">
+  1155→            <li className="text-[11px] text-muted-foreground">
+  1156→              <span className="font-medium text-foreground">⌘K</span> — open the command palette to find any client, PO, or bill.
+  1157→            </li>
+  1158→            <li className="text-[11px] text-muted-foreground">
+  1159→              <span className="font-medium text-foreground">Click any KPI card</span> — drill into the filtered list.
+  1160→            </li>
+  1161→            <li className="text-[11px] text-muted-foreground">
+  1162→              <span className="font-medium text-foreground">Action Center</span> — see what needs your attention today.
+  1163→            </li>
+  1164→            <li className="text-[11px] text-muted-foreground">
+  1165→              <span className="font-medium text-foreground">Upload photos</span> at every stage for a complete audit trail.
+  1166→            </li>
+  1167→          </ul>
+  1168→        </div>
+  1169→      </GlassCard>
+  1170→
+  1171→      {/* Restore confirmation — explicit AlertDialog to prevent accidental data loss */}
+  1172→      <AlertDialog
+  1173→        open={restoreOpen}
+  1174→        onOpenChange={(o) => { if (!o && !restoring) setRestoreOpen(false); }}
+  1175→      >
+  1176→        <AlertDialogContent className="glass-strong max-w-md">
+  1177→          <AlertDialogHeader>
+  1178→            <AlertDialogTitle>Restore from this backup?</AlertDialogTitle>
+  1179→            <AlertDialogDescription>
+  1180→              This will permanently replace ALL current data with the contents of the selected backup file. The action cannot be undone.
+  1181→            </AlertDialogDescription>
+  1182→          </AlertDialogHeader>
+  1183→          {parsedBackup && (
+  1184→            <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2.5 text-[11px] text-rose-700 dark:text-rose-300">
+  1185→              <div className="flex items-center gap-1.5 font-semibold">
+  1186→                <AlertTriangle className="size-3.5" />
+  1187→                Restore preview
+  1188→              </div>
+  1189→              <dl className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-1">
+  1190→                <dt className="opacity-80">Exported at</dt>
+  1191→                <dd className="font-medium">{formatDateTime(parsedBackup.exportedAt)}</dd>
+  1192→                <dt className="opacity-80">File size</dt>
+  1193→                <dd className="font-medium">{formatBytes(parsedBackup.bytes)}</dd>
+  1194→                <dt className="opacity-80">Total rows</dt>
+  1195→                <dd className="font-medium">
+  1196→                  {BACKUP_TABLE_LABELS.reduce(
+  1197→                    (s, t) => s + ((parsedBackup.tables[t.key]?.length as number) ?? 0),
+  1198→                    0,
+  1199→                  )}
+  1200→                </dd>
+  1201→              </dl>
+  1202→            </div>
+  1203→          )}
+  1204→          <AlertDialogFooter>
+  1205→            <AlertDialogCancel disabled={restoring}>Cancel</AlertDialogCancel>
+  1206→            <AlertDialogAction
+  1207→              className="bg-rose-600 text-white hover:bg-rose-700"
+  1208→              onClick={(e) => { e.preventDefault(); void handleRestore(); }}
+  1209→              disabled={restoring}
+  1210→            >
+  1211→              {restoring ? "Restoring…" : "Restore — replace all data"}
+  1212→            </AlertDialogAction>
+  1213→          </AlertDialogFooter>
+  1214→        </AlertDialogContent>
+  1215→      </AlertDialog>
+  1216→
+  1217→      {/* Re-seed confirm */}
+  1218→      <AlertDialog open={seedOpen} onOpenChange={setSeedOpen}>
+  1219→        <AlertDialogContent className="glass-strong max-w-md">
+  1220→          <AlertDialogHeader>
+  1221→            <AlertDialogTitle>Re-seed database?</AlertDialogTitle>
+  1222→            <AlertDialogDescription>
+  1223→              This will erase all current data (clients, suppliers, POs, bills, payments, brokerage, disputes, audit logs) and replace it with a fresh demo dataset. The action is irreversible.
+  1224→            </AlertDialogDescription>
+  1225→          </AlertDialogHeader>
+  1226→          <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2.5 text-[11px] text-rose-700 dark:text-rose-300">
+  1227→            <AlertCircle className="mr-1 inline size-3.5" />
+  1228→            Make sure no one else is actively working in the system — running this mid-session will invalidate their data.
+  1229→          </div>
+  1230→          <AlertDialogFooter>
+  1231→            <AlertDialogCancel disabled={seeding}>Cancel</AlertDialogCancel>
+  1232→            <AlertDialogAction
+  1233→              className="bg-rose-600 text-white hover:bg-rose-700"
+  1234→              onClick={(e) => { e.preventDefault(); void runSeed(); }}
+  1235→              disabled={seeding}
+  1236→            >
+  1237→              {seeding ? "Seeding…" : "Yes, re-seed everything"}
+  1238→            </AlertDialogAction>
+  1239→          </AlertDialogFooter>
+  1240→        </AlertDialogContent>
+  1241→      </AlertDialog>
+  1242→
+  1243→      {/* Replay onboarding confirm — low-risk (only clears a setting), but
+  1244→          we confirm because the page will hard-reload. */}
+  1245→      <AlertDialog open={replayOpen} onOpenChange={(o) => { if (!o && !replaying) setReplayOpen(false); }}>
+  1246→        <AlertDialogContent className="glass-strong max-w-md">
+  1247→          <AlertDialogHeader>
+  1248→            <AlertDialogTitle>Replay the onboarding wizard?</AlertDialogTitle>
+  1249→            <AlertDialogDescription>
+  1250→              This will reset the onboarding flag and reload the page so the welcome wizard
+  1251→              appears again. None of your clients, suppliers, or other data will be affected.
+  1252→            </AlertDialogDescription>
+  1253→          </AlertDialogHeader>
+  1254→          <AlertDialogFooter>
+  1255→            <AlertDialogCancel disabled={replaying}>Cancel</AlertDialogCancel>
+  1256→            <AlertDialogAction
+  1257→              className="bg-emerald-600 text-white hover:bg-emerald-700"
+  1258→              onClick={(e) => { e.preventDefault(); void runReplay(); }}
+  1259→              disabled={replaying}
+  1260→            >
+  1261→              {replaying ? "Resetting…" : "Replay onboarding"}
+  1262→            </AlertDialogAction>
+  1263→          </AlertDialogFooter>
+  1264→        </AlertDialogContent>
+  1265→      </AlertDialog>
+  1266→
+  1267→      {/* Load demo data confirm — destructive (wipes all data) */}
+  1268→      <AlertDialog open={loadDemoOpen} onOpenChange={(o) => { if (!o && !loadingDemo) setLoadDemoOpen(false); }}>
+  1269→        <AlertDialogContent className="glass-strong max-w-md">
+  1270→          <AlertDialogHeader>
+  1271→            <AlertDialogTitle>Load demo data?</AlertDialogTitle>
+  1272→            <AlertDialogDescription>
+  1273→              This will erase <span className="font-semibold">all</span> current data and write a
+  1274→              fresh demo dataset (same as re-seeding), then mark onboarding complete. The action is
+  1275→              irreversible.
+  1276→            </AlertDialogDescription>
+  1277→          </AlertDialogHeader>
+  1278→          <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2.5 text-[11px] text-rose-700 dark:text-rose-300">
+  1279→            <AlertCircle className="mr-1 inline size-3.5" />
+  1280→            Useful for testing the wizard end-to-end without walking through it manually.
+  1281→          </div>
+  1282→          <AlertDialogFooter>
+  1283→            <AlertDialogCancel disabled={loadingDemo}>Cancel</AlertDialogCancel>
+  1284→            <AlertDialogAction
+  1285→              className="bg-rose-600 text-white hover:bg-rose-700"
+  1286→              onClick={(e) => { e.preventDefault(); void runLoadDemo(); }}
+  1287→              disabled={loadingDemo}
+  1288→            >
+  1289→              {loadingDemo ? "Loading…" : "Yes, load demo data"}
+  1290→            </AlertDialogAction>
+  1291→          </AlertDialogFooter>
+  1292→        </AlertDialogContent>
+  1293→      </AlertDialog>
+  1294→    </div>
+  1295→  );
+  1296→}
+  1297→
+  1298→function RuleRow({
+  1299→  icon,
+  1300→  title,
+  1301→  body,
+  1302→  tone,
+  1303→}: {
+  1304→  icon: React.ReactNode;
+  1305→  title: string;
+  1306→  body: string;
+  1307→  tone: "emerald" | "amber" | "teal" | "rose";
+  1308→}) {
+  1309→  const toneWrap: Record<string, string> = {
+  1310→    emerald: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30",
+  1311→    amber: "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30",
+  1312→    teal: "bg-teal-500/15 text-teal-600 dark:text-teal-400 border-teal-500/30",
+  1313→    rose: "bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/30",
+  1314→  };
+  1315→  return (
+  1316→    <li className="flex items-start gap-3 rounded-xl border border-border/40 bg-card/30 p-3">
+  1317→      <div className={`grid size-8 shrink-0 place-items-center rounded-lg border ${toneWrap[tone]}`}>
+  1318→        {icon}
+  1319→      </div>
+  1320→      <div className="min-w-0">
+  1321→        <p className="text-sm font-medium text-foreground">{title}</p>
+  1322→        <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">{body}</p>
+  1323→      </div>
+  1324→    </li>
+  1325→  );
+  1326→}
+  1327→
+  1328→// ─────────────────────────────────────────────────────────────────────────────
+  1329→// SchedulerCard — Notification Scheduler status & controls.
+  1330→//
+  1331→// The scheduler runs as a separate bun project (mini-services/scheduler-service)
+  1332→// on port 3004. It triggers `POST /api/notifications/generate` every hour so
+  1333→// reminders stay fresh without the broker needing to open the dashboard.
+  1334→//
+  1335→// This card polls `/api/scheduler` (a server-to-server proxy to the scheduler's
+  1336→// health endpoint) every 60 seconds. The "Run now" button hits the generate
+  1337→// route directly for an immediate trigger, then re-fetches status so the
+  1338→// lastRun/totalRuns counters update.
+  1339→// ─────────────────────────────────────────────────────────────────────────────
+  1340→function SchedulerCard() {
+  1341→  const [status, setStatus] = React.useState<SchedulerStatus | null>(null);
+  1342→  const [loading, setLoading] = React.useState(true);
+  1343→  const [running, setRunning] = React.useState(false);
+  1344→  // Ticking state — refreshes the countdown to nextRun every second so the
+  1345→  // "in 58 min" label stays accurate without re-fetching the API.
+  1346→  const [, setTick] = React.useState(0);
+  1347→
+  1348→  const fetchStatus = React.useCallback(async () => {
+  1349→    try {
+  1350→      const d = await api<SchedulerStatus>("/api/scheduler");
+  1351→      setStatus(d);
+  1352→    } catch {
+  1353→      setStatus({ status: "offline", lastRun: null, nextRun: null, totalRuns: 0, lastResult: null });
+  1354→    } finally {
+  1355→      setLoading(false);
+  1356→    }
+  1357→  }, []);
+  1358→
+  1359→  React.useEffect(() => {
+  1360→    void fetchStatus();
+  1361→    const id = setInterval(() => void fetchStatus(), 60_000);
+  1362→    return () => clearInterval(id);
+  1363→  }, [fetchStatus]);
+  1364→
+  1365→  // 1-second ticker to keep the countdown fresh between API polls.
+  1366→  React.useEffect(() => {
+  1367→    const id = setInterval(() => setTick((t) => t + 1), 1000);
+  1368→    return () => clearInterval(id);
+  1369→  }, []);
+  1370→
+  1371→  const runNow = async () => {
+  1372→    setRunning(true);
+  1373→    try {
+  1374→      const res = await api<{ generated: number; skipped?: boolean; details: Record<string, number> }>(
+  1375→        "/api/notifications/generate",
+  1376→        { method: "POST" },
+  1377→      );
+  1378→      toast.success(
+  1379→        res.skipped
+  1380→          ? "Auto-generation is disabled in Settings"
+  1381→          : `Generated ${res.generated} new reminder${res.generated === 1 ? "" : "s"}`,
+  1382→      );
+  1383→      // Re-fetch scheduler status so lastRun/totalRuns update immediately.
+  1384→      void fetchStatus();
+  1385→    } catch (e) {
+  1386→      toast.error(e instanceof Error ? e.message : "Failed to run generation");
+  1387→    } finally {
+  1388→      setRunning(false);
+  1389→    }
+  1390→  };
+  1391→
+  1392→  const isOffline = !loading && (!status || status.status !== "ok");
+  1393→  const lastRun = status?.lastRun ?? null;
+  1394→  const nextRun = status?.nextRun ?? null;
+  1395→  const totalRuns = status?.totalRuns ?? 0;
+  1396→  const lastGenerated = status?.lastResult?.generated ?? null;
+  1397→
+  1398→  return (
+  1399→    <GlassCard className="hover-lift p-6">
+  1400→      <div className="flex flex-wrap items-start justify-between gap-3">
+  1401→        <div className="flex items-center gap-2.5">
+  1402→          <div className="grid size-9 place-items-center rounded-xl bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+  1403→            <Timer className="size-4.5" />
+  1404→          </div>
+  1405→          <div>
+  1406→            <h3 className="text-sm font-semibold text-foreground">Notification Scheduler</h3>
+  1407→            <p className="text-xs text-muted-foreground">
+  1408→              Auto-generates reminders every hour so notifications stay fresh without opening the dashboard.
+  1409→            </p>
+  1410→          </div>
+  1411→        </div>
+  1412→        <Badge
+  1413→          variant="outline"
+  1414→          className={
+  1415→            isOffline
+  1416→              ? "border-rose-500/30 bg-rose-500/10 text-rose-600 dark:text-rose-400"
+  1417→              : "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+  1418→          }
+  1419→        >
+  1420→          <span
+  1421→            className={cn(
+  1422→              "mr-1 inline-block size-1.5 rounded-full",
+  1423→              isOffline ? "bg-rose-500" : "bg-emerald-500 animate-pulse",
+  1424→            )}
+  1425→          />
+  1426→          {isOffline ? "Offline" : "Running"}
+  1427→        </Badge>
+  1428→      </div>
+  1429→
+  1430→      <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+  1431→        {/* Last run */}
+  1432→        <div className="glass flex flex-col gap-1 rounded-xl border border-border/50 p-3">
+  1433→          <div className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+  1434→            <Clock className="size-3" />
+  1435→            Last run
+  1436→          </div>
+  1437→          <p className="text-sm font-medium text-foreground">
+  1438→            {loading ? "…" : lastRun ? formatRelative(lastRun) : "Never"}
+  1439→          </p>
+  1440→          <p className="text-[10px] text-muted-foreground">
+  1441→            {lastRun ? formatDateTime(lastRun) : "Not run yet"}
+  1442→          </p>
+  1443→        </div>
+  1444→
+  1445→        {/* Next run */}
+  1446→        <div className="glass flex flex-col gap-1 rounded-xl border border-border/50 p-3">
+  1447→          <div className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+  1448→            <Calendar className="size-3" />
+  1449→            Next run
+  1450→          </div>
+  1451→          <p className="text-sm font-medium text-foreground">
+  1452→            {loading ? "…" : nextRun ? formatCountdown(nextRun) : "—"}
+  1453→          </p>
+  1454→          <p className="text-[10px] text-muted-foreground">
+  1455→            {nextRun ? formatDateTime(nextRun) : "Pending"}
+  1456→          </p>
+  1457→        </div>
+  1458→
+  1459→        {/* Total runs */}
+  1460→        <div className="glass flex flex-col gap-1 rounded-xl border border-border/50 p-3">
+  1461→          <div className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+  1462→            <RefreshCw className="size-3" />
+  1463→            Total runs
+  1464→          </div>
+  1465→          <p className="text-sm font-medium text-foreground">
+  1466→            {loading ? "…" : totalRuns}
+  1467→          </p>
+  1468→          <p className="text-[10px] text-muted-foreground">
+  1469→            {totalRuns === 1 ? "scheduled run" : "scheduled runs"}
+  1470→          </p>
+  1471→        </div>
+  1472→
+  1473→        {/* Last result */}
+  1474→        <div className="glass flex flex-col gap-1 rounded-xl border border-border/50 p-3">
+  1475→          <div className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+  1476→            <Zap className="size-3" />
+  1477→            Last result
+  1478→          </div>
+  1479→          <p className="text-sm font-medium text-foreground">
+  1480→            {loading ? "…" : lastGenerated === null ? "—" : `${lastGenerated}`}
+  1481→          </p>
+  1482→          <p className="text-[10px] text-muted-foreground">
+  1483→            {lastGenerated === null
+  1484→              ? "No run yet"
+  1485→              : status?.lastResult?.skipped
+  1486→                ? "skipped (disabled)"
+  1487→                : `notification${lastGenerated === 1 ? "" : "s"} generated`}
+  1488→          </p>
+  1489→        </div>
+  1490→      </div>
+  1491→
+  1492→      <div className="mt-5 flex flex-col gap-3 border-t border-border/50 pt-4 sm:flex-row sm:items-center sm:justify-between">
+  1493→        <div className="min-w-0">
+  1494→          <p className="text-sm font-medium text-foreground">Run now</p>
+  1495→          <p className="text-[11px] text-muted-foreground">
+  1496→            Triggers an immediate scan — same as the hourly schedule. Idempotent, so safe to re-run.
+  1497→          </p>
+  1498→        </div>
+  1499→        <Button
+  1500→          variant="outline"
+  1501→          className="border-emerald-500/30 text-emerald-700 hover:bg-emerald-500/10 hover:text-emerald-700 dark:text-emerald-300 dark:hover:bg-emerald-500/10 dark:hover:text-emerald-200"
+  1502→          onClick={runNow}
+  1503→          disabled={running}
+  1504→        >
+  1505→          {running ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <Zap className="mr-1.5 size-4" />}
+  1506→          {running ? "Running…" : "Run now"}
+  1507→        </Button>
+  1508→      </div>
+  1509→    </GlassCard>
+  1510→  );
+  1511→}
+  1512→
+  1513→// Returns "in 23 min" / "in 1 hr 4 min" / "now" / "—" for an ISO timestamp.
+  1514→function formatCountdown(iso: string | null): string {
+  1515→  if (!iso) return "—";
+  1516→  const t = new Date(iso).getTime();
+  1517→  if (Number.isNaN(t)) return "—";
+  1518→  const diff = t - Date.now();
+  1519→  if (diff <= 0) return "now";
+  1520→  const min = Math.floor(diff / 60000);
+  1521→  if (min < 60) return `in ${min} min`;
+  1522→  const hr = Math.floor(min / 60);
+  1523→  const rem = min % 60;
+  1524→  return rem === 0 ? `in ${hr} hr` : `in ${hr} hr ${rem} min`;
+  1525→}
+  1526→
+  1527→// ─────────────────────────────────────────────────────────────────────────────
+  1528→// Display Currency card — lets the broker pick the currency in which all
+  1529→// amounts are displayed across the app. The underlying ledger stays in INR;
+  1530→// this is purely a display-layer conversion using the static exchange rates
+  1531→// defined in `src/lib/currency.ts`. Choice is persisted to localStorage via
+  1532→// the `useCurrency` Zustand store and applies instantly across all views.
+  1533→// ─────────────────────────────────────────────────────────────────────────────
+  1534→function DisplayCurrencyCard() {
+  1535→  const currency = useCurrency((s) => s.currency);
+  1536→  const setCurrency = useCurrency((s) => s.setCurrency);
+  1537→
+  1538→  const cur = getCurrency(currency);
+  1539→  // Sample INR amount for the live preview — picked large enough to show the
+  1540→  // K / L / M suffix in compact form and the 2-decimal precision in full form.
+  1541→  const SAMPLE_INR = 61_215;
+  1542→
+  1543→  return (
+  1544→    <GlassCard className="hover-lift p-6">
+  1545→      <div className="flex items-center gap-2.5">
+  1546→        <div className="grid size-9 place-items-center rounded-xl bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+  1547→          <Coins className="size-4.5" />
+  1548→        </div>
+  1549→        <div>
+  1550→          <h3 className="text-sm font-semibold text-foreground">Display currency</h3>
+  1551→          <p className="text-xs text-muted-foreground">
+  1552→            Convert all displayed amounts to a preferred currency — ledger stays in INR.
+  1553→          </p>
+  1554→        </div>
+  1555→      </div>
+  1556→
+  1557→      <div className="mt-5 space-y-4">
+  1558→        <div className="space-y-1.5">
+  1559→          <Label htmlFor="display-currency" className="text-xs font-medium text-muted-foreground">
+  1560→            Display currency
+  1561→          </Label>
+  1562→          <Select value={currency} onValueChange={setCurrency}>
+  1563→            <SelectTrigger id="display-currency" className="w-full">
+  1564→              <SelectValue placeholder="Select currency" />
+  1565→            </SelectTrigger>
+  1566→            <SelectContent>
+  1567→              {CURRENCIES.map((c) => (
+  1568→                <SelectItem key={c.code} value={c.code}>
+  1569→                  <span className="font-mono font-semibold text-foreground">{c.symbol}</span>
+  1570→                  <span className="ml-2 font-medium">{c.code}</span>
+  1571→                  <span className="ml-1.5 text-muted-foreground">— {c.name}</span>
+  1572→                </SelectItem>
+  1573→              ))}
+  1574→            </SelectContent>
+  1575→          </Select>
+  1576→          <p className="text-[11px] leading-relaxed text-muted-foreground">
+  1577→            Amounts are stored in INR and displayed in the selected currency using static exchange rates.
+  1578→            Rates are approximate — for reference only.
+  1579→          </p>
+  1580→        </div>
+  1581→
+  1582→        {/* Live preview row — updates instantly as the broker picks a currency.
+  1583→            Shows both the INR source amount and the converted display amount,
+  1584→            e.g. "₹61,215 = $734.58". */}
+  1585→        <div className="flex flex-col gap-2 rounded-xl border border-border/50 bg-card/30 p-3 sm:flex-row sm:items-center sm:justify-between">
+  1586→          <div className="min-w-0">
+  1587→            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+  1588→              Live preview
+  1589→            </p>
+  1590→            <p className="kpi-num mt-0.5 text-base font-semibold text-foreground">
+  1591→              {formatConversionPreview(SAMPLE_INR, currency)}
+  1592→            </p>
+  1593→          </div>
+  1594→          <div className="flex items-center gap-2 text-right text-[11px] text-muted-foreground">
+  1595→            <Badge
+  1596→              variant="outline"
+  1597→              className="border-emerald-500/30 bg-emerald-500/10 font-mono text-emerald-700 dark:text-emerald-300"
+  1598→            >
+  1599→              {cur.symbol} {cur.code}
+  1600→            </Badge>
+  1601→            <span>1 INR = {cur.rate} {cur.code}</span>
+  1602→          </div>
+  1603→        </div>
+  1604→      </div>
+  1605→    </GlassCard>
+  1606→  );
+  1607→}
+  1608→

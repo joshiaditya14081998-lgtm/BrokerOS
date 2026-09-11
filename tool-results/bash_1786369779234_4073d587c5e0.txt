@@ -1,0 +1,266 @@
+1. **Customizable Dashboard** (Task 15-a):
+   - `dashboard-layout-store.ts` Zustand store: `cardOrder`, `hiddenCards`, `customizeMode` with localStorage persistence (`broker-os:dashboard-layout`). Merge-forward for new cards, sanitize stale ids, fallback on corrupt JSON.
+   - Dashboard cards wrapped in dnd-kit `SortableCard` with drag handles (GripVertical icon). Customize mode toggle: drag handles visible, Hide button per card, Reset to default, Done button. "Customized" badge when layout differs from default.
+   - Hidden-cards recovery panel at bottom. Hover-to-customize grip in non-customize mode. Mouse + touch + keyboard sensors.
+   - Verified: Customize mode shows 9 drag handles + Hide/Reset/Done buttons.
+2. **Email Digest + LLM Summary** (Task 15-b):
+   - `GET /api/digest?format=text|html|email`: text (plain summary), HTML (email-client-friendly standalone), email (AI-generated morning brief via z-ai-web-dev-sdk LLM, <200 words, Indian Rupee formatting). Falls back to templated brief on LLM failure.
+   - Digest view: KPI strip (Pending Actions, Outstanding, Due Payments, Open Disputes) + Tabs (AI Brief / Email Ready). AI Brief: glass card with emerald gradient + sparkle icon + "AI-generated" badge + Regenerate + Copy. Email Ready: sandboxed iframe preview + Copy HTML + Open in new tab.
+   - Wired into sidebar (Overview group, Coffee icon) + command palette + dashboard "Daily digest" button + Settings (auto-generate Switch + email input).
+   - Verified: LLM generates a <200 word brief in ~7-12s with `aiGenerated: true`; text + HTML formats return instantly.
+3. **Forecasting Depth** (Task 15-c):
+   - Analytics API extended with `forecast` section: (a) 6-month brokerage forecast with confidence intervals (projected/upper/lower bounds); (b) seasonal trend analysis (12-month with Indian garment season labels: festive Oct-Nov, wedding Dec-Jan, summer Apr-May, winter Aug-Sep); (c) client velocity (avg days between orders + predicted next order date); (d) supplier capacity (avg lead time + pending POs + status: normal/high/overloaded).
+   - Analytics view: new Forecasting section with 3 insight cards + 4 sub-sections (6-month area chart with confidence bounds, seasonal ComposedChart with color-coded bars + growth rate line + legend, client velocity table, supplier capacity table).
+   - Verified: 6 forecast entries, 12 seasonal trends, 4 client velocity entries, 5 supplier capacity entries.
+
+## Verification Results
+- `bun run lint` → **0 errors, 0 warnings** (fully clean).
+- agent-browser QA: all 13 views render with **0 console errors, 0 warnings** (after fresh session + import fixes).
+- Digest: KPI strip renders, AI Brief generates (verified via API: `aiGenerated: true`, subject + body), HTML preview works.
+- Dashboard customize: 9 drag handles + Hide/Reset/Done buttons render in customize mode.
+- Analytics forecast: all 4 sub-features return data (6-month forecast, 12 seasonal trends, 4 client velocity, 5 supplier capacity).
+- Screenshots: `broker-os-digest.png`, `broker-os-digest-dark.png`, `broker-os-dashboard-customize.png`.
+
+## Unresolved Issues / Risks + Next Phase Recommendations
+1. **Notification scheduling cron** — auto-generate daily (still pending from round 3).
+2. **Report scheduling/email** — email weekly/monthly PDF statements (email sending requires SMTP).
+3. **Multi-broker/agent support** — data model supports it; UI needs auth + scoping.
+4. **Server-side pagination** — for very large datasets.
+5. **Auto-backup daily trigger** — currently just a toggle.
+6. **Internationalization** — multi-currency, multi-language.
+7. **Customizable dashboard on mobile** — drag-and-drop is harder on touch; consider a reorder-list mode.
+8. **Digest scheduling** — auto-generate the LLM brief on a schedule + email it.
+9. **Forecast accuracy** — add more historical data weighting, outlier detection.
+10. **Seasonal labels customization** — let brokers define their own season boundaries.
+
+Priority for next round: **Notification scheduling cron** (automation) + **Multi-broker support** (scalability) + **Internationalization** (global reach).
+
+---
+Task ID: 16-b
+Agent: Scheduler Builder (subagent)
+Task: Build a scheduling mini-service that triggers the notification auto-generation API on a cron-like hourly schedule (port 3004), plus surface scheduler status in the Settings view and sidebar footer.
+
+Work Log:
+- Read `/home/z/my-project/worklog.md` (Tasks 1–15-c) + `/home/z/my-project/agent-ctx/9-b-notification-engine.md` + `12-a-realtime-notification-socket.md` for prior context on the notification generation engine and the canonical mini-service pattern.
+- **Created `mini-services/scheduler-service/`** — independent bun project on port **3004**:
+  - `package.json` — `type: "module"`, scripts `dev: "bun --hot index.ts"`, **no external deps** (uses built-in `http` + `fetch`).
+  - `index.ts` — schedules `runGeneration()` via `setTimeout(…, 10_000)` (initial, post-boot delay) + `setInterval(…, 60 * 60 * 1000)` (hourly). Each run `POST`s to `http://localhost:3000/api/notifications/generate`, parses the `{ generated, skipped, details }` response, and tracks `lastRun` / `nextRun` / `totalRuns` / `lastResult`. Exposes `GET /` and `GET /health` returning that state as JSON. Graceful SIGTERM/SIGINT shutdown. Logs `Scheduler service running on port 3004` on boot. The generate route is idempotent (Task 9-b's `existingKeys` Set) so re-running hourly is safe — only newly-due items become notifications.
+- **Created `src/app/api/scheduler/route.ts`** — `GET` proxy to `http://localhost:3004/` with a 3-second `AbortController` timeout. `force-dynamic` + `revalidate=0`. On any failure (connection refused, timeout, non-2xx), returns `{ status: "offline" }` with HTTP 200 so the UI can render an "Offline" badge gracefully (no error toast, no 500). Server-to-server — no Caddy gateway.
+- **Edited `src/components/views/settings-view.tsx`** — added a new `SchedulerCard` component rendered as Card 6 (between Daily Digest and Onboarding & help). Polls `/api/scheduler` on mount + every 60s; a separate 1-second ticker refreshes the "in N min" countdown to `nextRun` without re-fetching. Header has an emerald (Running, animated pulse dot) / rose (Offline, static dot) Badge. Four-stat grid (2 cols mobile, 4 cols sm+): Last run (Clock, relative + absolute), Next run (Calendar, countdown + absolute), Total runs (RefreshCw, count + caption), Last result (Zap, generated count + "skipped (disabled)" caption). "Run now" outline button (emerald-tinted) calls `POST /api/notifications/generate` directly + refreshes status + sonner toast. Added `SchedulerStatus` type, `formatCountdown` helper, `cn` import, and `Calendar/Zap/RefreshCw/Timer` icon imports.
+- **Edited `src/components/sidebar.tsx`** — added `SchedulerIndicator` component in the footer (between ThemeToggle and the version line). Polls `/api/scheduler` on mount + every 60s. Emerald pulse dot + "Scheduler: Running" when ok, zinc static dot + "Scheduler: Offline" when down, muted dot + "Checking…" during initial fetch. `title` attribute provides tooltip context. Uses the existing `cn` helper.
+- Started the scheduler: `cd /home/z/my-project/mini-services/scheduler-service && setsid bash -c 'bun run dev > /tmp/scheduler-service.log 2>&1' < /dev/null > /dev/null 2>&1 &`. Verified alive (PID 13893, PPID 1 — reparented to init via setsid). `curl -s http://localhost:3004/` returns `{"status":"ok","lastRun":"2026-08-10T13:33:17.169Z","nextRun":"2026-08-10T14:33:17.193Z","totalRuns":1,"lastResult":{"generated":0,"skipped":false,"details":{...}}}`. `nextRun` is exactly 60 min after `lastRun`, confirming the interval. `totalRuns: 1` confirms the startup-delay trigger successfully called the generate endpoint (0 generated = correct, the demo dataset has no overdue items and the route is idempotent against the dashboard's earlier fire-and-forget call). `curl -s http://localhost:3000/api/scheduler` returns identical JSON — the main-app proxy works end-to-end.
+- Style: shadcn/ui Badge + Button + glass stat tiles; lucide-react Clock/Calendar/RefreshCw/Zap/Timer; emerald for running, rose for offline; **no indigo/blue anywhere**; responsive (2→4 col grid, flex-wrap header, stacking Run now row on mobile); accessibility via `title` tooltips + uppercase labels + spinner/disabled state on the Run now button.
+
+Stage Summary:
+- Files created (3): `mini-services/scheduler-service/package.json`, `mini-services/scheduler-service/index.ts`, `src/app/api/scheduler/route.ts`.
+- Files edited (2): `src/components/views/settings-view.tsx` (+SchedulerCard component, SchedulerStatus type, formatCountdown helper, icon/cn imports; rendered as Card 6), `src/components/sidebar.tsx` (+SchedulerIndicator component in footer).
+- Dependencies added: none (zero-dep scheduler mini-service).
+- Mini-service: running on port 3004, hourly `setInterval` calling `POST /api/notifications/generate`, status proxied via `/api/scheduler`. Initial run executed ~10s after boot (generated 0 — correct, idempotent against existing pending notifications).
+- Lint: `bun run lint` → 0 errors, 0 warnings.
+- End-to-end: Scheduler (port 3004) → POST /api/notifications/generate (idempotent scan, hourly) → new PENDING notifications → notify-service (port 3003, 30s poll) → socket.io push → header badge + sonner toast. Reminders now stay fresh without opening the dashboard. Settings card + sidebar pill surface live scheduler status.
+
+---
+Task ID: 16-a
+Agent: Currency Layer Engineer (subagent)
+Task: Add multi-currency display support — currency config + Zustand store + useCurrencyFormat hook + server-safe `formatCurrencyWith` + Settings currency selector with live preview + currency badge in header. Update all key view components (dashboard, clients, suppliers, bills, payments, brokerage) and the three detail sheets (client-detail, supplier-detail, po-detail) to use currency-aware formatting. All amounts stay stored as INR; conversion happens at the display layer using static exchange rates.
+
+Work Log:
+- Read `/home/z/my-project/worklog.md` (Tasks 1–16-b) for full project state; inspected `src/lib/format.ts`, `src/lib/ui-store.ts`, `src/lib/dashboard-layout-store.ts`, `src/app/page.tsx`, and all six target view files + three detail sheets to understand the existing `formatCurrency` call sites and the project's manual-localStorage-hydrate pattern.
+- **Created `src/lib/currency.ts`** — currency config + conversion utility, pure (no React, no Zustand), safe to import from server or client:
+  - `Currency` type: `{ code, symbol, name, rate }`.
+  - `CURRENCIES` (8 entries): INR (₹, 1.0), USD ($, 0.012), EUR (€, 0.011), GBP (£, 0.0095), AED (د.إ, 0.044), SGD (S$, 0.016), AUD (A$, 0.018), CAD (C$, 0.016).
+  - `convertFromINR(amountInr, code)` — multiplies by rate, guards non-finite inputs.
+  - `formatCurrencyIn(amountInr, code, opts?)` — converts then formats with the currency's symbol. Compact mode uses L/Cr/K for INR (Indian numbering) and B/M/K for international currencies; full mode uses 0 decimals for INR and 2 decimals for international (so the Settings live-preview sample "₹61,215 = $734.58" shows correct precision).
+  - `getCurrency(code)` + `getCurrencySymbol(code)` helpers (with safe fallback to INR).
+  - `formatConversionPreview(amountInr, code)` helper used by the Settings live-preview tile to render "₹X = $Y" form.
+- **Created `src/lib/currency-store.ts`** — Zustand store with `persist` middleware:
+  - State: `{ currency: string; setCurrency: (c) => void }`, default "INR".
+  - Persisted to `localStorage` key `broker-os:currency` (per task spec), `version: 1`, `partialize: (s) => ({ currency: s.currency })` so the setter isn't serialised.
+  - `skipHydration: true` to avoid SSR/Next.js hydration mismatch — server-rendered HTML always shows INR; the hook calls `rehydrate()` on mount.
+- **Created `src/hooks/use-currency.ts`** — `"use client"` hook:
+  - `useCurrencyFormat()` → `{ format, currency, symbol }`.
+  - Calls `useCurrency.persist?.rehydrate?.()` in a `useEffect` so the saved currency applies after mount.
+  - `format` is a `useCallback` depending on `currency`, so consumers re-render only when the broker changes currency (not on every render).
+  - Re-exports `getCurrencySymbol` + `getCurrency` for the Settings card.
+- **Edited `src/lib/format.ts`** — added `formatCurrencyWith(amountInr, currencyCode, opts?)` that delegates to `formatCurrencyIn`. Existing `formatCurrency(amount, opts)` kept untouched (server-side default INR — used by API routes, CSV exporters, PDF generators). New import `from "@/lib/currency"` is safe since `currency.ts` has no client-only dependencies.
+- **Edited `src/components/views/settings-view.tsx`** — added a new `DisplayCurrencyCard` component rendered between the System defaults + Business rules grid and the Data management card:
+  - Select dropdown lists all 8 currencies as "₹ INR — Indian Rupee" (mono symbol + bold code + muted name).
+  - On change calls `useCurrency().setCurrency(code)` — applies instantly across all views (no save button needed; persisted via the store).
+  - Note text: "Amounts are stored in INR and displayed in the selected currency using static exchange rates. Rates are approximate — for reference only."
+  - Live-preview tile shows `formatConversionPreview(61_215, currency)` (e.g. "₹61,215 = $734.58") + a Badge with the symbol/code + the rate caption "1 INR = 0.012 USD".
+  - Imports `Coins` from lucide-react, shadcn `Select`/`SelectContent`/`SelectItem`/`SelectTrigger`/`SelectValue` + `Badge`, emerald accent for the icon tile.
+- **Edited `src/app/page.tsx`** — added compact currency badge to the header (between the search button and the Bell icon):
+  - `text-xs px-2 py-1` glass pill with emerald Coins icon, mono symbol, muted code (e.g. "₹ INR").
+  - `onClick` navigates to Settings (`setView("settings")` from `useUI`).
+  - `aria-label` + `title` for screen readers: "Display currency: USD. Click to change in settings." / "Amounts are stored in INR."
+  - Added `useCurrencyFormat()` call in the Page component to read the live currency symbol+code; added `setView` to the `useUI()` destructuring.
+- **Edited six view files** — each: imported `useCurrencyFormat` from `@/hooks/use-currency`, added `const { format: fmtCurrency } = useCurrencyFormat();` in the component scope, replaced every `formatCurrency(...)` call with `fmtCurrency(...)`. Where `formatCurrency` was the only import from `@/lib/format`, the import was trimmed to just the still-used helpers (`formatDate`, `titleCase`, etc.) to keep things tidy (eslint config has `no-unused-vars: off` so unused imports wouldn't have errored, but cleaner is better).
+  - `dashboard-view.tsx` — KPI overview cards (Outstanding Receivable, Brokerage Earned + sub, Pending), earningsChart YAxis tickFormatter + Tooltip formatter, volumeByClient XAxis tickFormatter + Tooltip formatter, and the standalone `BrokerageTile` component (added its own `useCurrencyFormat` call).
+  - `clients-view.tsx` — three card Metric values (Total business, Outstanding, Brokerage earned).
+  - `suppliers-view.tsx` — three card Metric values (Total supplied, Outstanding brokerage, Paid brokerage).
+  - `bills-view.tsx` — 6 table columns (base, GST, final, paid, due, brokerage amount) + the `GenerateBillDialog` preview (PO value, short-shipment, base, GST, final) and the PO SelectItem caption.
+  - `payments-view.tsx` — KPI strip (total collected + sub, this month), payments table Amount cell, `PaymentProofButton` description + KV, `RecordPaymentDialog` bill SelectItem caption + Final/Paid/Due KV.
+  - `brokerage-view.tsx` — 4 KPI cards (Total / Eligible pending / Paid out / Not eligible), payout-batch-create toast, "N selected · ₹X" summary, ledger table Base + Brokerage columns, `PayoutCard` (Total paid + per-bill list), `ForceEligibleDialog` summary.
+- **Edited three detail sheets** (task noted "if feasible" — went ahead for full consistency):
+  - `client-detail-sheet.tsx` — Stat tiles + bills list KV (Final/Paid/Due) + payments amount + ledger table debit/credit/balance + dispatch line + brokerage KV.
+  - `supplier-detail-sheet.tsx` — Stat tiles + bills list KV + payments amount + brokerage KV.
+  - `po-detail-sheet.tsx` — Total value Stat + LineItemsTab unitPrice/lineTotal/total + BillingCard KV (Base/GST/Final/Paid/Due) + payments amount + BrokerageCard KV (Base ex-GST + Brokerage amt) + TimelineTab detail strings (bill final, payment amount, brokerage amount, dispute value-affected). Added `fmtCurrency` to the TimelineTab `useMemo` deps array so React Compiler's `preserve-manual-memoization` rule is satisfied (caught + fixed by lint).
+- **Style adherence:** shadcn/ui Select + Badge + (existing) GlassCard; lucide-react Coins icon for the Settings card + header badge; emerald accent throughout (icon tile, hover border, rate caption badge); NO indigo or blue introduced; compact `text-xs px-2 py-1` header badge per spec; responsive (header badge wraps naturally on mobile, Settings card stacks 1-col on mobile and is full-width on lg+).
+- **Verification:** `bun run lint` → 0 errors, 0 warnings (after the one React Compiler fix). `tail -n 30 dev.log` shows the dev server compiling cleanly with `GET / 200` and `GET /api/dashboard?range=all 200`, `GET /api/clients 200`, `GET /api/suppliers 200`, `GET /api/visits 200` — no runtime errors. Did NOT run `bun run build` or restart the dev server (per project rules).
+
+Stage Summary:
+- Files created (3): `src/lib/currency.ts`, `src/lib/currency-store.ts`, `src/hooks/use-currency.ts`.
+- Files edited (10): `src/lib/format.ts` (+ `formatCurrencyWith`), `src/components/views/settings-view.tsx` (+ `DisplayCurrencyCard` component, Coins icon + Select + Badge imports, rendered as a standalone card), `src/app/page.tsx` (+ header currency badge, Coins icon + useCurrencyFormat), `src/components/views/dashboard-view.tsx`, `clients-view.tsx`, `suppliers-view.tsx`, `bills-view.tsx`, `payments-view.tsx`, `brokerage-view.tsx`, `client-detail-sheet.tsx`, `supplier-detail-sheet.tsx`, `po-detail-sheet.tsx` (all converted to `useCurrencyFormat().format`).
+- Supported currencies (8): INR (₹), USD ($), EUR (€), GBP (£), AED (د.إ), SGD (S$), AUD (A$), CAD (C$).
+- Architecture: pure conversion utility (`currency.ts`) → persisted Zustand store with `skipHydration` (`currency-store.ts`) → client hook with `rehydrate()` effect (`use-currency.ts`) → server-safe `formatCurrencyWith` for API/PDF/CSV paths (`format.ts`). Data stays in INR in the DB; only the display converts.
+- Lint: `bun run lint` → 0 errors, 0 warnings.
+- Dev server log: clean, `GET / 200`, all API routes returning 200, no runtime errors after edits.
+- Hydration-safe: server renders INR default; client swaps to saved currency after mount via `rehydrate()` (no React hydration mismatch, no flash for data-driven views since they show skeletons while the API fetches).
+
+---
+Task ID: 16-c
+Agent: Tag Builder (subagent)
+Task: Build a polymorphic tagging system for Clients / Suppliers / Purchase Orders — Prisma schema (Tag + EntityTag), 6 API routes, 3 shared UI components (TagBadge + TagPicker + TagFilterBar), tag integration into 3 list views + 3 detail sheets, a dedicated Tags management view, sidebar / command-palette / page-router wiring, and 5 default tags seeded.
+
+## Work Log
+
+### 1. Prisma schema
+- Added `Tag { id, name @unique, color @default("emerald"), createdAt, entityTags EntityTag[] }`.
+- Added polymorphic `EntityTag` matching the `Photo` pattern: `entityType String` + `entityId String` carry the logical link for uniform API queries; three optional FK columns (`clientId?`, `supplierId?`, `purchaseOrderId?`) keep Prisma relations working for `include: { tags: true }` reads + cascade deletes. `tag → Tag` relation with `onDelete: Cascade`. `@@unique([entityType, entityId, tagId])` so re-assigning is idempotent; `@@index([entityType, entityId])` + `@@index([tagId])` for fast lookups.
+- Added `tags EntityTag[]` to Client, Supplier, PurchaseOrder.
+- `bun run db:push` applied cleanly. Bumped `SCHEMA_REV` to `tags-entity-tags-2026-10-v1` in `src/lib/db.ts` so the dev server picks up the new client.
+
+### 2. Shared colour palette — `src/lib/tags.ts`
+- Single source of truth: `TAG_COLORS = ["emerald", "amber", "rose", "teal", "plum", "slate"]`.
+- `TAG_COLOR_CLASS` (pill bg/text/border classes, light + dark) + `TAG_SWATCH_CLASS` (solid swatch bg) maps.
+- `isValidTagColor`, `isValidEntityType`, `entityFkField` helpers used by the API.
+- Plum → fuchsia (no `plum` in default Tailwind) — keeps the design system clean.
+
+### 3. Tag API routes (6 endpoints, 5 files)
+- `GET /api/tags` — all tags + per-entity-type counts (`{ clients, suppliers, purchaseOrders, total }`).
+- `POST /api/tags` — body `{ name, color? }`. Validates name + colour, rejects duplicates (409). Audit logged.
+- `DELETE /api/tags/[id]` — cascade-deletes Tag + EntityTags (Prisma cascade). 404 if missing. Audit logged.
+- `PATCH /api/tags/[id]` — body `{ name?, color? }`. Validates colour, rejects duplicate names on rename. Audit logged.
+- `POST /api/tags/assign` — body `{ tagId, entityType, entityId }`. Validates types + verifies parent entity exists. `upsert` on `[entityType, entityId, tagId]` unique → idempotent. Sets the matching optional FK column in the same write so Prisma relations stay in sync.
+- `POST /api/tags/unassign` — `deleteMany` keyed on `tagId + entityType + entityId`. Idempotent.
+- `GET /api/tags/entity?entityType=X&entityId=Y` — `{ tags: TagDTO[] }` for a specific entity, used by the TagPicker.
+
+### 4. Tag UI components (3 shared)
+- **`tag-badge.tsx`** — `TagBadge({ tag, onRemove?, onClick?, active?, size? })`. Pill with name + colour. Optional X button (stopPropagation so it doesn't trigger parent card's onClick). Optional `onClick` turns badge into a button (used by filter bar). Sizes: `default` (px-2 py-0.5) and `sm` (px-1.5 py-0 text-[10px]) for compact rows.
+- **`tag-picker.tsx`** — `TagPicker({ entityType, entityId, align?, compact? })`. Fetches entity's tags on mount. Shows current tags as removable TagBadges. "+" button opens a Popover with: search input, click-to-toggle list of existing tags (assigned = check + click unassigns), "Create new tag…" button → inline form (name + 6-colour swatch picker) that calls `POST /api/tags` and immediately assigns the new tag.
+- **`tag-filter-bar.tsx`** — `TagFilterBar({ selected, onToggle, onClear, entityTypeCount? })`. Horizontally-wrapping row of toggleable tag pills + "Clear (N)" affordance. Hidden entirely when no tags exist. Exports `filterByTags<T>(rows, selected)` helper implementing OR semantics (entity passes if it has ANY of the selected tags; empty selection = show all).
+
+### 5. Tags added to list views
+- **clients-view.tsx** — `tagFilter` state + `toggleTag` + `filterByTags` wrap. TagFilterBar `GlassCard` below search. TagBadge row on each client card below the name.
+- **suppliers-view.tsx** — same pattern, `entityTypeCount="suppliers"`.
+- **pos-view.tsx** — same pattern, `entityTypeCount="purchaseOrders"`. Added "Tags" column to the PO table (between Bill and Created) showing compact TagBadges or `—`. Added `tagFilter` to the page-reset effect.
+
+### 6. API includes tags in detail responses
+- `/api/clients?detail=true` — `include: { tags: { include: { tag: { select: { id, name, color } } } } }` + `tags: c.tags.map((et) => et.tag)` in row mapping.
+- `/api/suppliers?detail=true` — same pattern.
+- `/api/purchase-orders` — same pattern.
+
+### 7. TagPicker in detail sheets
+- **client-detail-sheet.tsx** — TagPicker at the bottom of the contact card (below payment-cycle/GST/brokerage pills).
+- **supplier-detail-sheet.tsx** — TagPicker at the bottom of the contact card.
+- **po-detail-sheet.tsx** — TagPicker at the bottom of the header strip (below fulfillment progress bar).
+
+### 8. Tags management view (`tags-view.tsx`)
+- SectionHeader "Tags" / "Organize entities with custom labels".
+- "New tag" button → Dialog with name input + 6-colour swatch picker + live preview pill.
+- Grid of all tags (responsive 1 / 2 / 3 cols). Each card shows colour dot + name + colour label + total entity count pill + 3 count chips (Clients / Suppliers / POs with lucide icons) + Delete button (rose on hover) → AlertDialog confirmation.
+- Empty state with Tag icon + hint.
+- Skeleton grid while loading.
+
+### 9. Sidebar / command palette / page router wiring
+- `ui-store.ts` — added `"tags"` to `ViewKey`.
+- `sidebar.tsx` — imported `Tag` icon. Added `{ key: "tags", label: "Tags", icon: Tag, group: "Contacts" }` after Suppliers.
+- `command-palette.tsx` — imported `Tag`. Added `{ key: "tags", label: "Tags", icon: Tag }` to `NAV_ITEMS`.
+- `page.tsx` — imported `TagsView`. Added `tags: { title: "Tags", sub: "Organize entities with custom labels" }` to `VIEW_TITLES`. Added `case "tags": return <TagsView />;` to `ViewRouter`.
+
+### 10. Default tag seeding (`seed.ts`)
+- Added `entityTag.deleteMany()` + `tag.deleteMany()` to clean-slate.
+- After all entities created, creates 5 default tags:
+  - VIP (emerald), Festive Season (amber), Premium (plum), Bulk Buyer (teal), Problem Account (rose)
+- Assigns 9 EntityTags:
+  - Sharma Garments Hub → VIP + Bulk Buyer
+  - Meenakshi Saree Emporium → Bulk Buyer
+  - Trendz Boutique → Premium
+  - Royal Wardrobe → Problem Account
+  - Ananya Ethnic Wear (supplier) → Premium
+  - Shree Balaji Textiles (supplier) → VIP
+  - PO-2024-0001 → Festive Season
+  - PO-2024-0002 → Problem Account (short-shipment dispute)
+- Added `tags` + `entityTags` to the final counts log.
+
+## Verification
+- `bun run db:push` → schema applied cleanly. Prisma Client regenerated.
+- `bun run src/lib/seed.ts` → ✅ Seed complete. Final counts: `tags: 5, entityTags: 9`.
+- `bun run lint` → **0 errors, 0 warnings** (EXIT=0).
+- `bunx tsc --noEmit` → 4 errors, all pre-existing in untouched files (`examples/websocket/server.ts`, `skills/image-edit/scripts/image-edit.ts`, `skills/stock-analysis-skill/src/analyzer.ts`, `src/app/api/bookings/route.ts`). Zero errors in any tag-related file.
+- Did NOT run the dev server or `bun run build` (per task instructions).
+
+## Stage Summary
+- **Files created (10):** `src/lib/tags.ts`, `src/app/api/tags/route.ts`, `src/app/api/tags/[id]/route.ts`, `src/app/api/tags/assign/route.ts`, `src/app/api/tags/unassign/route.ts`, `src/app/api/tags/entity/route.ts`, `src/components/tag-badge.tsx`, `src/components/tag-picker.tsx`, `src/components/tag-filter-bar.tsx`, `src/components/views/tags-view.tsx`.
+- **Files edited (15):** `prisma/schema.prisma`, `src/lib/db.ts` (SCHEMA_REV bump), `src/lib/ui-store.ts`, `src/lib/seed.ts`, `src/components/sidebar.tsx`, `src/components/command-palette.tsx`, `src/app/page.tsx`, `src/app/api/clients/route.ts`, `src/app/api/suppliers/route.ts`, `src/app/api/purchase-orders/route.ts`, `src/components/views/clients-view.tsx`, `src/components/views/suppliers-view.tsx`, `src/components/views/pos-view.tsx`, `src/components/views/client-detail-sheet.tsx`, `src/components/views/supplier-detail-sheet.tsx`, `src/components/views/po-detail-sheet.tsx`.
+- **Lint:** 0 errors, 0 warnings. **TypeScript:** 0 errors in touched files.
+- **Default tags created (5):** VIP (emerald), Festive Season (amber), Premium (plum), Bulk Buyer (teal), Problem Account (rose). 9 EntityTag assignments across 4 clients + 2 suppliers + 2 POs.
+- **Tag system features delivered:** (1) polymorphic Tag + EntityTag schema with cascade deletes + idempotent unique constraint; (2) 6 API endpoints with audit logging; (3) TagBadge presentational pill with optional remove + click; (4) TagPicker Popover with search, click-to-toggle, and inline create form; (5) TagFilterBar with toggleable pills + Clear affordance + OR-semantics filter helper; (6) tag filter bar + tag badges on Clients/Suppliers/POs list views; (7) Tags column on the POs table; (8) TagPicker embedded in all 3 detail sheets (Client, Supplier, PO); (9) dedicated Tags management view with grid + new-tag dialog + delete-with-confirmation; (10) sidebar / command-palette / page-router wiring; (11) 5 default tags + 9 sample assignments seeded.
+- **Agent-ctx record:** `agent-ctx/16-c-tag-system.md`.
+
+---
+Task ID: 16 (QA + Feature Round 9)
+Agent: Architect (cron review round 9)
+Task: Assess project status, QA via agent-browser, add new features (multi-currency support, notification scheduling cron, tag/label system).
+
+## Current Project Status Assessment
+- Lint clean (0 errors, 0 warnings). All services restartable.
+- No runtime bugs found this round — all 14 views render with 0 console errors, 0 warnings.
+- Foundation is stable; proceeded with the worklog's top 3 priorities.
+
+## Completed Modifications
+
+### New Features (3 parallel subagents)
+1. **Multi-Currency Support** (Task 16-a):
+   - `currency.ts` utility: 8 currencies (INR, USD, EUR, GBP, AED, SGD, AUD, CAD) with static exchange rates. `formatCurrencyIn()` with compact mode (K/L for INR, K/M for international).
+   - `useCurrency` Zustand store (localStorage persisted) + `useCurrencyFormat()` hook.
+   - Settings: Display Currency card with Select dropdown + live preview (₹61,215 = $734.58).
+   - Header: compact currency badge (click → Settings).
+   - 10 view files updated to use currency-aware formatting: dashboard (KPIs + chart tooltips), clients, suppliers, bills, payments, brokerage, client-detail, supplier-detail, po-detail sheets.
+   - Verified: switched to USD → dashboard shows 19 USD amounts ($676.62, $154.32, etc.); switched back to INR.
+2. **Notification Scheduling Cron** (Task 16-b):
+   - `mini-services/scheduler-service/` (port 3004, zero external deps): runs `POST /api/notifications/generate` every 60 minutes. Tracks lastRun/nextRun/totalRuns/lastResult. Health endpoint at GET /.
+   - `GET /api/scheduler` proxies to the scheduler service (returns `{ status: "offline" }` gracefully if down).
+   - Settings: Scheduler card with Running/Offline badge (emerald pulse dot), 4-stat grid (last run, next run with countdown, total runs, last result), "Run now" button. Polls every 60s + 1s ticker for countdown.
+   - Sidebar footer: Scheduler indicator (emerald "Running" / zinc "Offline" / muted "Checking…").
+   - Verified: scheduler running on port 3004, totalRuns=1, health JSON returns correctly, Settings shows "Running".
+3. **Tag/Label System** (Task 16-c):
+   - Prisma schema: `Tag` model (name, color) + `EntityTag` polymorphic model (tagId, entityType, entityId). Relations on Client/Supplier/PurchaseOrder. `db:push` applied.
+   - Tag APIs: GET/POST `/api/tags`, DELETE/PATCH `/api/tags/[id]`, POST `/api/tags/assign` + `/api/tags/unassign`, GET `/api/tags/entity`.
+   - `TagBadge` + `TagPicker` (Popover with assign/create) + `TagFilterBar` components.
+   - Clients/Suppliers/POs views: tag filter bar (OR semantics) + tag badges on cards + Tags column on PO table. Detail sheets have TagPicker in header.
+   - Tags management view (sidebar Contacts group): grid of tags with counts + delete, New tag dialog with 6-color picker.
+   - Seed: 5 default tags (VIP/emerald, Festive Season/amber, Premium/plum, Bulk Buyer/teal, Problem Account/rose) + 9 EntityTag assignments.
+   - Verified: Tags view shows 5 tags, Clients view shows tag badges + filter bar.
+
+## Verification Results
+- `bun run lint` → **0 errors, 0 warnings** (fully clean).
+- agent-browser QA: all 14 views render with **0 console errors, 0 warnings**.
+- Currency: USD conversion verified (19 USD amounts on dashboard), INR revert works.
+- Scheduler: running on port 3004, Settings shows "Running" badge + countdown.
+- Tags: 5 tags + 9 assignments seeded, Tags view + filter bars render.
+- Screenshots: `broker-os-usd-dashboard.png`, `broker-os-tags.png`.
+
+## Unresolved Issues / Risks + Next Phase Recommendations
+1. **Report scheduling/email** — email weekly/monthly PDF statements (requires SMTP).
+2. **Multi-broker/agent support** — data model supports it; UI needs auth + scoping.
+3. **Server-side pagination** — for very large datasets.
+4. **Auto-backup daily trigger** — currently just a toggle.
+5. **Internationalization (i18n)** — multi-language UI (beyond currency).
+6. **Customizable dashboard on mobile** — drag-and-drop reorder-list mode.
+7. **Digest scheduling + email** — auto-generate + email the LLM brief.
+8. **Forecast accuracy** — more historical weighting, outlier detection.
+9. **Tag-based analytics** — filter analytics by tag.
+10. **Real-time exchange rates** — currently static; could fetch from API.
+
+Priority for next round: **Multi-broker support** (scalability) + **i18n** (global reach) + **Tag-based analytics** (deeper insights).

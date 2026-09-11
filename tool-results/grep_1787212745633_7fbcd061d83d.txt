@@ -1,0 +1,240 @@
+/home/z/my-project/src/components/views/suppliers-view.tsx:7:import { GlassCard, SectionHeader, StatusChip, EmptyState } from "@/components/shared";
+/home/z/my-project/src/components/views/suppliers-view.tsx:69:      <SectionHeader
+/home/z/my-project/src/components/views/suppliers-view.tsx:70:        title={t("suppliers.title")}
+/home/z/my-project/src/components/views/suppliers-view.tsx:71:        description={t("suppliers.subtitle")}
+/home/z/my-project/src/components/views/suppliers-view.tsx:111:              title="No suppliers yet"
+/home/z/my-project/src/components/views/dispatches-view.tsx:6:import { formatCurrency, formatDate, formatNumber, safeParse, titleCase } from "@/lib/format";
+/home/z/my-project/src/components/views/dispatches-view.tsx:7:import { GlassCard, SectionHeader, StatusChip, EmptyState } from "@/components/shared";
+/home/z/my-project/src/components/views/dispatches-view.tsx:76:      <SectionHeader
+/home/z/my-project/src/components/views/dispatches-view.tsx:77:        title="Dispatch Tracking"
+/home/z/my-project/src/components/views/dispatches-view.tsx:78:        description="Shipments & partial deliveries"
+/home/z/my-project/src/components/views/dispatches-view.tsx:106:            title="No dispatches yet"
+/home/z/my-project/src/components/views/dispatches-view.tsx:215:      toast.success(`Dispatch recorded — PO status: ${titleCase(res.poStatus)}`);
+/home/z/my-project/src/components/views/pos-view.tsx:6:import { formatCurrency, formatDate, titleCase } from "@/lib/format";
+/home/z/my-project/src/components/views/pos-view.tsx:7:import { GlassCard, SectionHeader, StatusChip, EmptyState } from "@/components/shared";
+/home/z/my-project/src/components/views/pos-view.tsx:120:      <SectionHeader
+/home/z/my-project/src/components/views/pos-view.tsx:121:        title="Purchase Orders"
+/home/z/my-project/src/components/views/pos-view.tsx:122:        description="PO tracking & fulfillment"
+/home/z/my-project/src/components/views/pos-view.tsx:184:            Filtered: {titleCase(STATUS_OPTIONS.find((o) => o.value === status)?.label ?? status)}
+/home/z/my-project/src/components/views/pos-view.tsx:203:              title="No purchase orders"
+/home/z/my-project/src/components/views/notifications-view.tsx:10:import { formatDate, titleCase, daysBetween } from "@/lib/format";
+/home/z/my-project/src/components/views/notifications-view.tsx:11:import { GlassCard, SectionHeader, StatusChip, EmptyState } from "@/components/shared";
+/home/z/my-project/src/components/views/notifications-view.tsx:196:      <SectionHeader
+/home/z/my-project/src/components/views/notifications-view.tsx:197:        title="Notifications"
+/home/z/my-project/src/components/views/notifications-view.tsx:198:        description="Follow-ups & due dates"
+/home/z/my-project/src/components/views/notifications-view.tsx:208:              title={connected ? "Real-time connection established" : "Real-time connection offline"}
+/home/z/my-project/src/components/views/notifications-view.tsx:333:            title="All caught up"
+/home/z/my-project/src/components/views/notifications-view.tsx:494:              {titleCase(notification.type.replace(/_/g, " "))}
+/home/z/my-project/src/components/views/saved-views-view.tsx:8:import { GlassCard, SectionHeader, EmptyState } from "@/components/shared";
+/home/z/my-project/src/components/views/saved-views-view.tsx:103:      <SectionHeader
+/home/z/my-project/src/components/views/saved-views-view.tsx:104:        title="Saved Views"
+/home/z/my-project/src/components/views/saved-views-view.tsx:105:        description="Reusable filter combinations across list views"
+/home/z/my-project/src/components/views/saved-views-view.tsx:126:            title="No saved views yet"
+/home/z/my-project/src/components/views/payments-view.tsx:6:import { formatDate, formatNumber, titleCase } from "@/lib/format";
+/home/z/my-project/src/components/views/payments-view.tsx:8:import { GlassCard, SectionHeader, EmptyState } from "@/components/shared";
+/home/z/my-project/src/components/views/payments-view.tsx:109:      <SectionHeader
+/home/z/my-project/src/components/views/payments-view.tsx:110:        title="Payments"
+/home/z/my-project/src/components/views/payments-view.tsx:111:        description="Client → supplier ledger"
+/home/z/my-project/src/components/views/payments-view.tsx:169:              title="No payments yet"
+/home/z/my-project/src/components/views/payments-view.tsx:207:                            {titleCase(p.mode)}
+/home/z/my-project/src/components/views/payments-view.tsx:291:            <KV label="Mode" value={titleCase(payment.mode)} />
+/home/z/my-project/src/components/views/payments-view.tsx:348:      toast.success(`Payment recorded — bill status: ${titleCase(res.bill.status)}`);
+/home/z/my-project/src/components/views/tags-view.tsx:6:import { GlassCard, SectionHeader, EmptyState } from "@/components/shared";
+/home/z/my-project/src/components/views/tags-view.tsx:40:      <SectionHeader
+/home/z/my-project/src/components/views/tags-view.tsx:41:        title="Tags"
+/home/z/my-project/src/components/views/tags-view.tsx:42:        description="Organize entities with custom labels"
+/home/z/my-project/src/components/views/tags-view.tsx:62:            title="No tags yet"
+/home/z/my-project/src/components/views/clients-view.tsx:6:import { formatDate, titleCase } from "@/lib/format";
+/home/z/my-project/src/components/views/clients-view.tsx:8:import { GlassCard, SectionHeader, StatusChip, EmptyState } from "@/components/shared";
+/home/z/my-project/src/components/views/clients-view.tsx:76:      <SectionHeader
+/home/z/my-project/src/components/views/clients-view.tsx:77:        title={t("clients.title")}
+/home/z/my-project/src/components/views/clients-view.tsx:78:        description={t("clients.subtitle")}
+/home/z/my-project/src/components/views/clients-view.tsx:124:          <GlassCard className="p-8"><EmptyState title="No clients yet" hint="Add your first buyer to start booking visits and POs." icon={<Users className="size-5" />} /></GlassCard>
+/home/z/my-project/src/components/views/clients-view.tsx:158:                  <span className="inline-flex items-center gap-1"><FileText className="size-3" />{titleCase(c.payoutCadence)}</span>
+/home/z/my-project/src/components/views/bills-view.tsx:6:import { formatNumber, safeParse, titleCase } from "@/lib/format";
+/home/z/my-project/src/components/views/bills-view.tsx:8:import { GlassCard, SectionHeader, StatusChip, EmptyState } from "@/components/shared";
+/home/z/my-project/src/components/views/bills-view.tsx:124:      <SectionHeader
+/home/z/my-project/src/components/views/bills-view.tsx:125:        title={t("bills.title")}
+/home/z/my-project/src/components/views/bills-view.tsx:126:        description={t("bills.subtitle")}
+/home/z/my-project/src/components/views/bills-view.tsx:202:              title="No bills yet"
+/home/z/my-project/src/components/views/audit-view.tsx:8:import { formatDateTime, titleCase } from "@/lib/format";
+/home/z/my-project/src/components/views/audit-view.tsx:9:import { GlassCard, SectionHeader, EmptyState } from "@/components/shared";
+/home/z/my-project/src/components/views/audit-view.tsx:208:      label: `Entity: ${titleCase(entityFilter)}`,
+/home/z/my-project/src/components/views/audit-view.tsx:253:      <SectionHeader
+/home/z/my-project/src/components/views/audit-view.tsx:254:        title="Audit Trail"
+/home/z/my-project/src/components/views/audit-view.tsx:255:        description="Immutable change log — every financial mutation is recorded"
+/home/z/my-project/src/components/views/audit-view.tsx:306:                  {t === "All" ? "All entities" : titleCase(t)}
+/home/z/my-project/src/components/views/audit-view.tsx:412:              title="No audit entries"
+/home/z/my-project/src/components/views/audit-view.tsx:547:              <TableCell className="text-xs">{titleCase(log.entityType)}</TableCell>
+/home/z/my-project/src/components/views/audit-view.tsx:550:                  {titleCase(log.action)}
+/home/z/my-project/src/components/views/audit-view.tsx:553:              <TableCell className="max-w-[260px] truncate text-xs text-muted-foreground" title={log.reason ?? ""}>
+/home/z/my-project/src/components/views/audit-view.tsx:585:                {titleCase(log.action)}
+/home/z/my-project/src/components/views/audit-view.tsx:587:              <span className="text-sm font-medium text-foreground">{titleCase(log.entityType)}</span>
+/home/z/my-project/src/components/views/audit-view.tsx:628:                {titleCase(log.action)}
+/home/z/my-project/src/components/views/audit-view.tsx:630:              <span className="text-muted-foreground">{titleCase(log.entityType)}</span>
+/home/z/my-project/src/components/views/data-health-view.tsx:11:import { GlassCard, SectionHeader, EmptyState } from "@/components/shared";
+/home/z/my-project/src/components/views/data-health-view.tsx:281:      <SectionHeader
+/home/z/my-project/src/components/views/data-health-view.tsx:282:        title="Data Health"
+/home/z/my-project/src/components/views/data-health-view.tsx:283:        description="System integrity & data quality"
+/home/z/my-project/src/components/views/data-health-view.tsx:380:        <SectionHeader
+/home/z/my-project/src/components/views/data-health-view.tsx:381:          title="Issues"
+/home/z/my-project/src/components/views/data-health-view.tsx:382:          description="Detected data quality problems, grouped by severity"
+/home/z/my-project/src/components/views/data-health-view.tsx:422:              title="All data healthy"
+/home/z/my-project/src/components/views/data-health-view.tsx:464:        <SectionHeader
+/home/z/my-project/src/components/views/data-health-view.tsx:465:          title="Completeness"
+/home/z/my-project/src/components/views/data-health-view.tsx:466:          description="% of records with all required fields filled"
+/home/z/my-project/src/components/views/disputes-view.tsx:9:import { formatCurrency, formatDate, titleCase } from "@/lib/format";
+/home/z/my-project/src/components/views/disputes-view.tsx:10:import { GlassCard, SectionHeader, StatusChip, EmptyState } from "@/components/shared";
+/home/z/my-project/src/components/views/disputes-view.tsx:225:      <SectionHeader
+/home/z/my-project/src/components/views/disputes-view.tsx:226:        title="Disputes & Returns"
+/home/z/my-project/src/components/views/disputes-view.tsx:227:        description="Short-shipments & defects"
+/home/z/my-project/src/components/views/disputes-view.tsx:342:            title="No disputes to show"
+/home/z/my-project/src/components/views/brokerage-view.tsx:8:import { formatDate, titleCase } from "@/lib/format";
+/home/z/my-project/src/components/views/brokerage-view.tsx:10:import { GlassCard, KpiCard, StatusChip, SectionHeader, EmptyState } from "@/components/shared";
+/home/z/my-project/src/components/views/brokerage-view.tsx:189:      <SectionHeader
+/home/z/my-project/src/components/views/brokerage-view.tsx:190:        title="Brokerage"
+/home/z/my-project/src/components/views/brokerage-view.tsx:191:        description="Commission, eligibility & payouts"
+/home/z/my-project/src/components/views/brokerage-view.tsx:327:                  title="No brokerage entries yet"
+/home/z/my-project/src/components/views/brokerage-view.tsx:377:                          <TableCell className="max-w-[140px] truncate" title={b.client.name}>{b.client.name}</TableCell>
+/home/z/my-project/src/components/views/brokerage-view.tsx:378:                          <TableCell className="max-w-[140px] truncate" title={b.supplier.name}>{b.supplier.name}</TableCell>
+/home/z/my-project/src/components/views/brokerage-view.tsx:431:                  title="No payouts yet"
+/home/z/my-project/src/components/views/brokerage-view.tsx:461:            <p className="text-[11px] text-muted-foreground">{titleCase(payout.cadence)} · {payout.brokerages.length} entries</p>
+/home/z/my-project/src/components/views/client-detail-sheet.tsx:8:import { formatCurrency, formatDate, formatDateTime, titleCase } from "@/lib/format";
+/home/z/my-project/src/components/views/client-detail-sheet.tsx:89:          <span className="rounded-full border border-border/60 bg-card/50 px-2 py-0.5">Brokerage: {titleCase(client.payoutCadence)}</span>
+/home/z/my-project/src/components/views/client-detail-sheet.tsx:106:          {client.bills.length === 0 ? <EmptyState title="No bills yet" /> : client.bills.map((b) => (
+/home/z/my-project/src/components/views/client-detail-sheet.tsx:125:                      <span>{formatDate(p.date)} · {titleCase(p.mode)}{p.reference ? ` · ${p.reference}` : ""}</span>
+/home/z/my-project/src/components/views/client-detail-sheet.tsx:136:          {ledger.length === 0 ? <EmptyState title="No ledger entries" /> : (
+/home/z/my-project/src/components/views/client-detail-sheet.tsx:153:                      <td className="px-3 py-1.5">{titleCase(e.type)}</td>
+/home/z/my-project/src/components/views/client-detail-sheet.tsx:167:          {deliverySummary.length === 0 ? <EmptyState title="No POs yet" /> : deliverySummary.map((d) => (
+/home/z/my-project/src/components/views/client-detail-sheet.tsx:192:          {client.brokerages.length === 0 ? <EmptyState title="No brokerage entries" /> : client.brokerages.map((b) => (
+/home/z/my-project/src/components/views/client-detail-sheet.tsx:203:              {b.payout ? <p className="mt-2 text-[11px] text-muted-foreground">Payout: {titleCase(b.payout.status)}{b.payout.paidAt ? ` · ${formatDate(b.payout.paidAt)}` : ""}</p> : null}
+/home/z/my-project/src/components/views/portal-view.tsx:13:import { formatCurrency, formatDate, formatNumber, titleCase } from "@/lib/format";
+/home/z/my-project/src/components/views/portal-view.tsx:14:import { GlassCard, KpiCard, SectionHeader, StatusChip, EmptyState } from "@/components/shared";
+/home/z/my-project/src/components/views/portal-view.tsx:169:      <SectionHeader
+/home/z/my-project/src/components/views/portal-view.tsx:170:        title="Portals"
+/home/z/my-project/src/components/views/portal-view.tsx:171:        description="Preview what suppliers and clients see in their own portal"
+/home/z/my-project/src/components/views/portal-view.tsx:234:          title={persona === "supplier" ? "No supplier selected" : "No client selected"}
+/home/z/my-project/src/components/views/portal-view.tsx:242:          title="Couldn't load portal data"
+/home/z/my-project/src/components/views/portal-view.tsx:247:        <EmptyState title="No data" icon={<Store className="size-5" />} />
+/home/z/my-project/src/components/views/portal-view.tsx:399:        <SectionHeader
+/home/z/my-project/src/components/views/portal-view.tsx:400:          title="POs Awaiting Dispatch"
+/home/z/my-project/src/components/views/portal-view.tsx:401:          description="Open and partially delivered POs you need to act on"
+/home/z/my-project/src/components/views/portal-view.tsx:412:              title="Nothing awaiting dispatch"
+/home/z/my-project/src/components/views/portal-view.tsx:473:          <SectionHeader
+/home/z/my-project/src/components/views/portal-view.tsx:474:            title="Recent Dispatches"
+/home/z/my-project/src/components/views/portal-view.tsx:475:            description="Your last 5 shipments"
+/home/z/my-project/src/components/views/portal-view.tsx:482:              <EmptyState title="No dispatches yet" hint="Your dispatch history will appear here." icon={<Truck className="size-5" />} />
+/home/z/my-project/src/components/views/portal-view.tsx:503:          <SectionHeader
+/home/z/my-project/src/components/views/portal-view.tsx:504:            title="Brokerage Earned"
+/home/z/my-project/src/components/views/portal-view.tsx:505:            description="Commission on each settled bill"
+/home/z/my-project/src/components/views/portal-view.tsx:518:              <EmptyState title="No brokerage entries" hint="Earned commission will appear here." icon={<BadgePercent className="size-5" />} />
+/home/z/my-project/src/components/views/portal-view.tsx:554:    return Array.from(m.entries()).map(([name, value]) => ({ name: titleCase(name), value }));
+/home/z/my-project/src/components/views/portal-view.tsx:582:                <BadgePercent className="size-3" />{titleCase(profile.payoutCadence.replace(/_/g, " "))}
+/home/z/my-project/src/components/views/portal-view.tsx:627:          <SectionHeader
+/home/z/my-project/src/components/views/portal-view.tsx:628:            title="My Orders"
+/home/z/my-project/src/components/views/portal-view.tsx:629:            description="What you've ordered — supplier, status & fulfillment"
+/home/z/my-project/src/components/views/portal-view.tsx:636:              <EmptyState title="No orders yet" hint="Your purchase orders will appear here." icon={<Package className="size-5" />} />
+/home/z/my-project/src/components/views/portal-view.tsx:680:          <SectionHeader title="Order Status" description="Breakdown of your orders by status" />
+/home/z/my-project/src/components/views/portal-view.tsx:683:              <EmptyState title="No orders to chart" icon={<Package className="size-5" />} />
+/home/z/my-project/src/components/views/portal-view.tsx:728:        <SectionHeader
+/home/z/my-project/src/components/views/portal-view.tsx:729:          title="Outstanding Bills"
+/home/z/my-project/src/components/views/portal-view.tsx:730:          description="What you currently owe — pay before the due date"
+/home/z/my-project/src/components/views/portal-view.tsx:745:              title="All bills settled"
+/home/z/my-project/src/components/views/portal-view.tsx:798:          <SectionHeader
+/home/z/my-project/src/components/views/portal-view.tsx:799:            title="Payment History"
+/home/z/my-project/src/components/views/portal-view.tsx:800:            description="Your recent payments"
+/home/z/my-project/src/components/views/portal-view.tsx:807:              <EmptyState title="No payments yet" hint="Payments you make will appear here." icon={<Wallet className="size-5" />} />
+/home/z/my-project/src/components/views/portal-view.tsx:815:                        {p.poNumber} · {formatDate(p.date)} · {titleCase(p.mode)}{p.reference ? ` · ${p.reference}` : ""}
+/home/z/my-project/src/components/views/portal-view.tsx:829:          <SectionHeader
+/home/z/my-project/src/components/views/portal-view.tsx:830:            title="Recent Deliveries"
+/home/z/my-project/src/components/views/portal-view.tsx:831:            description="What's been delivered to you"
+/home/z/my-project/src/components/views/portal-view.tsx:838:              <EmptyState title="No deliveries yet" hint="Your received shipments will appear here." icon={<Truck className="size-5" />} />
+/home/z/my-project/src/components/views/po-detail-sheet.tsx:12:  formatCurrency, formatDate, formatDateTime, titleCase, safeParse,
+/home/z/my-project/src/components/views/po-detail-sheet.tsx:262:  if (items.length === 0) return <EmptyState title="No line items" />;
+/home/z/my-project/src/components/views/po-detail-sheet.tsx:299:    return <EmptyState title="No dispatches yet" hint="Shipments will appear here once recorded." />;
+/home/z/my-project/src/components/views/po-detail-sheet.tsx:337:                      {titleCase(dis.type)} · {dis.quantityAffected} affected
+/home/z/my-project/src/components/views/po-detail-sheet.tsx:388:            title="No bill generated yet"
+/home/z/my-project/src/components/views/po-detail-sheet.tsx:409:                      {titleCase(d.type)} · {d.quantityAffected} affected
+/home/z/my-project/src/components/views/po-detail-sheet.tsx:474:                  <p className="font-medium">{formatDate(p.date)} · <span className="text-muted-foreground">{titleCase(p.mode)}</span></p>
+/home/z/my-project/src/components/views/po-detail-sheet.tsx:504:        <KV label="Payout status" value={titleCase(brokerage.payoutStatus)} tone={brokerage.payoutStatus === "paid" ? "emerald" : "default"} />
+/home/z/my-project/src/components/views/po-detail-sheet.tsx:514:          Payout: {titleCase(brokerage.payout.status)} · {titleCase(brokerage.payout.cadence)}
+/home/z/my-project/src/components/views/po-detail-sheet.tsx:545:        detail: `Final: ${fmtCurrency(po.bill.finalAmount)} · status: ${titleCase(po.bill.status)}`,
+/home/z/my-project/src/components/views/po-detail-sheet.tsx:550:          title: `Payment · ${titleCase(p.mode)}`,
+/home/z/my-project/src/components/views/po-detail-sheet.tsx:559:          detail: `${fmtCurrency(b.brokerageAmount)} · ${titleCase(b.payoutStatus)}`,
+/home/z/my-project/src/components/views/po-detail-sheet.tsx:566:        title: `Dispute · ${titleCase(d.type)}`,
+/home/z/my-project/src/components/views/po-detail-sheet.tsx:576:        <EmptyState title="No timeline events" hint="Dispatches, payments, and disputes will appear here." icon={<Clock className="size-5" />} />
+/home/z/my-project/src/components/views/analytics-view.tsx:16:import { GlassCard, KpiCard, SectionHeader, EmptyState } from "@/components/shared";
+/home/z/my-project/src/components/views/analytics-view.tsx:587:      <SectionHeader
+/home/z/my-project/src/components/views/analytics-view.tsx:588:        title="Tagged vs. All — Comparison"
+/home/z/my-project/src/components/views/analytics-view.tsx:589:        description="Side-by-side view of how the tagged segment stacks up against the full portfolio"
+/home/z/my-project/src/components/views/analytics-view.tsx:728:      <SectionHeader
+/home/z/my-project/src/components/views/analytics-view.tsx:729:        title="Analytics"
+/home/z/my-project/src/components/views/analytics-view.tsx:730:        description="Performance insights & forecasting"
+/home/z/my-project/src/components/views/analytics-view.tsx:763:        <SectionHeader
+/home/z/my-project/src/components/views/analytics-view.tsx:764:          title="Supplier Reliability"
+/home/z/my-project/src/components/views/analytics-view.tsx:765:          description="Composite score from fulfillment · on-time dispatch · short-ship · dispute rates"
+/home/z/my-project/src/components/views/analytics-view.tsx:777:            <EmptyState title="No suppliers yet" hint="Add suppliers to compute reliability scores." icon={<Factory className="size-5" />} />
+/home/z/my-project/src/components/views/analytics-view.tsx:842:          <SectionHeader
+/home/z/my-project/src/components/views/analytics-view.tsx:843:            title="Client Credit Exposure"
+/home/z/my-project/src/components/views/analytics-view.tsx:844:            description="Outstanding receivables · payment delays · return rates"
+/home/z/my-project/src/components/views/analytics-view.tsx:856:              <EmptyState title="No clients yet" hint="Add clients to see credit exposure." icon={<Users className="size-5" />} />
+/home/z/my-project/src/components/views/analytics-view.tsx:900:          <SectionHeader title="Outstanding by Client" description="Top 6 by outstanding balance" />
+/home/z/my-project/src/components/views/analytics-view.tsx:903:              <EmptyState title="No outstanding receivables" hint="All client bills are fully paid." icon={<Wallet className="size-5" />} />
+/home/z/my-project/src/components/views/analytics-view.tsx:935:        <SectionHeader
+/home/z/my-project/src/components/views/analytics-view.tsx:936:          title="Brokerage Forecast"
+/home/z/my-project/src/components/views/analytics-view.tsx:937:          description="Pending eligibility · eligible unpaid · projected payouts by client cadence"
+/home/z/my-project/src/components/views/analytics-view.tsx:1044:          <SectionHeader
+/home/z/my-project/src/components/views/analytics-view.tsx:1045:            title="Volume Trends"
+/home/z/my-project/src/components/views/analytics-view.tsx:1046:            description="Last 12 months — billed vs. dispatched value"
+/home/z/my-project/src/components/views/analytics-view.tsx:1067:              <EmptyState title="No volume in the last 12 months" hint="Bills and dispatches will appear here." icon={<BarChart3 className="size-5" />} />
+/home/z/my-project/src/components/views/analytics-view.tsx:1097:          <SectionHeader title="Top Client–Supplier Pairs" description="By total billed value" />
+/home/z/my-project/src/components/views/analytics-view.tsx:1100:              <EmptyState title="No paired activity yet" hint="Bills will surface top client–supplier relationships." icon={<Users className="size-5" />} />
+/home/z/my-project/src/components/views/analytics-view.tsx:1188:      <SectionHeader
+/home/z/my-project/src/components/views/analytics-view.tsx:1189:        title="Forecasting"
+/home/z/my-project/src/components/views/analytics-view.tsx:1190:        description="6-month brokerage projection · seasonal trends · client velocity · supplier capacity"
+/home/z/my-project/src/components/views/analytics-view.tsx:1254:            <EmptyState title="No forecast data yet" hint="Brokerage projections will appear once bills and brokerages are recorded." icon={<TrendingUp className="size-5" />} />
+/home/z/my-project/src/components/views/analytics-view.tsx:1307:            <EmptyState title="No billing in the last 12 months" hint="Monthly billed value will surface here with season context." icon={<BarChart3 className="size-5" />} />
+/home/z/my-project/src/components/views/analytics-view.tsx:1378:            <EmptyState title="No client orders yet" hint="POs will surface predicted reorder dates." icon={<Users className="size-5" />} />
+/home/z/my-project/src/components/views/analytics-view.tsx:1436:            <EmptyState title="No suppliers yet" hint="Add suppliers to compute capacity utilisation." icon={<Factory className="size-5" />} />
+/home/z/my-project/src/components/views/dashboard-view.tsx:25:import { formatNumber, formatDate, formatDateShort, titleCase, statusChipClass } from "@/lib/format";
+/home/z/my-project/src/components/views/dashboard-view.tsx:28:import { GlassCard, KpiCard, SectionHeader, EmptyState } from "@/components/shared";
+/home/z/my-project/src/components/views/dashboard-view.tsx:382:            <SectionHeader title={t("dashboard.earningsTrend")} description={earningsDescription(range)} />
+/home/z/my-project/src/components/views/dashboard-view.tsx:421:            <SectionHeader title={t("dashboard.poStatus")} description={isAllTime ? "All-time open vs. delivered" : `POs created in selected range`} />
+/home/z/my-project/src/components/views/dashboard-view.tsx:424:                <EmptyState title="No POs in range" hint="Try a wider date range." icon={<FileText className="size-5" />} />
+/home/z/my-project/src/components/views/dashboard-view.tsx:447:                      formatter={(v: number, n: string) => [`${v} POs`, titleCase(n)]}
+/home/z/my-project/src/components/views/dashboard-view.tsx:449:                    <Legend formatter={(v) => titleCase(v)} wrapperStyle={{ fontSize: 12 }} />
+/home/z/my-project/src/components/views/dashboard-view.tsx:460:            <SectionHeader title={t("dashboard.volumeByClient")} description={isAllTime ? "Final billed amount (₹) — all-time" : "Final billed amount (₹) — bills raised in range"} />
+/home/z/my-project/src/components/views/dashboard-view.tsx:463:                <EmptyState title="No bills in range" hint="No bills were raised during this period." icon={<TrendingUp className="size-5" />} />
+/home/z/my-project/src/components/views/dashboard-view.tsx:497:            <SectionHeader title={t("dashboard.dueReminders")} description={`${notifications.length} pending`} action={<Button variant="ghost" size="sm" onClick={() => setView("notifications")}>{t("common.viewAll")}</Button>} />
+/home/z/my-project/src/components/views/dashboard-view.tsx:500:                <EmptyState title="All caught up" hint="No pending reminders." icon={<Clock className="size-5" />} />
+/home/z/my-project/src/components/views/dashboard-view.tsx:506:                      {titleCase(n.type.replace(/_/g, " "))}
+/home/z/my-project/src/components/views/dashboard-view.tsx:523:            <SectionHeader title={t("dashboard.brokeragePosition")} description={isAllTime ? "Eligibility & payout status — all-time" : "Eligibility & payout status — range-filtered"} action={<Button variant="outline" size="sm" onClick={() => setView("brokerage")}>{t("dashboard.manageBrokerage")} <ArrowUpRight className="ml-1 size-3.5" /></Button>} />
+/home/z/my-project/src/components/views/dashboard-view.tsx:775:              <SectionHeader
+/home/z/my-project/src/components/views/dashboard-view.tsx:776:                title="Hidden cards"
+/home/z/my-project/src/components/views/dashboard-view.tsx:777:                description="Click a card below to bring it back to your dashboard."
+/home/z/my-project/src/components/views/dashboard-view.tsx:801:                title="No cards visible"
+/home/z/my-project/src/components/views/digest-view.tsx:8:import { GlassCard, SectionHeader, EmptyState } from "@/components/shared";
+/home/z/my-project/src/components/views/digest-view.tsx:58:// without prop-drilling callbacks through the SectionHeader.
+/home/z/my-project/src/components/views/digest-view.tsx:88:      <SectionHeader
+/home/z/my-project/src/components/views/digest-view.tsx:89:        title="Daily Digest"
+/home/z/my-project/src/components/views/digest-view.tsx:90:        description="Your morning broker brief — what needs attention today"
+/home/z/my-project/src/components/views/digest-view.tsx:265:          title="Auto-generate is off"
+/home/z/my-project/src/components/views/digest-view.tsx:549:          title="Daily digest email preview"
+/home/z/my-project/src/components/views/settings-view.tsx:14:import { GlassCard, SectionHeader } from "@/components/shared";
+/home/z/my-project/src/components/views/settings-view.tsx:597:      <SectionHeader
+/home/z/my-project/src/components/views/settings-view.tsx:598:        title={t("settings.title")}
+/home/z/my-project/src/components/views/settings-view.tsx:599:        description={t("settings.subtitle")}
+/home/z/my-project/src/components/views/visits-view.tsx:9:import { formatCurrency, formatDate, titleCase } from "@/lib/format";
+/home/z/my-project/src/components/views/visits-view.tsx:10:import { GlassCard, SectionHeader, StatusChip, EmptyState } from "@/components/shared";
+/home/z/my-project/src/components/views/visits-view.tsx:83:      <SectionHeader
+/home/z/my-project/src/components/views/visits-view.tsx:84:        title="Visits"
+/home/z/my-project/src/components/views/visits-view.tsx:85:        description="Scheduling & follow-ups"
+/home/z/my-project/src/components/views/visits-view.tsx:112:            title="No visits yet"
+/home/z/my-project/src/components/views/visits-view.tsx:168:      toast.success(`Marked as ${titleCase(status)}`);
+/home/z/my-project/src/components/views/supplier-detail-sheet.tsx:8:import { formatCurrency, formatDate, titleCase } from "@/lib/format";
+/home/z/my-project/src/components/views/supplier-detail-sheet.tsx:128:          {supplier.bills.length === 0 ? <EmptyState title="No bills yet" /> : supplier.bills.map((b) => (
+/home/z/my-project/src/components/views/supplier-detail-sheet.tsx:147:                      <span>{formatDate(p.date)} · {titleCase(p.mode)}{p.reference ? ` · ${p.reference}` : ""}</span>
+/home/z/my-project/src/components/views/supplier-detail-sheet.tsx:159:          {dispatches.length === 0 ? <EmptyState title="No dispatches yet" /> : dispatches.map((d) => {
+/home/z/my-project/src/components/views/supplier-detail-sheet.tsx:180:                  <span className="inline-flex items-center gap-1"><Truck className="size-3" />PO: {titleCase(d.poStatus)}</span>
+/home/z/my-project/src/components/views/supplier-detail-sheet.tsx:191:          {supplier.brokerages.length === 0 ? <EmptyState title="No brokerage entries" /> : supplier.brokerages.map((b) => (
+/home/z/my-project/src/components/views/supplier-detail-sheet.tsx:206:                  Payout: {titleCase(b.payout.status)}{b.payout.paidAt ? ` · ${formatDate(b.payout.paidAt)}` : ""}

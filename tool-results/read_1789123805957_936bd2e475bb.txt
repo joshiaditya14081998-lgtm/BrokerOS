@@ -1,0 +1,1978 @@
+     1→import { NextRequest, NextResponse } from "next/server";
+     2→import { db } from "@/lib/db";
+     3→import type { Prisma } from "@prisma/client";
+     4→
+     5→export const dynamic = "force-dynamic";
+     6→
+     7→// ─────────────────────────────────────────────────────────────────────────────
+     8→// PDF / print-optimized HTML report API
+     9→//
+    10→// GET /api/reports?type=<brokerage-statement|client-ledger|supplier-summary|audit-trail>
+    11→//                  &range=<month|quarter|year|all>      (brokerage-statement only)
+    12→//                  &clientId=<id>                        (client-ledger only)
+    13→//                  &supplierId=<id>                      (supplier-summary only)
+    14→//                  &from=<ISO>&to=<ISO>&entityType=<T>   (audit-trail only)
+    15→//
+    16→// Returns a standalone HTML document (Content-Type: text/html) that is fully
+    17→// print-optimized. The browser auto-opens the print dialog (window.print()) on
+    18→// load — the user picks "Save as PDF" as the destination. A floating "Print"
+    19→// button is shown in the on-screen view and hidden in print mode.
+    20→// ─────────────────────────────────────────────────────────────────────────────
+    21→
+    22→type ReportType = "brokerage-statement" | "client-ledger" | "supplier-summary" | "audit-trail" | "purchase-order" | "party-ledger";
+    23→type Range = "month" | "quarter" | "year" | "all";
+    24→
+    25→const VALID_TYPES: ReportType[] = ["brokerage-statement", "client-ledger", "supplier-summary", "audit-trail", "purchase-order", "party-ledger"];
+    26→const VALID_RANGES: Range[] = ["month", "quarter", "year", "all"];
+    27→
+    28→const REPORT_TITLES: Record<ReportType, string> = {
+    29→  "brokerage-statement": "Brokerage Statement",
+    30→  "client-ledger": "Client Ledger Report",
+    31→  "supplier-summary": "Supplier Performance Summary",
+    32→  "audit-trail": "Audit Trail Report",
+    33→  "purchase-order": "Purchase Order",
+    34→  "party-ledger": "Party Ledger Report",
+    35→};
+    36→
+    37→// ── Formatting helpers (server-safe — Intl is available in Node) ─────────────
+    38→
+    39→function fmtCurrency(n: number): string {
+    40→  const v = Number.isFinite(n) ? n : 0;
+    41→  return new Intl.NumberFormat("en-IN", {
+    42→    style: "currency",
+    43→    currency: "INR",
+    44→    maximumFractionDigits: 0,
+    45→  }).format(v);
+    46→}
+    47→
+    48→function fmtDate(d: Date | string | null | undefined): string {
+    49→  if (!d) return "—";
+    50→  const date = typeof d === "string" ? new Date(d) : d;
+    51→  return date.toLocaleDateString("en-IN", {
+    52→    day: "2-digit",
+    53→    month: "short",
+    54→    year: "numeric",
+    55→  });
+    56→}
+    57→
+    58→function fmtDateTime(d: Date | string | null | undefined): string {
+    59→  if (!d) return "—";
+    60→  const date = typeof d === "string" ? new Date(d) : d;
+    61→  return date.toLocaleString("en-IN", {
+    62→    day: "2-digit",
+    63→    month: "short",
+    64→    year: "numeric",
+    65→    hour: "2-digit",
+    66→    minute: "2-digit",
+    67→  });
+    68→}
+    69→
+    70→function titleCase(s: string): string {
+    71→  return s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    72→}
+    73→
+    74→function escapeHtml(s: string | null | undefined): string {
+    75→  if (s == null) return "";
+    76→  return String(s)
+    77→    .replace(/&/g, "&amp;")
+    78→    .replace(/</g, "&lt;")
+    79→    .replace(/>/g, "&gt;")
+    80→    .replace(/"/g, "&quot;")
+    81→    .replace(/'/g, "&#39;");
+    82→}
+    83→
+    84→// ── Range bounds (reused from dashboard route) ───────────────────────────────
+    85→
+    86→function getRangeBounds(range: Range): { start: Date | undefined; end: Date; label: string } {
+    87→  const now = new Date();
+    88→  if (range === "all") {
+    89→    return { start: undefined, end: now, label: "All time" };
+    90→  }
+    91→  const y = now.getFullYear();
+    92→  const m = now.getMonth();
+    93→  let start: Date;
+    94→  let label: string;
+    95→  if (range === "month") {
+    96→    start = new Date(y, m, 1);
+    97→    label = start.toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+    98→  } else if (range === "quarter") {
+    99→    const qStartMonth = Math.floor(m / 3) * 3;
+   100→    start = new Date(y, qStartMonth, 1);
+   101→    const qNum = Math.floor(qStartMonth / 3) + 1;
+   102→    label = `Q${qNum} ${y}`;
+   103→  } else {
+   104→    start = new Date(y, 0, 1);
+   105→    label = `Year ${y}`;
+   106→  }
+   107→  return { start, end: now, label };
+   108→}
+   109→
+   110→// ── HTML document shell ──────────────────────────────────────────────────────
+   111→
+   112→function htmlShell(title: string, rangeLabel: string, body: string, footerNote?: string): string {
+   113→  const generatedAt = fmtDateTime(new Date());
+   114→  const footer = footerNote
+   115→    ? `<div class="rules-note">${footerNote}</div>`
+   116→    : "";
+   117→  return `<!DOCTYPE html>
+   118→<html lang="en">
+   119→<head>
+   120→<meta charset="utf-8" />
+   121→<meta name="viewport" content="width=device-width, initial-scale=1" />
+   122→<title>${escapeHtml(title)} — Broker OS</title>
+   123→<style>
+   124→  @page { margin: 1.5cm; size: A4; }
+   125→  * { box-sizing: border-box; }
+   126→  html, body { margin: 0; padding: 0; }
+   127→  body {
+   128→    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+   129→    color: #18181b;
+   130→    background: #f4f4f5;
+   131→    font-size: 12px;
+   132→    line-height: 1.5;
+   133→    -webkit-print-color-adjust: exact;
+   134→    print-color-adjust: exact;
+   135→  }
+   136→  .page {
+   137→    max-width: 900px;
+   138→    margin: 24px auto;
+   139→    background: #ffffff;
+   140→    padding: 32px 40px;
+   141→    border-radius: 12px;
+   142→    box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 4px 16px rgba(0,0,0,0.04);
+   143→  }
+   144→  /* Header */
+   145→  .report-header {
+   146→    display: flex;
+   147→    justify-content: space-between;
+   148→    align-items: flex-start;
+   149→    border-bottom: 2px solid #10b981;
+   150→    padding-bottom: 16px;
+   151→    margin-bottom: 24px;
+   152→  }
+   153→  .brand {
+   154→    display: flex;
+   155→    align-items: center;
+   156→    gap: 10px;
+   157→  }
+   158→  .brand-mark {
+   159→    width: 36px; height: 36px;
+   160→    border-radius: 8px;
+   161→    background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+   162→    color: #ffffff;
+   163→    display: flex; align-items: center; justify-content: center;
+   164→    font-weight: 800; font-size: 16px; letter-spacing: -0.5px;
+   165→  }
+   166→  .brand-name { font-size: 16px; font-weight: 700; color: #18181b; letter-spacing: -0.3px; }
+   167→  .brand-sub { font-size: 10px; color: #71717a; text-transform: uppercase; letter-spacing: 0.5px; }
+   168→  .report-meta { text-align: right; }
+   169→  .report-meta h1 {
+   170→    font-size: 18px; font-weight: 700; color: #18181b; margin: 0 0 4px;
+   171→  }
+   172→  .report-meta .meta-line { font-size: 11px; color: #52525b; margin: 1px 0; }
+   173→  .report-meta .meta-line .label { color: #71717a; margin-right: 4px; }
+   174→
+   175→  /* KPI / summary cards */
+   176→  .kpi-grid {
+   177→    display: grid;
+   178→    grid-template-columns: repeat(4, 1fr);
+   179→    gap: 12px;
+   180→    margin-bottom: 24px;
+   181→  }
+   182→  .kpi-card {
+   183→    border: 1px solid #e4e4e7;
+   184→    border-radius: 10px;
+   185→    padding: 12px 14px;
+   186→    background: #fafafa;
+   187→  }
+   188→  .kpi-label {
+   189→    font-size: 9px; text-transform: uppercase; letter-spacing: 0.6px;
+   190→    color: #71717a; margin-bottom: 4px; font-weight: 600;
+   191→  }
+   192→  .kpi-value {
+   193→    font-size: 16px; font-weight: 700; color: #18181b;
+   194→    font-variant-numeric: tabular-nums;
+   195→  }
+   196→  .kpi-value.emerald { color: #059669; }
+   197→  .kpi-value.amber { color: #d97706; }
+   198→  .kpi-value.rose { color: #e11d48; }
+   199→  .kpi-sub { font-size: 10px; color: #71717a; margin-top: 2px; }
+   200→
+   201→  /* Section heading */
+   202→  .section { margin-top: 24px; }
+   203→  .section-break { page-break-before: always; }
+   204→  .section-title {
+   205→    font-size: 13px; font-weight: 700; color: #18181b;
+   206→    padding-bottom: 6px; margin-bottom: 12px;
+   207→    border-bottom: 1px solid #e4e4e7;
+   208→    display: flex; align-items: center; gap: 8px;
+   209→  }
+   210→  .section-title::before {
+   211→    content: ''; display: inline-block; width: 4px; height: 14px;
+   212→    background: #10b981; border-radius: 2px;
+   213→  }
+   214→  .section-desc { font-size: 10px; color: #71717a; margin: -8px 0 10px; }
+   215→
+   216→  /* Tables */
+   217→  table.report {
+   218→    width: 100%;
+   219→    border-collapse: collapse;
+   220→    font-size: 11px;
+   221→    font-variant-numeric: tabular-nums;
+   222→  }
+   223→  table.report thead th {
+   224→    background: #f4f4f5;
+   225→    color: #52525b;
+   226→    font-weight: 600;
+   227→    text-align: left;
+   228→    padding: 8px 10px;
+   229→    border-bottom: 2px solid #e4e4e7;
+   230→    font-size: 10px;
+   231→    text-transform: uppercase;
+   232→    letter-spacing: 0.4px;
+   233→  }
+   234→  table.report tbody td {
+   235→    padding: 7px 10px;
+   236→    border-bottom: 1px solid #f1f1f4;
+   237→    vertical-align: top;
+   238→  }
+   239→  table.report tbody tr:nth-child(even) td { background: #fafafa; }
+   240→  table.report .num { text-align: right; white-space: nowrap; }
+   241→  table.report .center { text-align: center; }
+   242→  table.report tfoot td {
+   243→    padding: 8px 10px;
+   244→    border-top: 2px solid #e4e4e7;
+   245→    background: #f4f4f5;
+   246→    font-weight: 700;
+   247→    font-size: 11px;
+   248→  }
+   249→  table.report tfoot td.num { text-align: right; }
+   250→  .group-header td {
+   251→    background: #ecfdf5 !important;
+   252→    color: #047857;
+   253→    font-weight: 700;
+   254→    font-size: 10px;
+   255→    text-transform: uppercase;
+   256→    letter-spacing: 0.4px;
+   257→    padding: 6px 10px;
+   258→    border-bottom: 1px solid #a7f3d0;
+   259→  }
+   260→  .sub-total td {
+   261→    background: #fffbeb !important;
+   262→    color: #92400e;
+   263→    font-weight: 600;
+   264→    font-size: 10px;
+   265→    padding: 5px 10px;
+   266→    border-bottom: 1px solid #fde68a;
+   267→  }
+   268→
+   269→  /* Status pills (print-safe) */
+   270→  .pill {
+   271→    display: inline-block;
+   272→    padding: 1px 8px;
+   273→    border-radius: 999px;
+   274→    font-size: 9px;
+   275→    font-weight: 600;
+   276→    border: 1px solid;
+   277→    white-space: nowrap;
+   278→  }
+   279→  .pill.emerald { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
+   280→  .pill.amber { background: #fffbeb; color: #92400e; border-color: #fde68a; }
+   281→  .pill.rose { background: #fff1f2; color: #be123c; border-color: #fecdd3; }
+   282→  .pill.zinc { background: #f4f4f5; color: #52525b; border-color: #d4d4d8; }
+   283→
+   284→  /* Subject card (client/supplier info) */
+   285→  .subject-card {
+   286→    border: 1px solid #e4e4e7;
+   287→    border-left: 4px solid #10b981;
+   288→    border-radius: 8px;
+   289→    padding: 12px 16px;
+   290→    margin-bottom: 20px;
+   291→    background: #fafafa;
+   292→  }
+   293→  .subject-card h2 { margin: 0 0 6px; font-size: 15px; color: #18181b; }
+   294→  .subject-meta {
+   295→    display: grid;
+   296→    grid-template-columns: repeat(4, 1fr);
+   297→    gap: 8px 16px;
+   298→    font-size: 10px;
+   299→  }
+   300→  .subject-meta .item .k { color: #71717a; text-transform: uppercase; letter-spacing: 0.4px; font-size: 9px; }
+   301→  .subject-meta .item .v { color: #18181b; font-weight: 500; }
+   302→
+   303→  /* Footer / rules note */
+   304→  .rules-note {
+   305→    margin-top: 24px;
+   306→    padding: 12px 14px;
+   307→    border: 1px dashed #d4d4d8;
+   308→    border-radius: 8px;
+   309→    background: #fafafa;
+   310→    font-size: 10px;
+   311→    color: #52525b;
+   312→    line-height: 1.6;
+   313→  }
+   314→  .rules-note strong { color: #18181b; }
+   315→  .report-footer {
+   316→    margin-top: 32px;
+   317→    padding-top: 12px;
+   318→    border-top: 1px solid #e4e4e7;
+   319→    display: flex;
+   320→    justify-content: space-between;
+   321→    font-size: 9px;
+   322→    color: #a1a1aa;
+   323→  }
+   324→
+   325→  /* Floating print button (hidden in print) */
+   326→  .print-btn {
+   327→    position: fixed;
+   328→    top: 16px;
+   329→    right: 16px;
+   330→    background: #10b981;
+   331→    color: #ffffff;
+   332→    border: none;
+   333→    padding: 10px 18px;
+   334→    border-radius: 8px;
+   335→    font-size: 13px;
+   336→    font-weight: 600;
+   337→    cursor: pointer;
+   338→    box-shadow: 0 4px 12px rgba(16,185,129,0.35);
+   339→    z-index: 1000;
+   340→    display: inline-flex;
+   341→    align-items: center;
+   342→    gap: 6px;
+   343→  }
+   344→  .print-btn:hover { background: #059669; }
+   345→
+   346→  @media print {
+   347→    body { background: #ffffff; font-size: 11px; }
+   348→    .page {
+   349→      max-width: none; margin: 0; padding: 0;
+   350→      box-shadow: none; border-radius: 0;
+   351→    }
+   352→    .no-print { display: none !important; }
+   353→    .section-break { page-break-before: always; }
+   354→    .page-break-row { page-break-before: always; }
+   355→    table.report { page-break-inside: auto; }
+   356→    table.report thead { display: table-header-group; }
+   357→    table.report tr { page-break-inside: avoid; }
+   358→  }
+   359→  .nowrap { white-space: nowrap; }
+   360→
+   361→  /* ── Purchase Order specific styles ─────────────────────────────────────── */
+   362→  .po-doc-header {
+   363→    display: flex; justify-content: space-between; align-items: flex-start;
+   364→    border-bottom: 2px solid #10b981; padding-bottom: 16px; margin-bottom: 24px;
+   365→  }
+   366→  .po-title-block h1 {
+   367→    font-size: 28px; font-weight: 800; color: #10b981; margin: 0;
+   368→    letter-spacing: -0.5px; text-transform: uppercase;
+   369→  }
+   370→  .po-number { font-size: 14px; color: #52525b; margin-top: 8px; }
+   371→  .po-number strong { color: #18181b; font-size: 16px; }
+   372→  .po-date { font-size: 12px; color: #71717a; margin-top: 2px; }
+   373→  .po-status-badge {
+   374→    padding: 6px 14px; border-radius: 999px; font-size: 11px; font-weight: 700;
+   375→    text-transform: uppercase; letter-spacing: 0.5px;
+   376→  }
+   377→  .po-status-badge.status-open { background: #fef3c7; color: #92400e; }
+   378→  .po-status-badge.status-partially_delivered { background: #ddd6fe; color: #5b21b6; }
+   379→  .po-status-badge.status-fully_delivered { background: #d1fae5; color: #065f46; }
+   380→  .po-status-badge.status-closed { background: #e4e4e7; color: #52525b; }
+   381→
+   382→  .party-grid {
+   383→    display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px;
+   384→  }
+   385→  .party-card {
+   386→    border: 1px solid #e4e4e7; border-radius: 10px; padding: 12px 14px; background: #fafafa;
+   387→  }
+   388→  .party-label {
+   389→    font-size: 9px; text-transform: uppercase; letter-spacing: 0.6px; color: #71717a;
+   390→    margin-bottom: 6px; font-weight: 600;
+   391→  }
+   392→  .party-name { font-size: 13px; font-weight: 700; color: #18181b; margin-bottom: 4px; }
+   393→  .party-detail { font-size: 11px; color: #52525b; margin: 2px 0; }
+   394→
+   395→  .dispatch-info {
+   396→    background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 10px;
+   397→    padding: 12px 14px; margin-bottom: 20px; display: flex; align-items: center; gap: 24px; flex-wrap: wrap;
+   398→  }
+   399→  .dispatch-info .info-label {
+   400→    font-size: 9px; text-transform: uppercase; letter-spacing: 0.6px; color: #71717a; font-weight: 600;
+   401→  }
+   402→  .dispatch-info .info-value { font-size: 12px; color: #18181b; font-weight: 500; margin-left: 6px; }
+   403→  .revised-tag {
+   404→    display: inline-block; font-size: 9px; background: #fef3c7; color: #92400e;
+   405→    padding: 1px 6px; border-radius: 4px; margin-left: 4px; font-weight: 600;
+   406→  }
+   407→
+   408→  .section-title {
+   409→    font-size: 13px; font-weight: 700; color: #18181b; margin: 20px 0 10px;
+   410→    padding-bottom: 6px; border-bottom: 1px solid #e4e4e7;
+   411→  }
+   412→
+   413→  table.line-items {
+   414→    width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 12px;
+   415→  }
+   416→  table.line-items th, table.line-items td {
+   417→    padding: 8px 10px; border-bottom: 1px solid #e4e4e7; text-align: left;
+   418→  }
+   419→  table.line-items thead th {
+   420→    background: #f4f4f5; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+   421→    color: #52525b; font-weight: 600; border-bottom: 2px solid #d4d4d8;
+   422→  }
+   423→  table.line-items tbody tr:nth-child(even) { background: #fafafa; }
+   424→  table.line-items .num { text-align: right; }
+   425→  table.line-items tfoot td {
+   426→    border-bottom: none; border-top: 1px solid #e4e4e7; font-weight: 600;
+   427→  }
+   428→  table.line-items .subtotal-row td { background: #f4f4f5; }
+   429→  table.line-items .grand-total-row td {
+   430→    background: #10b981; color: #ffffff; font-size: 14px; font-weight: 700;
+   431→    border-top: 2px solid #059669;
+   432→  }
+   433→  table.line-items .grand-total-row td.num { font-size: 16px; }
+   434→
+   435→  .dispatch-instructions {
+   436→    background: #fffbeb; border: 1px solid #fde68a; border-radius: 10px; padding: 14px 16px; margin-bottom: 24px;
+   437→  }
+   438→  .dispatch-instructions h3 {
+   439→    font-size: 12px; font-weight: 700; color: #92400e; margin: 0 0 8px; text-transform: uppercase; letter-spacing: 0.5px;
+   440→  }
+   441→  .dispatch-instructions ol { margin: 0; padding-left: 20px; }
+   442→  .dispatch-instructions li { font-size: 11px; color: #52525b; margin: 4px 0; line-height: 1.4; }
+   443→  .dispatch-instructions strong { color: #18181b; }
+   444→
+   445→  .signature-grid {
+   446→    display: grid; grid-template-columns: 1fr 1fr; gap: 40px; margin-top: 40px; padding-top: 20px;
+   447→  }
+   448→  .signature-block { text-align: left; }
+   449→  .sig-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: #71717a; font-weight: 600; margin-bottom: 40px; }
+   450→  .sig-line { border-top: 1px solid #52525b; height: 1px; margin-bottom: 6px; }
+   451→  .sig-name { font-size: 11px; color: #52525b; font-weight: 500; }
+   452→</style>
+   453→</head>
+   454→<body>
+   455→  <button class="print-btn no-print" onclick="window.print()" title="Print or Save as PDF">
+   456→    🖨 Print
+   457→  </button>
+   458→  <div class="page">
+   459→    <div class="report-header">
+   460→      <div class="brand">
+   461→        <div class="brand-mark">B</div>
+   462→        <div>
+   463→          <div class="brand-name">Broker OS</div>
+   464→          <div class="brand-sub">Garment Brokerage Operations</div>
+   465→        </div>
+   466→      </div>
+   467→      <div class="report-meta">
+   468→        <h1>${escapeHtml(title)}</h1>
+   469→        <div class="meta-line"><span class="label">Range:</span>${escapeHtml(rangeLabel)}</div>
+   470→        <div class="meta-line"><span class="label">Generated:</span>${escapeHtml(generatedAt)}</div>
+   471→      </div>
+   472→    </div>
+   473→    ${body}
+   474→    ${footer}
+   475→    <div class="report-footer">
+   476→      <span>Broker OS — confidential brokerage statement</span>
+   477→      <span>Page generated on ${escapeHtml(generatedAt)}</span>
+   478→    </div>
+   479→  </div>
+   480→  <script>
+   481→    window.onload = function() { setTimeout(function() { window.print(); }, 500); };
+   482→  </script>
+   483→</body>
+   484→</html>`;
+   485→}
+   486→
+   487→// ── Status pill helper ───────────────────────────────────────────────────────
+   488→
+   489→function statusPill(status: string): string {
+   490→  const s = status.toLowerCase();
+   491→  let cls = "zinc";
+   492→  if (["fully_paid", "fully_delivered", "delivered", "resolved", "occurred", "done", "paid", "scheduled"].includes(s)) {
+   493→    cls = "emerald";
+   494→  } else if (["partially_paid", "partially_delivered", "in_transit", "accrued"].includes(s)) {
+   495→    cls = "amber";
+   496→  } else if (["pending", "open", "no_show", "short_shipment", "defective_return", "overdue"].includes(s)) {
+   497→    cls = "rose";
+   498→  } else if (["closed", "rejected", "dismissed"].includes(s)) {
+   499→    cls = "zinc";
+   500→  }
+   501→  return `<span class="pill ${cls}">${escapeHtml(titleCase(status))}</span>`;
+   502→}
+   503→
+   504→function eligiblePill(eligible: boolean, forceEligible?: boolean): string {
+   505→  if (!eligible) return `<span class="pill rose">No</span>`;
+   506→  return forceEligible
+   507→    ? `<span class="pill amber">Forced</span>`
+   508→    : `<span class="pill emerald">Yes</span>`;
+   509→}
+   510→
+   511→// ── Brokerage statement report ───────────────────────────────────────────────
+   512→
+   513→async function buildBrokerageStatement(range: Range): Promise<string> {
+   514→  const { start, end, label } = getRangeBounds(range);
+   515→
+   516→  const brokerages = await db.brokerage.findMany({
+   517→    where: start
+   518→      ? {
+   519→          OR: [
+   520→            { eligibleAt: { gte: start, lte: end } },
+   521→            { eligibleAt: null, createdAt: { gte: start, lte: end } },
+   522→          ],
+   523→        }
+   524→      : undefined,
+   525→    include: {
+   526→      bill: { select: { billNumber: true, baseAmount: true, status: true, po: { select: { poNumber: true } } } },
+   527→      client: { select: { name: true } },
+   528→      supplier: { select: { name: true } },
+   529→      payout: { select: { id: true, status: true, paidAt: true } },
+   530→    },
+   531→    orderBy: { eligibleAt: "asc" },
+   532→  });
+   533→
+   534→  const payouts = await db.brokeragePayout.findMany({
+   535→    where: start ? { createdAt: { gte: start, lte: end } } : undefined,
+   536→    include: { client: { select: { name: true } }, brokerages: { select: { id: true, brokerageAmount: true } } },
+   537→    orderBy: { createdAt: "desc" },
+   538→  });
+   539→
+   540→  const totalBrokerage = brokerages.reduce((s, b) => s + b.brokerageAmount, 0);
+   541→  const accruedTotal = brokerages
+   542→    .filter((b) => b.eligible && b.payoutStatus === "accrued")
+   543→    .reduce((s, b) => s + b.brokerageAmount, 0);
+   544→  const scheduledTotal = brokerages
+   545→    .filter((b) => b.eligible && b.payoutStatus === "scheduled")
+   546→    .reduce((s, b) => s + b.brokerageAmount, 0);
+   547→  const paidTotal = brokerages
+   548→    .filter((b) => b.payoutStatus === "paid")
+   549→    .reduce((s, b) => s + b.brokerageAmount, 0);
+   550→  const pendingTotal = brokerages
+   551→    .filter((b) => !b.eligible)
+   552→    .reduce((s, b) => s + b.brokerageAmount, 0);
+   553→  const billsCount = new Set(brokerages.map((b) => b.billId)).size;
+   554→
+   555→  // Group by client for the detail table (multiple sub-totals)
+   556→  const byClient = new Map<string, { name: string; rows: typeof brokerages }>();
+   557→  for (const b of brokerages) {
+   558→    const key = b.clientId;
+   559→    if (!byClient.has(key)) {
+   560→      byClient.set(key, { name: b.client.name, rows: [] });
+   561→    }
+   562→    byClient.get(key)!.rows.push(b);
+   563→  }
+   564→  // Sort clients by name
+   565→  const clientGroups = Array.from(byClient.entries())
+   566→    .map(([id, g]) => ({ id, name: g.name, rows: g.rows }))
+   567→    .sort((a, b) => a.name.localeCompare(b.name));
+   568→
+   569→  // Build the detail table — grouped by client with sub-totals
+   570→  const detailRows: string[] = [];
+   571→  let grandBase = 0;
+   572→  let grandBrokerage = 0;
+   573→  for (const group of clientGroups) {
+   574→    detailRows.push(
+   575→      `<tr class="group-header"><td colspan="9">${escapeHtml(group.name)} — ${group.rows.length} entr${group.rows.length === 1 ? "y" : "ies"}</td></tr>`,
+   576→    );
+   577→    let subBase = 0;
+   578→    let subBrokerage = 0;
+   579→    for (const b of group.rows) {
+   580→      subBase += b.baseAmount;
+   581→      subBrokerage += b.brokerageAmount;
+   582→      grandBase += b.baseAmount;
+   583→      grandBrokerage += b.brokerageAmount;
+   584→      detailRows.push(
+   585→        `<tr>
+   586→          <td>${escapeHtml(b.bill.billNumber)}</td>
+   587→          <td>${escapeHtml(b.client.name)}</td>
+   588→          <td>${escapeHtml(b.supplier.name)}</td>
+   589→          <td class="num">${fmtCurrency(b.baseAmount)}</td>
+   590→          <td class="num">${b.commissionRate.toFixed(1)}%</td>
+   591→          <td class="num emerald">${fmtCurrency(b.brokerageAmount)}</td>
+   592→          <td class="center">${eligiblePill(b.eligible, b.forceEligible)}</td>
+   593→          <td class="center">${statusPill(b.payoutStatus)}</td>
+   594→          <td>${fmtDate(b.eligibleAt)}</td>
+   595→        </tr>`,
+   596→      );
+   597→    }
+   598→    detailRows.push(
+   599→      `<tr class="sub-total">
+   600→        <td colspan="3">Sub-total — ${escapeHtml(group.name)}</td>
+   601→        <td class="num">${fmtCurrency(subBase)}</td>
+   602→        <td></td>
+   603→        <td class="num">${fmtCurrency(subBrokerage)}</td>
+   604→        <td colspan="3"></td>
+   605→      </tr>`,
+   606→    );
+   607→  }
+   608→
+   609→  if (brokerages.length === 0) {
+   610→    detailRows.push(
+   611→      `<tr><td colspan="9" style="text-align:center;padding:24px;color:#a1a1aa;">No brokerage entries in this range.</td></tr>`,
+   612→    );
+   613→  }
+   614→
+   615→  // Payout summary table
+   616→  const payoutRows = payouts.length
+   617→    ? payouts
+   618→        .map(
+   619→          (p) => `<tr>
+   620→        <td>${escapeHtml(p.client.name)}</td>
+   621→        <td class="center">${escapeHtml(titleCase(p.cadence))}</td>
+   622→        <td>${fmtDate(p.periodStart)}</td>
+   623→        <td>${fmtDate(p.periodEnd)}</td>
+   624→        <td class="num">${fmtCurrency(p.totalAmount)}</td>
+   625→        <td class="center">${statusPill(p.status)}</td>
+   626→        <td class="center">${p.paidAt ? fmtDate(p.paidAt) : "—"}</td>
+   627→        <td class="num">${p.brokerages.length}</td>
+   628→      </tr>`,
+   629→        )
+   630→        .join("")
+   631→    : `<tr><td colspan="8" style="text-align:center;padding:24px;color:#a1a1aa;">No payouts in this range.</td></tr>`;
+   632→
+   633→  const body = `
+   634→    <div class="kpi-grid">
+   635→      <div class="kpi-card">
+   636→        <div class="kpi-label">Total brokerage</div>
+   637→        <div class="kpi-value emerald">${fmtCurrency(totalBrokerage)}</div>
+   638→        <div class="kpi-sub">${brokerages.length} entries</div>
+   639→      </div>
+   640→      <div class="kpi-card">
+   641→        <div class="kpi-label">Eligible pending</div>
+   642→        <div class="kpi-value amber">${fmtCurrency(accruedTotal + scheduledTotal)}</div>
+   643→        <div class="kpi-sub">Accrued + scheduled</div>
+   644→      </div>
+   645→      <div class="kpi-card">
+   646→        <div class="kpi-label">Paid out</div>
+   647→        <div class="kpi-value emerald">${fmtCurrency(paidTotal)}</div>
+   648→        <div class="kpi-sub">${payouts.length} payout batches</div>
+   649→      </div>
+   650→      <div class="kpi-card">
+   651→        <div class="kpi-label">Not eligible</div>
+   652→        <div class="kpi-value rose">${fmtCurrency(pendingTotal)}</div>
+   653→        <div class="kpi-sub">${billsCount} bills</div>
+   654→      </div>
+   655→    </div>
+   656→
+   657→    <div class="section">
+   658→      <div class="section-title">Brokerage ledger — grouped by client</div>
+   659→      <div class="section-desc">All brokerage entries in the selected range. Sub-totals per client; grand total at the foot.</div>
+   660→      <table class="report">
+   661→        <thead>
+   662→          <tr>
+   663→            <th>Bill</th>
+   664→            <th>Client</th>
+   665→            <th>Supplier</th>
+   666→            <th class="num">Base (excl GST)</th>
+   667→            <th class="num">Comm %</th>
+   668→            <th class="num">Brokerage</th>
+   669→            <th class="center">Eligible</th>
+   670→            <th class="center">Payout</th>
+   671→            <th>Eligible At</th>
+   672→          </tr>
+   673→        </thead>
+   674→        <tbody>
+   675→          ${detailRows.join("")}
+   676→        </tbody>
+   677→        <tfoot>
+   678→          <tr>
+   679→            <td colspan="3">Grand total</td>
+   680→            <td class="num">${fmtCurrency(grandBase)}</td>
+   681→            <td></td>
+   682→            <td class="num">${fmtCurrency(grandBrokerage)}</td>
+   683→            <td colspan="3"></td>
+   684→          </tr>
+   685→        </tfoot>
+   686→      </table>
+   687→    </div>
+   688→
+   689→    <div class="section section-break">
+   690→      <div class="section-title">Payout history</div>
+   691→      <div class="section-desc">Brokerage payout batches created in this range.</div>
+   692→      <table class="report">
+   693→        <thead>
+   694→          <tr>
+   695→            <th>Client</th>
+   696→            <th class="center">Cadence</th>
+   697→            <th>Period start</th>
+   698→            <th>Period end</th>
+   699→            <th class="num">Total paid</th>
+   700→            <th class="center">Status</th>
+   701→            <th class="center">Paid at</th>
+   702→            <th class="num"># Entries</th>
+   703→          </tr>
+   704→        </thead>
+   705→        <tbody>${payoutRows}</tbody>
+   706→      </table>
+   707→    </div>
+   708→  `;
+   709→
+   710→  const footerNote = `
+   711→    <strong>Brokerage business rules.</strong>
+   712→    Brokerage is computed on the bill's base amount (PO value − short-shipment − returns), <em>excluding GST</em>.
+   713→    A brokerage entry stays <em>accrued</em> until the linked bill is fully paid — eligibility is granted only on full bill payment
+   714→    (or via a documented manual override). Eligible brokerages are batched into a payout following the client's cadence
+   715→    (immediate · 4-month cumulative · 12-month cumulative). Adjustments for short-shipments and resolved defective returns
+   716→    reduce the base amount <em>before</em> GST and brokerage are computed — never after.
+   717→  `;
+   718→
+   719→  return htmlShell("Brokerage Statement", label, body, footerNote);
+   720→}
+   721→
+   722→// ── Client ledger report ─────────────────────────────────────────────────────
+   723→
+   724→async function buildClientLedger(clientId: string): Promise<string> {
+   725→  const client = await db.client.findUnique({
+   726→    where: { id: clientId },
+   727→    include: {
+   728→      bills: {
+   729→        include: {
+   730→          po: { select: { poNumber: true, supplier: { select: { name: true } } } },
+   731→          payments: { orderBy: { date: "desc" } },
+   732→          brokerage: true,
+   733→        },
+   734→        orderBy: { createdAt: "desc" },
+   735→      },
+   736→      brokerages: {
+   737→        include: {
+   738→          bill: { select: { billNumber: true } },
+   739→          supplier: { select: { name: true } },
+   740→          payout: true,
+   741→        },
+   742→        orderBy: { createdAt: "desc" },
+   743→      },
+   744→    },
+   745→  });
+   746→  if (!client) {
+   747→    return htmlShell("Client Not Found", "—",
+   748→      `<div style="padding:40px;text-align:center;color:#a1a1aa;">The requested client could not be found.</div>`);
+   749→  }
+   750→
+   751→  // Build the ledger (bills + payments, running balance)
+   752→  type Ledger = { date: Date; type: string; ref: string; debit: number; credit: number; balance: number };
+   753→  const entries: Ledger[] = [];
+   754→  for (const bill of client.bills) {
+   755→    entries.push({ date: bill.createdAt, type: "Bill", ref: bill.billNumber, debit: bill.finalAmount, credit: 0, balance: 0 });
+   756→    for (const p of bill.payments) {
+   757→      entries.push({ date: p.date, type: "Payment", ref: p.reference || p.id.slice(-6), debit: 0, credit: p.amount, balance: 0 });
+   758→    }
+   759→  }
+   760→  entries.sort((a, b) => a.date.getTime() - b.date.getTime());
+   761→  let bal = 0;
+   762→  for (const e of entries) {
+   763→    bal += e.debit - e.credit;
+   764→    e.balance = bal;
+   765→  }
+   766→  // Reverse to show newest first
+   767→  entries.reverse();
+   768→
+   769→  const totalBusiness = client.bills.reduce((s, b) => s + b.finalAmount, 0);
+   770→  const outstanding = client.bills.reduce((s, b) => s + (b.finalAmount - b.paidAmount), 0);
+   771→  const brokerageEarned = client.brokerages.filter((b) => b.eligible).reduce((s, b) => s + b.brokerageAmount, 0);
+   772→  const brokeragePaid = client.brokerages.filter((b) => b.payoutStatus === "paid").reduce((s, b) => s + b.brokerageAmount, 0);
+   773→
+   774→  // PO delivery summary
+   775→  const pos = await db.purchaseOrder.findMany({
+   776→    where: { clientId },
+   777→    include: { dispatches: true, supplier: { select: { name: true } } },
+   778→    orderBy: { createdAt: "desc" },
+   779→  });
+   780→  const deliverySummary = pos.map((p) => {
+   781→    const dispatchedQty = p.dispatches.reduce((s, d) => s + d.dispatchedQty, 0);
+   782→    let orderedQty = 0;
+   783→    try {
+   784→      orderedQty = (JSON.parse(p.lineItemsJson) as { setQty: number }[]).reduce((s, i) => s + i.setQty, 0);
+   785→    } catch {
+   786→      orderedQty = 0;
+   787→    }
+   788→    return {
+   789→      poNumber: p.poNumber,
+   790→      status: p.status,
+   791→      ordered: p.totalValue,
+   792→      orderedQty,
+   793→      dispatchedQty,
+   794→      fulfillment: orderedQty ? Math.round((dispatchedQty / orderedQty) * 100) : 0,
+   795→      supplierName: p.supplier.name,
+   796→      expectedDispatchDate: p.expectedDispatchDate,
+   797→      revisedDispatchDate: p.revisedDispatchDate,
+   798→    };
+   799→  });
+   800→
+   801→  const ledgerRows = entries.length
+   802→    ? entries
+   803→        .map(
+   804→          (e) => `<tr>
+   805→        <td>${fmtDate(e.date)}</td>
+   806→        <td>${escapeHtml(titleCase(e.type))}</td>
+   807→        <td>${escapeHtml(e.ref)}</td>
+   808→        <td class="num">${e.debit ? fmtCurrency(e.debit) : "—"}</td>
+   809→        <td class="num emerald">${e.credit ? fmtCurrency(e.credit) : "—"}</td>
+   810→        <td class="num">${fmtCurrency(e.balance)}</td>
+   811→      </tr>`,
+   812→        )
+   813→        .join("")
+   814→    : `<tr><td colspan="6" style="text-align:center;padding:24px;color:#a1a1aa;">No ledger entries yet.</td></tr>`;
+   815→
+   816→  const deliveryRows = deliverySummary.length
+   817→    ? deliverySummary
+   818→        .map(
+   819→          (d) => `<tr>
+   820→        <td>${escapeHtml(d.poNumber)}</td>
+   821→        <td>${escapeHtml(d.supplierName)}</td>
+   822→        <td class="center">${statusPill(d.status)}</td>
+   823→        <td class="num">${d.orderedQty}</td>
+   824→        <td class="num">${d.dispatchedQty}</td>
+   825→        <td class="num">${d.fulfillment}%</td>
+   826→        <td>${fmtDate(d.expectedDispatchDate)}</td>
+   827→        <td>${d.revisedDispatchDate ? fmtDate(d.revisedDispatchDate) : "—"}</td>
+   828→      </tr>`,
+   829→        )
+   830→        .join("")
+   831→    : `<tr><td colspan="8" style="text-align:center;padding:24px;color:#a1a1aa;">No purchase orders yet.</td></tr>`;
+   832→
+   833→  const brokerageRows = client.brokerages.length
+   834→    ? client.brokerages
+   835→        .map(
+   836→          (b) => `<tr>
+   837→        <td>${escapeHtml(b.bill.billNumber)}</td>
+   838→        <td>${escapeHtml(b.supplier.name)}</td>
+   839→        <td class="num">${fmtDate(b.createdAt)}</td>
+   840→        <td class="num">${b.commissionRate.toFixed(1)}%</td>
+   841→        <td class="num emerald">${fmtCurrency(b.brokerageAmount)}</td>
+   842→        <td class="center">${eligiblePill(b.eligible, b.forceEligible)}</td>
+   843→        <td class="center">${statusPill(b.payoutStatus)}</td>
+   844→        <td>${b.payout?.paidAt ? fmtDate(b.payout.paidAt) : "—"}</td>
+   845→      </tr>`,
+   846→        )
+   847→        .join("")
+   848→    : `<tr><td colspan="8" style="text-align:center;padding:24px;color:#a1a1aa;">No brokerage entries.</td></tr>`;
+   849→
+   850→  const rangeLabel = `All time · ${fmtDate(client.createdAt)} → ${fmtDate(new Date())}`;
+   851→
+   852→  const body = `
+   853→    <div class="subject-card">
+   854→      <h2>${escapeHtml(client.name)}</h2>
+   855→      <div class="subject-meta">
+   856→        <div class="item"><div class="k">Contact</div><div class="v">${escapeHtml(client.contactPerson || "—")}</div></div>
+   857→        <div class="item"><div class="k">Phone</div><div class="v">${escapeHtml(client.phone || "—")}</div></div>
+   858→        <div class="item"><div class="k">Email</div><div class="v">${escapeHtml(client.email || "—")}</div></div>
+   859→        <div class="item"><div class="k">GST</div><div class="v">${escapeHtml(client.gstNo || "—")}</div></div>
+   860→        <div class="item"><div class="k">Payment cycle</div><div class="v">${client.defaultPaymentCycleDays} days</div></div>
+   861→        <div class="item"><div class="k">Payout cadence</div><div class="v">${escapeHtml(titleCase(client.payoutCadence))}</div></div>
+   862→        <div class="item"><div class="k">GST rate</div><div class="v">${client.gstRate}%</div></div>
+   863→        <div class="item"><div class="k">Client since</div><div class="v">${fmtDate(client.createdAt)}</div></div>
+   864→      </div>
+   865→    </div>
+   866→
+   867→    <div class="kpi-grid">
+   868→      <div class="kpi-card">
+   869→        <div class="kpi-label">Total business</div>
+   870→        <div class="kpi-value">${fmtCurrency(totalBusiness)}</div>
+   871→        <div class="kpi-sub">${client.bills.length} bills</div>
+   872→      </div>
+   873→      <div class="kpi-card">
+   874→        <div class="kpi-label">Outstanding</div>
+   875→        <div class="kpi-value amber">${fmtCurrency(outstanding)}</div>
+   876→        <div class="kpi-sub">Pending receivable</div>
+   877→      </div>
+   878→      <div class="kpi-card">
+   879→        <div class="kpi-label">Brokerage earned</div>
+   880→        <div class="kpi-value emerald">${fmtCurrency(brokerageEarned)}</div>
+   881→        <div class="kpi-sub">Eligible entries</div>
+   882→      </div>
+   883→      <div class="kpi-card">
+   884→        <div class="kpi-label">Brokerage paid</div>
+   885→        <div class="kpi-value emerald">${fmtCurrency(brokeragePaid)}</div>
+   886→        <div class="kpi-sub">Settled via payouts</div>
+   887→      </div>
+   888→    </div>
+   889→
+   890→    <div class="section">
+   891→      <div class="section-title">Ledger — running balance</div>
+   892→      <div class="section-desc">Bills (debit) and payments (credit) in chronological order. Balance shown running.</div>
+   893→      <table class="report">
+   894→        <thead>
+   895→          <tr>
+   896→            <th>Date</th>
+   897→            <th>Type</th>
+   898→            <th>Reference</th>
+   899→            <th class="num">Debit</th>
+   900→            <th class="num">Credit</th>
+   901→            <th class="num">Balance</th>
+   902→          </tr>
+   903→        </thead>
+   904→        <tbody>${ledgerRows}</tbody>
+   905→      </table>
+   906→    </div>
+   907→
+   908→    <div class="section section-break">
+   909→      <div class="section-title">PO delivery summary</div>
+   910→      <div class="section-desc">Purchase orders raised for this client, with dispatch fulfillment.</div>
+   911→      <table class="report">
+   912→        <thead>
+   913→          <tr>
+   914→            <th>PO Number</th>
+   915→            <th>Supplier</th>
+   916→            <th class="center">Status</th>
+   917→            <th class="num">Ordered (sets)</th>
+   918→            <th class="num">Dispatched</th>
+   919→            <th class="num">Fulfillment</th>
+   920→            <th>Expected</th>
+   921→            <th>Revised</th>
+   922→          </tr>
+   923→        </thead>
+   924→        <tbody>${deliveryRows}</tbody>
+   925→      </table>
+   926→    </div>
+   927→
+   928→    <div class="section section-break">
+   929→      <div class="section-title">Brokerage entries</div>
+   930→      <div class="section-desc">All brokerage computed on this client's bills.</div>
+   931→      <table class="report">
+   932→        <thead>
+   933→          <tr>
+   934→            <th>Bill</th>
+   935→            <th>Supplier</th>
+   936→            <th class="num">Created</th>
+   937→            <th class="num">Comm %</th>
+   938→            <th class="num">Brokerage</th>
+   939→            <th class="center">Eligible</th>
+   940→            <th class="center">Payout</th>
+   941→            <th>Paid at</th>
+   942→          </tr>
+   943→        </thead>
+   944→        <tbody>${brokerageRows}</tbody>
+   945→      </table>
+   946→    </div>
+   947→  `;
+   948→
+   949→  const footerNote = `
+   950→    <strong>Reporting basis.</strong>
+   951→    Ledger entries are presented in chronological order with a running balance. Outstanding receivable reflects unpaid bill
+   952→    balances as of the report generation time. Brokerage is computed on the bill base amount (excluding GST) and becomes
+   953→    eligible only on full payment of the linked bill.
+   954→  `;
+   955→
+   956→  return htmlShell("Client Ledger Report", rangeLabel, body, footerNote);
+   957→}
+   958→
+   959→// ── Supplier performance summary ─────────────────────────────────────────────
+   960→
+   961→async function buildSupplierSummary(supplierId: string): Promise<string> {
+   962→  const supplier = await db.supplier.findUnique({
+   963→    where: { id: supplierId },
+   964→    include: {
+   965→      bills: {
+   966→        include: {
+   967→          client: { select: { name: true } },
+   968→          po: { select: { poNumber: true } },
+   969→          brokerage: true,
+   970→          payments: { orderBy: { date: "desc" } },
+   971→        },
+   972→        orderBy: { createdAt: "desc" },
+   973→      },
+   974→      dispatches: {
+   975→        include: {
+   976→          po: {
+   977→            select: {
+   978→              poNumber: true, totalValue: true, lineItemsJson: true,
+   979→              expectedDispatchDate: true, revisedDispatchDate: true, status: true,
+   980→              client: { select: { name: true } },
+   981→            },
+   982→          },
+   983→        },
+   984→        orderBy: { dispatchDate: "desc" },
+   985→      },
+   986→      brokerages: {
+   987→        include: {
+   988→          bill: { select: { billNumber: true, baseAmount: true } },
+   989→          client: { select: { name: true } },
+   990→          payout: true,
+   991→        },
+   992→        orderBy: { createdAt: "desc" },
+   993→      },
+   994→    },
+   995→  });
+   996→  if (!supplier) {
+   997→    return htmlShell("Supplier Not Found", "—",
+   998→      `<div style="padding:40px;text-align:center;color:#a1a1aa;">The requested supplier could not be found.</div>`);
+   999→  }
+  1000→
+  1001→  const totalSupplied = supplier.bills.reduce((s, b) => s + b.baseAmount, 0);
+  1002→  const outstandingBrokerage = supplier.brokerages
+  1003→    .filter((b) => b.eligible && b.payoutStatus !== "paid")
+  1004→    .reduce((s, b) => s + b.brokerageAmount, 0);
+  1005→  const paidBrokerage = supplier.brokerages
+  1006→    .filter((b) => b.payoutStatus === "paid")
+  1007→    .reduce((s, b) => s + b.brokerageAmount, 0);
+  1008→
+  1009→  // Avg dispatch delay (days between expected & actual)
+  1010→  const delays = supplier.dispatches
+  1011→    .filter((d) => d.po.expectedDispatchDate)
+  1012→    .map((d) => Math.round((d.dispatchDate.getTime() - d.po.expectedDispatchDate!.getTime()) / 86400000));
+  1013→  const avgDispatchDelay = delays.length ? Math.round(delays.reduce((a, b) => a + b, 0) / delays.length) : 0;
+  1014→
+  1015→  // Fulfillment %
+  1016→  const totalOrderedQty = supplier.dispatches.reduce((s, d) => {
+  1017→    let ordered = 0;
+  1018→    try {
+  1019→      ordered = (JSON.parse(d.po.lineItemsJson) as { setQty: number }[]).reduce((x, i) => x + i.setQty, 0);
+  1020→    } catch {
+  1021→      ordered = 0;
+  1022→    }
+  1023→    return s + ordered;
+  1024→  }, 0);
+  1025→  const totalDispatchedQty = supplier.dispatches.reduce((s, d) => s + d.dispatchedQty, 0);
+  1026→  const fulfillment = totalOrderedQty ? Math.round((totalDispatchedQty / totalOrderedQty) * 100) : 0;
+  1027→  const shortShipmentRate = supplier.dispatches.length
+  1028→    ? Math.round((supplier.dispatches.filter((d) => d.status === "short_shipment").length / supplier.dispatches.length) * 100)
+  1029→    : 0;
+  1030→
+  1031→  // Bills table
+  1032→  const billRows = supplier.bills.length
+  1033→    ? supplier.bills
+  1034→        .map(
+  1035→          (b) => `<tr>
+  1036→        <td>${escapeHtml(b.billNumber)}</td>
+  1037→        <td>${escapeHtml(b.po.poNumber)}</td>
+  1038→        <td>${escapeHtml(b.client.name)}</td>
+  1039→        <td class="num">${fmtCurrency(b.baseAmount)}</td>
+  1040→        <td class="num">${b.gstRate.toFixed(1)}%</td>
+  1041→        <td class="num">${fmtCurrency(b.gstAmount)}</td>
+  1042→        <td class="num">${fmtCurrency(b.finalAmount)}</td>
+  1043→        <td class="num emerald">${fmtCurrency(b.paidAmount)}</td>
+  1044→        <td class="num ${b.finalAmount - b.paidAmount > 0 ? "amber" : ""}">${fmtCurrency(b.finalAmount - b.paidAmount)}</td>
+  1045→        <td class="center">${statusPill(b.status)}</td>
+  1046→      </tr>`,
+  1047→        )
+  1048→        .join("")
+  1049→    : `<tr><td colspan="10" style="text-align:center;padding:24px;color:#a1a1aa;">No bills raised yet.</td></tr>`;
+  1050→
+  1051→  // Dispatches table
+  1052→  const dispatchRows = supplier.dispatches.length
+  1053→    ? supplier.dispatches
+  1054→        .map((d) => {
+  1055→          let ordered = 0;
+  1056→          try {
+  1057→            ordered = (JSON.parse(d.po.lineItemsJson) as { setQty: number }[]).reduce((x, i) => x + i.setQty, 0);
+  1058→          } catch {
+  1059→            ordered = 0;
+  1060→          }
+  1061→          const pct = ordered ? Math.min(100, Math.round((d.dispatchedQty / ordered) * 100)) : 0;
+  1062→          return `<tr>
+  1063→            <td>${escapeHtml(d.po.poNumber)}</td>
+  1064→            <td>${escapeHtml(d.po.client.name)}</td>
+  1065→            <td>${fmtDate(d.dispatchDate)}</td>
+  1066→            <td class="num">${d.dispatchedQty}</td>
+  1067→            <td class="num">${ordered}</td>
+  1068→            <td class="num">${pct}%</td>
+  1069→            <td class="center">${statusPill(d.status)}</td>
+  1070→            <td>${fmtDate(d.po.expectedDispatchDate)}</td>
+  1071→          </tr>`;
+  1072→        })
+  1073→        .join("")
+  1074→    : `<tr><td colspan="8" style="text-align:center;padding:24px;color:#a1a1aa;">No dispatches yet.</td></tr>`;
+  1075→
+  1076→  // Brokerage table
+  1077→  const brokerageRows = supplier.brokerages.length
+  1078→    ? supplier.brokerages
+  1079→        .map(
+  1080→          (b) => `<tr>
+  1081→        <td>${escapeHtml(b.bill.billNumber)}</td>
+  1082→        <td>${escapeHtml(b.client.name)}</td>
+  1083→        <td class="num">${fmtCurrency(b.baseAmount)}</td>
+  1084→        <td class="num">${b.commissionRate.toFixed(1)}%</td>
+  1085→        <td class="num emerald">${fmtCurrency(b.brokerageAmount)}</td>
+  1086→        <td class="center">${eligiblePill(b.eligible, b.forceEligible)}</td>
+  1087→        <td class="center">${statusPill(b.payoutStatus)}</td>
+  1088→        <td>${b.payout?.paidAt ? fmtDate(b.payout.paidAt) : "—"}</td>
+  1089→      </tr>`,
+  1090→        )
+  1091→        .join("")
+  1092→    : `<tr><td colspan="8" style="text-align:center;padding:24px;color:#a1a1aa;">No brokerage entries.</td></tr>`;
+  1093→
+  1094→  const rangeLabel = `All time · ${fmtDate(supplier.createdAt)} → ${fmtDate(new Date())}`;
+  1095→
+  1096→  const body = `
+  1097→    <div class="subject-card">
+  1098→      <h2>${escapeHtml(supplier.name)}</h2>
+  1099→      <div class="subject-meta">
+  1100→        <div class="item"><div class="k">Contact</div><div class="v">${escapeHtml(supplier.contactPerson || "—")}</div></div>
+  1101→        <div class="item"><div class="k">Phone</div><div class="v">${escapeHtml(supplier.phone || "—")}</div></div>
+  1102→        <div class="item"><div class="k">Email</div><div class="v">${escapeHtml(supplier.email || "—")}</div></div>
+  1103→        <div class="item"><div class="k">GST</div><div class="v">${escapeHtml(supplier.gstNo || "—")}</div></div>
+  1104→        <div class="item"><div class="k">Commission rate</div><div class="v">${supplier.defaultCommissionRate}%</div></div>
+  1105→        <div class="item"><div class="k">GST rate</div><div class="v">${supplier.defaultGstRate}%</div></div>
+  1106→        <div class="item"><div class="k">Bills</div><div class="v">${supplier.bills.length}</div></div>
+  1107→        <div class="item"><div class="k">Dispatches</div><div class="v">${supplier.dispatches.length}</div></div>
+  1108→      </div>
+  1109→    </div>
+  1110→
+  1111→    <div class="kpi-grid">
+  1112→      <div class="kpi-card">
+  1113→        <div class="kpi-label">Total supplied</div>
+  1114→        <div class="kpi-value">${fmtCurrency(totalSupplied)}</div>
+  1115→        <div class="kpi-sub">Base amount (excl GST)</div>
+  1116→      </div>
+  1117→      <div class="kpi-card">
+  1118→        <div class="kpi-label">Outstanding brokerage</div>
+  1119→        <div class="kpi-value amber">${fmtCurrency(outstandingBrokerage)}</div>
+  1120→        <div class="kpi-sub">Eligible, unpaid</div>
+  1121→      </div>
+  1122→      <div class="kpi-card">
+  1123→        <div class="kpi-label">Paid brokerage</div>
+  1124→        <div class="kpi-value emerald">${fmtCurrency(paidBrokerage)}</div>
+  1125→        <div class="kpi-sub">Settled via payouts</div>
+  1126→      </div>
+  1127→      <div class="kpi-card">
+  1128→        <div class="kpi-label">Avg dispatch delay</div>
+  1129→        <div class="kpi-value ${avgDispatchDelay > 0 ? "amber" : "emerald"}">${avgDispatchDelay >= 0 ? "+" : ""}${avgDispatchDelay} d</div>
+  1130→        <div class="kpi-sub">${delays.length} dispatches measured</div>
+  1131→      </div>
+  1132→      <div class="kpi-card">
+  1133→        <div class="kpi-label">Fulfillment</div>
+  1134→        <div class="kpi-value ${fulfillment >= 90 ? "emerald" : fulfillment >= 70 ? "amber" : "rose"}">${fulfillment}%</div>
+  1135→        <div class="kpi-sub">${totalDispatchedQty} / ${totalOrderedQty} sets</div>
+  1136→      </div>
+  1137→      <div class="kpi-card">
+  1138→        <div class="kpi-label">Short-shipment rate</div>
+  1139→        <div class="kpi-value ${shortShipmentRate === 0 ? "emerald" : shortShipmentRate <= 10 ? "amber" : "rose"}">${shortShipmentRate}%</div>
+  1140→        <div class="kpi-sub">Of ${supplier.dispatches.length} dispatches</div>
+  1141→      </div>
+  1142→      <div class="kpi-card">
+  1143→        <div class="kpi-label">Bills</div>
+  1144→        <div class="kpi-value">${supplier.bills.length}</div>
+  1145→        <div class="kpi-sub">Total raised</div>
+  1146→      </div>
+  1147→      <div class="kpi-card">
+  1148→        <div class="kpi-label">Dispatches</div>
+  1149→        <div class="kpi-value">${supplier.dispatches.length}</div>
+  1150→        <div class="kpi-sub">Total shipped</div>
+  1151→      </div>
+  1152→    </div>
+  1153→
+  1154→    <div class="section">
+  1155→      <div class="section-title">Bills raised</div>
+  1156→      <div class="section-desc">All bills raised against this supplier's POs.</div>
+  1157→      <table class="report">
+  1158→        <thead>
+  1159→          <tr>
+  1160→            <th>Bill</th>
+  1161→            <th>PO</th>
+  1162→            <th>Client</th>
+  1163→            <th class="num">Base</th>
+  1164→            <th class="num">GST %</th>
+  1165→            <th class="num">GST</th>
+  1166→            <th class="num">Final</th>
+  1167→            <th class="num">Paid</th>
+  1168→            <th class="num">Due</th>
+  1169→            <th class="center">Status</th>
+  1170→          </tr>
+  1171→        </thead>
+  1172→        <tbody>${billRows}</tbody>
+  1173→      </table>
+  1174→    </div>
+  1175→
+  1176→    <div class="section section-break">
+  1177→      <div class="section-title">Dispatches</div>
+  1178→      <div class="section-desc">All dispatches from this supplier, with fulfillment against ordered quantity.</div>
+  1179→      <table class="report">
+  1180→        <thead>
+  1181→          <tr>
+  1182→            <th>PO</th>
+  1183→            <th>Client</th>
+  1184→            <th>Dispatch date</th>
+  1185→            <th class="num">Dispatched</th>
+  1186→            <th class="num">Ordered</th>
+  1187→            <th class="num">Fulfillment</th>
+  1188→            <th class="center">Status</th>
+  1189→            <th>Expected</th>
+  1190→          </tr>
+  1191→        </thead>
+  1192→        <tbody>${dispatchRows}</tbody>
+  1193→      </table>
+  1194→    </div>
+  1195→
+  1196→    <div class="section section-break">
+  1197→      <div class="section-title">Brokerage entries</div>
+  1198→      <div class="section-desc">Brokerage computed on this supplier's bills.</div>
+  1199→      <table class="report">
+  1200→        <thead>
+  1201→          <tr>
+  1202→            <th>Bill</th>
+  1203→            <th>Client</th>
+  1204→            <th class="num">Base</th>
+  1205→            <th class="num">Comm %</th>
+  1206→            <th class="num">Brokerage</th>
+  1207→            <th class="center">Eligible</th>
+  1208→            <th class="center">Payout</th>
+  1209→            <th>Paid at</th>
+  1210→          </tr>
+  1211→        </thead>
+  1212→        <tbody>${brokerageRows}</tbody>
+  1213→      </table>
+  1214→    </div>
+  1215→  `;
+  1216→
+  1217→  const footerNote = `
+  1218→    <strong>Performance basis.</strong>
+  1219→    Fulfillment % is computed as total dispatched quantity ÷ total ordered quantity across all POs. Short-shipment rate is
+  1220→    the share of dispatches marked as <em>short_shipment</em>. Average dispatch delay is the mean of (actual dispatch date −
+  1221→    expected dispatch date) in days — a positive number means dispatches are typically late. Brokerage is computed on the
+  1222→    bill base amount (excluding GST) and becomes eligible only on full payment of the linked bill.
+  1223→  `;
+  1224→
+  1225→  return htmlShell("Supplier Performance Summary", rangeLabel, body, footerNote);
+  1226→}
+  1227→
+  1228→// ── Purchase Order (supplier-facing document) ────────────────────────────────
+  1229→
+  1230→async function buildPurchaseOrder(poId: string): Promise<string> {
+  1231→  const po = await db.purchaseOrder.findUnique({
+  1232→    where: { id: poId },
+  1233→    include: {
+  1234→      client: true,
+  1235→      supplier: true,
+  1236→      booking: { include: { visit: true } },
+  1237→    },
+  1238→  });
+  1239→  if (!po) {
+  1240→    return htmlShell("Purchase Order", "—",
+  1241→      `<div style="padding:40px;text-align:center;color:#71717a;">Purchase Order not found.</div>`);
+  1242→  }
+  1243→
+  1244→  const lineItems = (typeof po.lineItemsJson === "string" ? JSON.parse(po.lineItemsJson) : []) as
+  1245→    { styleName: string; color?: string | null; setQty: number; unitPrice: number; lineTotal: number }[];
+  1246→
+  1247→  // Buyer (client) details
+  1248→  const buyer = po.client;
+  1249→  const supplier = po.supplier;
+  1250→  const visit = po.booking?.visit;
+  1251→
+  1252→  const lineItemsRows = lineItems.map((li, i) => `
+  1253→    <tr>
+  1254→      <td class="num">${i + 1}</td>
+  1255→      <td>${escapeHtml(li.styleName)}</td>
+  1256→      <td>${escapeHtml(li.color || "—")}</td>
+  1257→      <td class="num">${li.setQty}</td>
+  1258→      <td class="num">${fmtCurrency(li.unitPrice)}</td>
+  1259→      <td class="num">${fmtCurrency(li.lineTotal)}</td>
+  1260→    </tr>`).join("");
+  1261→
+  1262→  const gstAmount = Math.round(po.totalValue * (po.gstRate / 100));
+  1263→  const grandTotal = po.totalValue + gstAmount;
+  1264→
+  1265→  const body = `
+  1266→    <div class="po-doc-header">
+  1267→      <div class="po-title-block">
+  1268→        <h1>PURCHASE ORDER</h1>
+  1269→        <div class="po-number">PO No: <strong>${escapeHtml(po.poNumber)}</strong></div>
+  1270→        <div class="po-date">Date: ${fmtDate(po.createdAt)}</div>
+  1271→      </div>
+  1272→      <div class="po-status-badge status-${escapeHtml(po.status)}">${titleCase(po.status).toUpperCase()}</div>
+  1273→    </div>
+  1274→
+  1275→    <div class="party-grid">
+  1276→      <div class="party-card">
+  1277→        <div class="party-label">From (Broker)</div>
+  1278→        <div class="party-name">Broker OS</div>
+  1279→        <div class="party-detail">Garment Brokerage Services</div>
+  1280→        <div class="party-detail">Surat Textile Market, Gujarat</div>
+  1281→      </div>
+  1282→      <div class="party-card">
+  1283→        <div class="party-label">Supplier (Ship Goods To Order)</div>
+  1284→        <div class="party-name">${escapeHtml(supplier.name)}</div>
+  1285→        ${supplier.contactPerson ? `<div class="party-detail">${escapeHtml(supplier.contactPerson)}</div>` : ""}
+  1286→        ${supplier.phone ? `<div class="party-detail">Ph: ${escapeHtml(supplier.phone)}</div>` : ""}
+  1287→        ${supplier.email ? `<div class="party-detail">${escapeHtml(supplier.email)}</div>` : ""}
+  1288→        ${supplier.address ? `<div class="party-detail">${escapeHtml(supplier.address)}</div>` : ""}
+  1289→        ${supplier.gstNo ? `<div class="party-detail">GST: ${escapeHtml(supplier.gstNo)}</div>` : ""}
+  1290→      </div>
+  1291→      <div class="party-card">
+  1292→        <div class="party-label">Buyer (Bill To)</div>
+  1293→        <div class="party-name">${escapeHtml(buyer.name)}</div>
+  1294→        ${buyer.contactPerson ? `<div class="party-detail">${escapeHtml(buyer.contactPerson)}</div>` : ""}
+  1295→        ${buyer.phone ? `<div class="party-detail">Ph: ${escapeHtml(buyer.phone)}</div>` : ""}
+  1296→        ${buyer.email ? `<div class="party-detail">${escapeHtml(buyer.email)}</div>` : ""}
+  1297→        ${buyer.address ? `<div class="party-detail">${escapeHtml(buyer.address)}</div>` : ""}
+  1298→        ${buyer.gstNo ? `<div class="party-detail">GST: ${escapeHtml(buyer.gstNo)}</div>` : ""}
+  1299→      </div>
+  1300→    </div>
+  1301→
+  1302→    ${visit ? `
+  1303→    <div class="dispatch-info">
+  1304→      <div class="info-label">Visit Reference</div>
+  1305→      <div class="info-value">Visit on ${fmtDate(visit.actualDate || visit.plannedDate)} — ${escapeHtml(visit.notes || "On-spot booking")}</div>
+  1306→    </div>` : ""}
+  1307→
+  1308→    <div class="dispatch-info">
+  1309→      <div class="info-label">Expected Dispatch Date</div>
+  1310→      <div class="info-value"><strong>${fmtDate(po.revisedDispatchDate || po.expectedDispatchDate)}</strong>${po.revisedDispatchDate ? " <span class='revised-tag'>(revised)</span>" : ""}</div>
+  1311→      <div class="info-label" style="margin-top:8px">Commission Rate</div>
+  1312→      <div class="info-value">${po.commissionRate}% (brokerage from supplier)</div>
+  1313→    </div>
+  1314→
+  1315→    <h2 class="section-title">Order Details</h2>
+  1316→    <table class="line-items">
+  1317→      <thead>
+  1318→        <tr>
+  1319→          <th class="num">#</th>
+  1320→          <th>Style / Product Name</th>
+  1321→          <th>Color</th>
+  1322→          <th class="num">Sets (Qty)</th>
+  1323→          <th class="num">Unit Price</th>
+  1324→          <th class="num">Line Total</th>
+  1325→        </tr>
+  1326→      </thead>
+  1327→      <tbody>
+  1328→        ${lineItemsRows}
+  1329→      </tbody>
+  1330→      <tfoot>
+  1331→        <tr class="subtotal-row">
+  1332→          <td colspan="5" class="num">Subtotal (excl. GST)</td>
+  1333→          <td class="num">${fmtCurrency(po.totalValue)}</td>
+  1334→        </tr>
+  1335→        <tr>
+  1336→          <td colspan="5" class="num">GST @ ${po.gstRate}%</td>
+  1337→          <td class="num">${fmtCurrency(gstAmount)}</td>
+  1338→        </tr>
+  1339→        <tr class="grand-total-row">
+  1340→          <td colspan="5" class="num">Grand Total</td>
+  1341→          <td class="num">${fmtCurrency(grandTotal)}</td>
+  1342→        </tr>
+  1343→      </tfoot>
+  1344→    </table>
+  1345→
+  1346→    <div class="dispatch-instructions">
+  1347→      <h3>Dispatch Instructions</h3>
+  1348→      <ol>
+  1349→        <li>Please dispatch the goods to the buyer's address mentioned above.</li>
+  1350→        <li>Ensure all items match the quantities specified. Any shortfall must be communicated immediately.</li>
+  1351→        <li>Attach a copy of this Purchase Order with the shipment.</li>
+  1352→        <li>Notify the broker once dispatched with the dispatch date and transport details.</li>
+  1353→        <li>Goods must reach the buyer by <strong>${fmtDate(po.revisedDispatchDate || po.expectedDispatchDate)}</strong>.</li>
+  1354→      </ol>
+  1355→    </div>
+  1356→
+  1357→    <div class="signature-grid">
+  1358→      <div class="signature-block">
+  1359→        <div class="sig-label">Authorized by (Broker)</div>
+  1360→        <div class="sig-line"></div>
+  1361→        <div class="sig-name">Broker OS Representative</div>
+  1362→      </div>
+  1363→      <div class="signature-block">
+  1364→        <div class="sig-label">Acknowledged by (Supplier)</div>
+  1365→        <div class="sig-line"></div>
+  1366→        <div class="sig-name">${escapeHtml(supplier.name)}</div>
+  1367→      </div>
+  1368→    </div>
+  1369→  `;
+  1370→
+  1371→  const footerNote = "This is a system-generated Purchase Order from Broker OS. Brokerage commission (" +
+  1372→    po.commissionRate + "%) is payable to the broker on the base amount (excl. GST) after the buyer's full payment is received.";
+  1373→
+  1374→  return htmlShell("Purchase Order — " + po.poNumber, `Generated ${fmtDateTime(new Date())}`, body, footerNote);
+  1375→}
+  1376→
+  1377→// ── Party ledger report (universal — client or supplier) ─────────────────────
+  1378→//
+  1379→// GET /api/reports?type=party-ledger&partyType=<client|supplier>&partyId=<id>
+  1380→//
+  1381→// Reuses the same data shape as /api/party-ledger but renders a
+  1382→// print-optimized HTML document (party header + stats + ledger table) suitable
+  1383→// for "Save as PDF" via the browser's print dialog.
+  1384→
+  1385→async function buildPartyLedger(partyType: string, partyId: string): Promise<string> {
+  1386→  if (partyType !== "client" && partyType !== "supplier") {
+  1387→    return htmlShell("Party Ledger Report", "—",
+  1388→      `<div style="padding:40px;text-align:center;color:#a1a1aa;">partyType must be "client" or "supplier".</div>`);
+  1389→  }
+  1390→
+  1391→  // Fetch the party record + ledger timeline via the same logic as the API
+  1392→  // route, inlined here to keep report rendering self-contained.
+  1393→  type LedgerEntryType = "bill" | "payment" | "po" | "dispatch" | "dispute";
+  1394→  type LedgerEntry = {
+  1395→    date: string;
+  1396→    type: LedgerEntryType;
+  1397→    ref: string;
+  1398→    description: string;
+  1399→    debit: number;
+  1400→    credit: number;
+  1401→    balance: number;
+  1402→    meta?: Record<string, string | number | null> | undefined;
+  1403→  };
+  1404→
+  1405→  let partyName = "Unknown";
+  1406→  let contactInfo = {
+  1407→    contactPerson: null as string | null,
+  1408→    phone: null as string | null,
+  1409→    email: null as string | null,
+  1410→    address: null as string | null,
+  1411→    gstNo: null as string | null,
+  1412→  };
+  1413→  let ledger: LedgerEntry[] = [];
+  1414→  let stats: Record<string, number> = {};
+  1415→
+  1416→  if (partyType === "client") {
+  1417→    const client = await db.client.findUnique({
+  1418→      where: { id: partyId },
+  1419→      select: {
+  1420→        id: true, name: true, contactPerson: true, phone: true, email: true, address: true, gstNo: true,
+  1421→      },
+  1422→    });
+  1423→    if (!client) {
+  1424→      return htmlShell("Party Ledger Report", "—",
+  1425→        `<div style="padding:40px;text-align:center;color:#a1a1aa;">The requested client could not be found.</div>`);
+  1426→    }
+  1427→    partyName = client.name;
+  1428→    contactInfo = {
+  1429→      contactPerson: client.contactPerson,
+  1430→      phone: client.phone,
+  1431→      email: client.email,
+  1432→      address: client.address,
+  1433→      gstNo: client.gstNo,
+  1434→    };
+  1435→
+  1436→    const [bills, pos, dispatches, disputes] = await Promise.all([
+  1437→      db.bill.findMany({
+  1438→        where: { clientId: partyId },
+  1439→        include: { po: { select: { poNumber: true } }, payments: true },
+  1440→        orderBy: { createdAt: "asc" },
+  1441→      }),
+  1442→      db.purchaseOrder.findMany({
+  1443→        where: { clientId: partyId },
+  1444→        select: { poNumber: true, totalValue: true, status: true, createdAt: true, supplier: { select: { name: true } } },
+  1445→        orderBy: { createdAt: "asc" },
+  1446→      }),
+  1447→      db.dispatch.findMany({
+  1448→        where: { po: { clientId: partyId } },
+  1449→        select: { dispatchDate: true, dispatchedQty: true, status: true, po: { select: { poNumber: true } } },
+  1450→        orderBy: { dispatchDate: "asc" },
+  1451→      }),
+  1452→      db.dispute.findMany({
+  1453→        where: { po: { clientId: partyId } },
+  1454→        select: { type: true, description: true, valueAffected: true, status: true, createdAt: true, po: { select: { poNumber: true } } },
+  1455→        orderBy: { createdAt: "asc" },
+  1456→      }),
+  1457→    ]);
+  1458→
+  1459→    for (const b of bills) {
+  1460→      ledger.push({
+  1461→        date: b.createdAt.toISOString(), type: "bill", ref: b.billNumber,
+  1462→        description: `Bill ${b.billNumber} raised for ${b.po.poNumber}`,
+  1463→        debit: b.finalAmount, credit: 0, balance: 0,
+  1464→      });
+  1465→      for (const p of b.payments) {
+  1466→        ledger.push({
+  1467→          date: p.date.toISOString(), type: "payment", ref: p.reference || p.id.slice(-6),
+  1468→          description: `Payment received via ${titleCase(p.mode)}`,
+  1469→          debit: 0, credit: p.amount, balance: 0,
+  1470→        });
+  1471→      }
+  1472→    }
+  1473→    for (const p of pos) {
+  1474→      ledger.push({
+  1475→        date: p.createdAt.toISOString(), type: "po", ref: p.poNumber,
+  1476→        description: `PO placed with ${p.supplier.name}`,
+  1477→        debit: p.totalValue, credit: 0, balance: 0,
+  1478→      });
+  1479→    }
+  1480→    for (const d of dispatches) {
+  1481→      ledger.push({
+  1482→        date: d.dispatchDate.toISOString(), type: "dispatch", ref: d.po.poNumber,
+  1483→        description: `Dispatch of ${d.dispatchedQty} sets`,
+  1484→        debit: 0, credit: 0, balance: 0,
+  1485→      });
+  1486→    }
+  1487→    for (const d of disputes) {
+  1488→      ledger.push({
+  1489→        date: d.createdAt.toISOString(), type: "dispute", ref: d.po.poNumber,
+  1490→        description: `${titleCase(d.type)} dispute${d.description ? ` — ${d.description}` : ""}`,
+  1491→        debit: 0, credit: 0, balance: 0,
+  1492→      });
+  1493→    }
+  1494→
+  1495→    // Running balance, oldest-first; then reverse for newest-first display.
+  1496→    ledger.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  1497→    let bal = 0;
+  1498→    for (const e of ledger) { bal += e.debit - e.credit; e.balance = bal; }
+  1499→    ledger.reverse();
+  1500→
+  1501→    const totalBusiness = bills.reduce((s, b) => s + b.finalAmount, 0);
+  1502→    const totalReceived = bills.reduce((s, b) => s + b.payments.reduce((sp, p) => sp + p.amount, 0), 0);
+  1503→    stats = {
+  1504→      totalBusiness,
+  1505→      totalReceived,
+  1506→      totalPayable: totalBusiness - totalReceived,
+  1507→      balance: totalBusiness - totalReceived,
+  1508→    };
+  1509→  } else {
+  1510→    const supplier = await db.supplier.findUnique({
+  1511→      where: { id: partyId },
+  1512→      select: {
+  1513→        id: true, name: true, contactPerson: true, phone: true, email: true, address: true, gstNo: true,
+  1514→      },
+  1515→    });
+  1516→    if (!supplier) {
+  1517→      return htmlShell("Party Ledger Report", "—",
+  1518→        `<div style="padding:40px;text-align:center;color:#a1a1aa;">The requested supplier could not be found.</div>`);
+  1519→    }
+  1520→    partyName = supplier.name;
+  1521→    contactInfo = {
+  1522→      contactPerson: supplier.contactPerson,
+  1523→      phone: supplier.phone,
+  1524→      email: supplier.email,
+  1525→      address: supplier.address,
+  1526→      gstNo: supplier.gstNo,
+  1527→    };
+  1528→
+  1529→    const [bills, pos, dispatches, disputes, brokerages] = await Promise.all([
+  1530→      db.bill.findMany({
+  1531→        where: { supplierId: partyId },
+  1532→        include: { po: { select: { poNumber: true } }, client: { select: { name: true } }, payments: true },
+  1533→        orderBy: { createdAt: "asc" },
+  1534→      }),
+  1535→      db.purchaseOrder.findMany({
+  1536→        where: { supplierId: partyId },
+  1537→        select: { poNumber: true, totalValue: true, status: true, createdAt: true, client: { select: { name: true } } },
+  1538→        orderBy: { createdAt: "asc" },
+  1539→      }),
+  1540→      db.dispatch.findMany({
+  1541→        where: { supplierId: partyId },
+  1542→        select: { dispatchDate: true, dispatchedQty: true, status: true, po: { select: { poNumber: true, client: { select: { name: true } } } } },
+  1543→        orderBy: { dispatchDate: "asc" },
+  1544→      }),
+  1545→      db.dispute.findMany({
+  1546→        where: { po: { supplierId: partyId } },
+  1547→        select: { type: true, description: true, valueAffected: true, status: true, createdAt: true, po: { select: { poNumber: true } } },
+  1548→        orderBy: { createdAt: "asc" },
+  1549→      }),
+  1550→      db.brokerage.findMany({
+  1551→        where: { supplierId: partyId },
+  1552→        select: { brokerageAmount: true, commissionRate: true, eligible: true, payoutStatus: true, createdAt: true, bill: { select: { billNumber: true } } },
+  1553→        orderBy: { createdAt: "asc" },
+  1554→      }),
+  1555→    ]);
+  1556→
+  1557→    for (const b of bills) {
+  1558→      ledger.push({
+  1559→        date: b.createdAt.toISOString(), type: "bill", ref: b.billNumber,
+  1560→        description: `Bill ${b.billNumber} raised for ${b.po.poNumber} (${b.client.name})`,
+  1561→        debit: b.baseAmount, credit: 0, balance: 0,
+  1562→      });
+  1563→      const br = brokerages.find((x) => x.bill.billNumber === b.billNumber);
+  1564→      if (br) {
+  1565→        ledger.push({
+  1566→          date: br.createdAt.toISOString(), type: "payment", ref: `BRK-${br.bill.billNumber}`,
+  1567→          description: `Brokerage @ ${br.commissionRate.toFixed(1)}% accrued`,
+  1568→          debit: 0, credit: br.brokerageAmount, balance: 0,
+  1569→        });
+  1570→      }
+  1571→      for (const p of b.payments) {
+  1572→        ledger.push({
+  1573→          date: p.date.toISOString(), type: "payment", ref: p.reference || p.id.slice(-6),
+  1574→          description: `Payment received via ${titleCase(p.mode)}`,
+  1575→          debit: 0, credit: p.amount, balance: 0,
+  1576→        });
+  1577→      }
+  1578→    }
+  1579→    for (const p of pos) {
+  1580→      ledger.push({
+  1581→        date: p.createdAt.toISOString(), type: "po", ref: p.poNumber,
+  1582→        description: `PO placed by ${p.client.name}`,
+  1583→        debit: p.totalValue, credit: 0, balance: 0,
+  1584→      });
+  1585→    }
+  1586→    for (const d of dispatches) {
+  1587→      ledger.push({
+  1588→        date: d.dispatchDate.toISOString(), type: "dispatch", ref: d.po.poNumber,
+  1589→        description: `Dispatch of ${d.dispatchedQty} sets for ${d.po.client.name}`,
+  1590→        debit: 0, credit: 0, balance: 0,
+  1591→      });
+  1592→    }
+  1593→    for (const d of disputes) {
+  1594→      ledger.push({
+  1595→        date: d.createdAt.toISOString(), type: "dispute", ref: d.po.poNumber,
+  1596→        description: `${titleCase(d.type)} dispute${d.description ? ` — ${d.description}` : ""}`,
+  1597→        debit: 0, credit: 0, balance: 0,
+  1598→      });
+  1599→    }
+  1600→
+  1601→    ledger.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  1602→    let bal = 0;
+  1603→    for (const e of ledger) { bal += e.debit - e.credit; e.balance = bal; }
+  1604→    ledger.reverse();
+  1605→
+  1606→    const totalSupplied = bills.reduce((s, b) => s + b.baseAmount, 0);
+  1607→    const totalBrokerage = brokerages.reduce((s, b) => s + b.brokerageAmount, 0);
+  1608→    const outstandingBrokerage = brokerages
+  1609→      .filter((b) => b.eligible && b.payoutStatus !== "paid")
+  1610→      .reduce((s, b) => s + b.brokerageAmount, 0);
+  1611→    const paidBrokerage = brokerages
+  1612→      .filter((b) => b.payoutStatus === "paid")
+  1613→      .reduce((s, b) => s + b.brokerageAmount, 0);
+  1614→    stats = { totalSupplied, totalBrokerage, outstandingBrokerage, paidBrokerage };
+  1615→  }
+  1616→
+  1617→  // KPI grid — 4 cards, labels depend on party type.
+  1618→  const kpiCards = partyType === "client"
+  1619→    ? `<div class="kpi-card"><div class="kpi-label">Total business</div><div class="kpi-value">${fmtCurrency(stats.totalBusiness ?? 0)}</div><div class="kpi-sub">All bills raised</div></div>
+  1620→       <div class="kpi-card"><div class="kpi-label">Total received</div><div class="kpi-value emerald">${fmtCurrency(stats.totalReceived ?? 0)}</div><div class="kpi-sub">All payments</div></div>
+  1621→       <div class="kpi-card"><div class="kpi-label">Outstanding</div><div class="kpi-value amber">${fmtCurrency(stats.totalPayable ?? 0)}</div><div class="kpi-sub">Pending receivable</div></div>
+  1622→       <div class="kpi-card"><div class="kpi-label">Balance</div><div class="kpi-value ${Number(stats.balance ?? 0) > 0 ? "rose" : "emerald"}">${fmtCurrency(stats.balance ?? 0)}</div><div class="kpi-sub">Final outstanding</div></div>`
+  1623→    : `<div class="kpi-card"><div class="kpi-label">Total supplied</div><div class="kpi-value">${fmtCurrency(stats.totalSupplied ?? 0)}</div><div class="kpi-sub">Base (excl GST)</div></div>
+  1624→       <div class="kpi-card"><div class="kpi-label">Total brokerage</div><div class="kpi-value emerald">${fmtCurrency(stats.totalBrokerage ?? 0)}</div><div class="kpi-sub">Commission earned</div></div>
+  1625→       <div class="kpi-card"><div class="kpi-label">Outstanding brokerage</div><div class="kpi-value amber">${fmtCurrency(stats.outstandingBrokerage ?? 0)}</div><div class="kpi-sub">Eligible, unpaid</div></div>
+  1626→       <div class="kpi-card"><div class="kpi-label">Paid brokerage</div><div class="kpi-value emerald">${fmtCurrency(stats.paidBrokerage ?? 0)}</div><div class="kpi-sub">Settled via payouts</div></div>`;
+  1627→
+  1628→  // Ledger table rows.
+  1629→  const ledgerRows = ledger.length
+  1630→    ? ledger.map((e) => `<tr>
+  1631→        <td>${fmtDate(e.date)}</td>
+  1632→        <td>${escapeHtml(titleCase(e.type))}</td>
+  1633→        <td>${escapeHtml(e.ref)}</td>
+  1634→        <td>${escapeHtml(e.description)}</td>
+  1635→        <td class="num">${e.debit ? fmtCurrency(e.debit) : "—"}</td>
+  1636→        <td class="num emerald">${e.credit ? fmtCurrency(e.credit) : "—"}</td>
+  1637→        <td class="num">${fmtCurrency(e.balance)}</td>
+  1638→      </tr>`).join("")
+  1639→    : `<tr><td colspan="7" style="text-align:center;padding:24px;color:#a1a1aa;">No ledger entries yet.</td></tr>`;
+  1640→
+  1641→  const rangeLabel = `All time · Generated ${fmtDateTime(new Date())}`;
+  1642→
+  1643→  const body = `
+  1644→    <div class="subject-card">
+  1645→      <h2>${escapeHtml(partyName)}</h2>
+  1646→      <div class="subject-meta">
+  1647→        <div class="item"><div class="k">Type</div><div class="v">${partyType === "client" ? "Client" : "Supplier"}</div></div>
+  1648→        <div class="item"><div class="k">Contact</div><div class="v">${escapeHtml(contactInfo.contactPerson || "—")}</div></div>
+  1649→        <div class="item"><div class="k">Phone</div><div class="v">${escapeHtml(contactInfo.phone || "—")}</div></div>
+  1650→        <div class="item"><div class="k">Email</div><div class="v">${escapeHtml(contactInfo.email || "—")}</div></div>
+  1651→        <div class="item"><div class="k">Address</div><div class="v">${escapeHtml(contactInfo.address || "—")}</div></div>
+  1652→        <div class="item"><div class="k">GST</div><div class="v">${escapeHtml(contactInfo.gstNo || "—")}</div></div>
+  1653→      </div>
+  1654→    </div>
+  1655→
+  1656→    <div class="kpi-grid">
+  1657→      ${kpiCards}
+  1658→    </div>
+  1659→
+  1660→    <div class="section">
+  1661→      <div class="section-title">Ledger — running balance</div>
+  1662→      <div class="section-desc">Bills & POs (debit), payments & brokerage (credit), dispatches & disputes (info-only). Sorted newest first.</div>
+  1663→      <table class="report">
+  1664→        <thead>
+  1665→          <tr>
+  1666→            <th>Date</th>
+  1667→            <th>Type</th>
+  1668→            <th>Reference</th>
+  1669→            <th>Description</th>
+  1670→            <th class="num">Debit</th>
+  1671→            <th class="num">Credit</th>
+  1672→            <th class="num">Balance</th>
+  1673→          </tr>
+  1674→        </thead>
+  1675→        <tbody>${ledgerRows}</tbody>
+  1676→      </table>
+  1677→    </div>
+  1678→  `;
+  1679→
+  1680→  const footerNote = `
+  1681→    <strong>Reporting basis.</strong>
+  1682→    This is a unified party ledger — every financial and operational event for the chosen ${partyType === "client" ? "client" : "supplier"} is presented as a single chronological timeline.
+  1683→    Running balance is computed forward from the oldest entry as (debit − credit).
+  1684→    ${partyType === "client"
+  1685→      ? "For clients, debit = bills raised + POs placed; credit = payments received."
+  1686→      : "For suppliers, debit = bills (what the supplier is owed) + POs placed; credit = brokerage accrued + payments received (which flow through to the supplier)."}
+  1687→    Dispatches and disputes are info-only — they don't carry a debit/credit but are included so the broker has a single end-to-end view.
+  1688→  `;
+  1689→
+  1690→  return htmlShell("Party Ledger Report", rangeLabel, body, footerNote);
+  1691→}
+  1692→
+  1693→// ── Audit trail report ───────────────────────────────────────────────────────
+  1694→
+  1695→// Maps an action string to a print-safe pill color (matches UI tone mapping).
+  1696→function auditActionPill(action: string): string {
+  1697→  const a = action.toLowerCase();
+  1698→  if (a === "create" || a === "payout") {
+  1699→    return `<span class="pill emerald">${escapeHtml(titleCase(action))}</span>`;
+  1700→  }
+  1701→  if (a === "update") {
+  1702→    return `<span class="pill amber">${escapeHtml(titleCase(action))}</span>`;
+  1703→  }
+  1704→  if (a === "delete") {
+  1705→    return `<span class="pill rose">${escapeHtml(titleCase(action))}</span>`;
+  1706→  }
+  1707→  if (a === "force_eligible") {
+  1708→    return `<span class="pill emerald" style="background:#f0fdfa;color:#0f766e;border-color:#99f6e4;">${escapeHtml(titleCase(action))}</span>`;
+  1709→  }
+  1710→  return `<span class="pill zinc">${escapeHtml(titleCase(action))}</span>`;
+  1711→}
+  1712→
+  1713→async function buildAuditTrail(params: URLSearchParams): Promise<string> {
+  1714→  const entityType = params.get("entityType")?.trim();
+  1715→  const fromRaw = params.get("from");
+  1716→  const toRaw = params.get("to");
+  1717→
+  1718→  // Note: SQLite (Prisma's provider here) does not support `mode: "insensitive"`.
+  1719→  // String comparison uses the default BINARY collation (case-sensitive).
+  1720→  // Stored entityType values are PascalCase and the UI dropdown uses matching
+  1721→  // values, so case-sensitive equals is sufficient.
+  1722→  const where: Prisma.AuditLogWhereInput = {};
+  1723→  if (entityType) {
+  1724→    where.entityType = entityType;
+  1725→  }
+  1726→  const range: { gte?: Date; lte?: Date } = {};
+  1727→  if (fromRaw) {
+  1728→    const d = new Date(fromRaw);
+  1729→    if (!Number.isNaN(d.getTime())) range.gte = d;
+  1730→  }
+  1731→  if (toRaw) {
+  1732→    const d = new Date(toRaw);
+  1733→    if (!Number.isNaN(d.getTime())) {
+  1734→      d.setHours(23, 59, 59, 999);
+  1735→      range.lte = d;
+  1736→    }
+  1737→  }
+  1738→  if (range.gte || range.lte) {
+  1739→    where.createdAt = range;
+  1740→  }
+  1741→
+  1742→  const [logs, byActionAgg, byEntityAgg, minMax] = await Promise.all([
+  1743→    db.auditLog.findMany({
+  1744→      where,
+  1745→      orderBy: { createdAt: "desc" },
+  1746→      take: 1000,
+  1747→    }),
+  1748→    db.auditLog.groupBy({ by: ["action"], where, _count: { _all: true } }),
+  1749→    db.auditLog.groupBy({ by: ["entityType"], where, _count: { _all: true } }),
+  1750→    db.auditLog.aggregate({
+  1751→      where,
+  1752→      _min: { createdAt: true },
+  1753→      _max: { createdAt: true },
+  1754→    }),
+  1755→  ]);
+  1756→
+  1757→  const byAction: Record<string, number> = {};
+  1758→  for (const g of byActionAgg) byAction[g.action] = g._count._all;
+  1759→  const byEntity: Record<string, number> = {};
+  1760→  for (const g of byEntityAgg) byEntity[g.entityType] = g._count._all;
+  1761→
+  1762→  const total = logs.length;
+  1763→  const earliest = minMax._min.createdAt;
+  1764→  const latest = minMax._max.createdAt;
+  1765→
+  1766→  // Build the date-range label shown in the report header.
+  1767→  let rangeLabel: string;
+  1768→  if (range.gte && range.lte) {
+  1769→    rangeLabel = `${fmtDate(range.gte)} → ${fmtDate(range.lte)}`;
+  1770→  } else if (range.gte) {
+  1771→    rangeLabel = `From ${fmtDate(range.gte)}`;
+  1772→  } else if (range.lte) {
+  1773→    rangeLabel = `Up to ${fmtDate(range.lte)}`;
+  1774→  } else {
+  1775→    rangeLabel = "All time";
+  1776→  }
+  1777→  if (entityType) {
+  1778→    rangeLabel += ` · ${entityType} only`;
+  1779→  }
+  1780→
+  1781→  // KPI grid: total + per-action counts
+  1782→  const createCount = byAction["create"] ?? 0;
+  1783→  const updateCount = byAction["update"] ?? 0;
+  1784→  const deleteCount = byAction["delete"] ?? 0;
+  1785→  const forceCount = byAction["force_eligible"] ?? 0;
+  1786→  const payoutCount = byAction["payout"] ?? 0;
+  1787→
+  1788→  // Action breakdown list (all actions observed, sorted by count desc)
+  1789→  const actionRows = Object.entries(byAction)
+  1790→    .sort((a, b) => b[1] - a[1])
+  1791→    .map(
+  1792→      ([action, n]) =>
+  1793→        `<tr><td>${auditActionPill(action)}</td><td class="num">${n}</td><td class="num">${total ? Math.round((n / total) * 100) : 0}%</td></tr>`,
+  1794→    )
+  1795→    .join("") ||
+  1796→    `<tr><td colspan="3" style="text-align:center;padding:24px;color:#a1a1aa;">No entries.</td></tr>`;
+  1797→
+  1798→  const entityRows = Object.entries(byEntity)
+  1799→    .sort((a, b) => b[1] - a[1])
+  1800→    .map(
+  1801→      ([entity, n]) =>
+  1802→        `<tr><td>${escapeHtml(titleCase(entity))}</td><td class="num">${n}</td><td class="num">${total ? Math.round((n / total) * 100) : 0}%</td></tr>`,
+  1803→    )
+  1804→    .join("") ||
+  1805→    `<tr><td colspan="3" style="text-align:center;padding:24px;color:#a1a1aa;">No entries.</td></tr>`;
+  1806→
+  1807→  // Detail table — page break every 50 rows via a wrapper div with class
+  1808→  // `section-break` on every 50th row group. Simpler approach: insert a
+  1809→  // page-break row class on every 50th row.
+  1810→  const PAGE_SIZE = 50;
+  1811→  const detailRows = logs.length
+  1812→    ? logs
+  1813→        .map((l, i) => {
+  1814→          const breakClass = i > 0 && i % PAGE_SIZE === 0 ? "page-break-row" : "";
+  1815→          return `<tr class="${breakClass}">
+  1816→            <td class="nowrap">${escapeHtml(fmtDateTime(l.createdAt))}</td>
+  1817→            <td>${escapeHtml(l.userName ?? "System")}</td>
+  1818→            <td>${escapeHtml(titleCase(l.entityType))}</td>
+  1819→            <td>${auditActionPill(l.action)}</td>
+  1820→            <td>${escapeHtml(l.reason ?? "—")}</td>
+  1821→          </tr>`;
+  1822→        })
+  1823→        .join("")
+  1824→    : `<tr><td colspan="5" style="text-align:center;padding:24px;color:#a1a1aa;">No audit entries match these filters.</td></tr>`;
+  1825→
+  1826→  const body = `
+  1827→    <div class="kpi-grid">
+  1828→      <div class="kpi-card">
+  1829→        <div class="kpi-label">Total entries</div>
+  1830→        <div class="kpi-value">${total}</div>
+  1831→        <div class="kpi-sub">${range.gte || range.lte ? "In selected range" : "All time"}</div>
+  1832→      </div>
+  1833→      <div class="kpi-card">
+  1834→        <div class="kpi-label">Created</div>
+  1835→        <div class="kpi-value emerald">${createCount}</div>
+  1836→        <div class="kpi-sub">New records</div>
+  1837→      </div>
+  1838→      <div class="kpi-card">
+  1839→        <div class="kpi-label">Updated</div>
+  1840→        <div class="kpi-value amber">${updateCount}</div>
+  1841→        <div class="kpi-sub">Field edits</div>
+  1842→      </div>
+  1843→      <div class="kpi-card">
+  1844→        <div class="kpi-label">Deleted</div>
+  1845→        <div class="kpi-value rose">${deleteCount}</div>
+  1846→        <div class="kpi-sub">Removals</div>
+  1847→      </div>
+  1848→      <div class="kpi-card">
+  1849→        <div class="kpi-label">Force-eligible</div>
+  1850→        <div class="kpi-value" style="color:#0f766e;">${forceCount}</div>
+  1851→        <div class="kpi-sub">Manual overrides</div>
+  1852→      </div>
+  1853→      <div class="kpi-card">
+  1854→        <div class="kpi-label">Payouts</div>
+  1855→        <div class="kpi-value emerald">${payoutCount}</div>
+  1856→        <div class="kpi-sub">Brokerage settled</div>
+  1857→      </div>
+  1858→      <div class="kpi-card">
+  1859→        <div class="kpi-label">First entry</div>
+  1860→        <div class="kpi-value" style="font-size:13px;">${earliest ? escapeHtml(fmtDate(earliest)) : "—"}</div>
+  1861→        <div class="kpi-sub">${earliest ? escapeHtml(fmtDateTime(earliest)) : ""}</div>
+  1862→      </div>
+  1863→      <div class="kpi-card">
+  1864→        <div class="kpi-label">Latest entry</div>
+  1865→        <div class="kpi-value" style="font-size:13px;">${latest ? escapeHtml(fmtDate(latest)) : "—"}</div>
+  1866→        <div class="kpi-sub">${latest ? escapeHtml(fmtDateTime(latest)) : ""}</div>
+  1867→      </div>
+  1868→    </div>
+  1869→
+  1870→    <div class="section">
+  1871→      <div class="section-title">Breakdown by action</div>
+  1872→      <table class="report">
+  1873→        <thead>
+  1874→          <tr><th>Action</th><th class="num">Count</th><th class="num">Share</th></tr>
+  1875→        </thead>
+  1876→        <tbody>${actionRows}</tbody>
+  1877→      </table>
+  1878→    </div>
+  1879→
+  1880→    <div class="section section-break">
+  1881→      <div class="section-title">Breakdown by entity type</div>
+  1882→      <table class="report">
+  1883→        <thead>
+  1884→          <tr><th>Entity</th><th class="num">Count</th><th class="num">Share</th></tr>
+  1885→        </thead>
+  1886→        <tbody>${entityRows}</tbody>
+  1887→      </table>
+  1888→    </div>
+  1889→
+  1890→    <div class="section section-break">
+  1891→      <div class="section-title">Audit entries</div>
+  1892→      <div class="section-desc">Every financial mutation is recorded below. Page breaks every ${PAGE_SIZE} entries.</div>
+  1893→      <table class="report">
+  1894→        <thead>
+  1895→          <tr>
+  1896→            <th>Time</th>
+  1897→            <th>User</th>
+  1898→            <th>Entity</th>
+  1899→            <th>Action</th>
+  1900→            <th>Reason</th>
+  1901→          </tr>
+  1902→        </thead>
+  1903→        <tbody>${detailRows}</tbody>
+  1904→      </table>
+  1905→    </div>
+  1906→  `;
+  1907→
+  1908→  const footerNote =
+  1909→    "Immutable append-only log. Every financial mutation is recorded for dispute resolution and compliance.";
+  1910→
+  1911→  return htmlShell(REPORT_TITLES["audit-trail"], rangeLabel, body, footerNote);
+  1912→}
+  1913→
+  1914→// ── Route handler ────────────────────────────────────────────────────────────
+  1915→
+  1916→export async function GET(req: NextRequest) {
+  1917→  const { searchParams } = new URL(req.url);
+  1918→  const typeParam = (searchParams.get("type") ?? "").toLowerCase() as ReportType;
+  1919→  if (!VALID_TYPES.includes(typeParam)) {
+  1920→    return NextResponse.json(
+  1921→      { error: `Invalid report type. Valid: ${VALID_TYPES.join(", ")}` },
+  1922→      { status: 400 },
+  1923→    );
+  1924→  }
+  1925→
+  1926→  try {
+  1927→    let html: string;
+  1928→    if (typeParam === "brokerage-statement") {
+  1929→      const rawRange = (searchParams.get("range") ?? "all").toLowerCase() as Range;
+  1930→      const range: Range = VALID_RANGES.includes(rawRange) ? rawRange : "all";
+  1931→      html = await buildBrokerageStatement(range);
+  1932→    } else if (typeParam === "client-ledger") {
+  1933→      const clientId = searchParams.get("clientId");
+  1934→      if (!clientId) {
+  1935→        return NextResponse.json({ error: "clientId is required for client-ledger report" }, { status: 400 });
+  1936→      }
+  1937→      html = await buildClientLedger(clientId);
+  1938→    } else if (typeParam === "supplier-summary") {
+  1939→      const supplierId = searchParams.get("supplierId");
+  1940→      if (!supplierId) {
+  1941→        return NextResponse.json({ error: "supplierId is required for supplier-summary report" }, { status: 400 });
+  1942→      }
+  1943→      html = await buildSupplierSummary(supplierId);
+  1944→    } else if (typeParam === "purchase-order") {
+  1945→      const poId = searchParams.get("poId");
+  1946→      if (!poId) {
+  1947→        return NextResponse.json({ error: "poId is required for purchase-order report" }, { status: 400 });
+  1948→      }
+  1949→      html = await buildPurchaseOrder(poId);
+  1950→    } else if (typeParam === "party-ledger") {
+  1951→      const partyType = (searchParams.get("partyType") ?? "").toLowerCase();
+  1952→      const partyId = searchParams.get("partyId");
+  1953→      if (partyType !== "client" && partyType !== "supplier") {
+  1954→        return NextResponse.json({ error: "partyType must be 'client' or 'supplier' for party-ledger report" }, { status: 400 });
+  1955→      }
+  1956→      if (!partyId) {
+  1957→        return NextResponse.json({ error: "partyId is required for party-ledger report" }, { status: 400 });
+  1958→      }
+  1959→      html = await buildPartyLedger(partyType, partyId);
+  1960→    } else {
+  1961→      // audit-trail
+  1962→      html = await buildAuditTrail(searchParams);
+  1963→    }
+  1964→
+  1965→    return new NextResponse(html, {
+  1966→      status: 200,
+  1967→      headers: {
+  1968→        "Content-Type": "text/html; charset=utf-8",
+  1969→        "Cache-Control": "no-store, no-cache, must-revalidate",
+  1970→        "X-Content-Type-Options": "nosniff",
+  1971→      },
+  1972→    });
+  1973→  } catch (e) {
+  1974→    const message = e instanceof Error ? e.message : "Unknown error";
+  1975→    return NextResponse.json({ error: `Report failed: ${message}` }, { status: 500 });
+  1976→  }
+  1977→}
+  1978→

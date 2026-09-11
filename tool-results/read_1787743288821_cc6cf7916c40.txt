@@ -1,0 +1,697 @@
+     1→"use client";
+     2→
+     3→import * as React from "react";
+     4→import {
+     5→  ScrollText, Eye, User, Download, FileText, Calendar, Filter, X, Clock,
+     6→} from "lucide-react";
+     7→import { useApi } from "@/lib/api";
+     8→import { formatDateTime, titleCase } from "@/lib/format";
+     9→import { GlassCard, SectionHeader, EmptyState } from "@/components/shared";
+    10→import { Button } from "@/components/ui/button";
+    11→import { Input } from "@/components/ui/input";
+    12→import { Skeleton } from "@/components/ui/skeleton";
+    13→import {
+    14→  Table, TableHeader, TableBody, TableHead, TableRow, TableCell,
+    15→} from "@/components/ui/table";
+    16→import {
+    17→  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+    18→} from "@/components/ui/select";
+    19→import {
+    20→  Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
+    21→} from "@/components/ui/dialog";
+    22→import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+    23→import { cn } from "@/lib/utils";
+    24→import { usePagination } from "@/hooks/use-pagination";
+    25→import { useUrlState } from "@/hooks/use-url-state";
+    26→import { PaginationBar } from "@/components/pagination-bar";
+    27→import { SavedViewsBar } from "@/components/saved-views-bar";
+    28→import { ShareLinkButton } from "@/components/share-link-button";
+    29→import { isFilterActive } from "@/lib/saved-views";
+    30→
+    31→type AuditLog = {
+    32→  id: string;
+    33→  entityType: string;
+    34→  entityId: string;
+    35→  action: string;
+    36→  before: string | null;
+    37→  after: string | null;
+    38→  userId: string | null;
+    39→  userName: string | null;
+    40→  reason: string | null;
+    41→  createdAt: string;
+    42→};
+    43→
+    44→type AuditStats = {
+    45→  total: number;
+    46→  filtered: number;
+    47→  shown: number;
+    48→  byAction: Record<string, number>;
+    49→  byEntityType: Record<string, number>;
+    50→  dateRange: { earliest: string | null; latest: string | null };
+    51→};
+    52→
+    53→type AuditResponse = { logs: AuditLog[]; stats: AuditStats };
+    54→
+    55→const ENTITY_TYPES = [
+    56→  "All",
+    57→  "Payment",
+    58→  "Bill",
+    59→  "Brokerage",
+    60→  "BrokeragePayout",
+    61→  "Dispute",
+    62→  "Dispatch",
+    63→  "PurchaseOrder",
+    64→  "Booking",
+    65→  "Visit",
+    66→  "Client",
+    67→  "Supplier",
+    68→];
+    69→
+    70→// ── Action → tailwind chip class ─────────────────────────────────────────────
+    71→function actionTone(action: string): string {
+    72→  const a = action.toLowerCase();
+    73→  if (a === "create") return "border-emerald-500/30 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300";
+    74→  if (a === "update") return "border-amber-500/30 bg-amber-500/15 text-amber-700 dark:text-amber-300";
+    75→  if (a === "delete") return "border-rose-500/30 bg-rose-500/15 text-rose-700 dark:text-rose-300";
+    76→  if (a === "force_eligible") return "border-teal-500/30 bg-teal-500/15 text-teal-700 dark:text-teal-300";
+    77→  if (a === "payout") return "border-emerald-500/30 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300";
+    78→  return "border-border/60 bg-card/40 text-muted-foreground";
+    79→}
+    80→
+    81→// ── Timeline dot color ────────────────────────────────────────────────────────
+    82→function actionDotClass(action: string): string {
+    83→  const a = action.toLowerCase();
+    84→  if (a === "create") return "bg-emerald-500/25 text-emerald-600 dark:text-emerald-400";
+    85→  if (a === "update") return "bg-amber-500/25 text-amber-600 dark:text-amber-400";
+    86→  if (a === "delete") return "bg-rose-500/25 text-rose-600 dark:text-rose-400";
+    87→  if (a === "force_eligible") return "bg-teal-500/25 text-teal-600 dark:text-teal-400";
+    88→  if (a === "payout") return "bg-emerald-500/25 text-emerald-600 dark:text-emerald-400";
+    89→  return "bg-zinc-500/25 text-zinc-600 dark:text-zinc-400";
+    90→}
+    91→
+    92→// ── Date helpers (yyyy-mm-dd for <input type=date>) ───────────────────────────
+    93→function toInputDate(d: Date): string {
+    94→  const y = d.getFullYear();
+    95→  const m = String(d.getMonth() + 1).padStart(2, "0");
+    96→  const day = String(d.getDate()).padStart(2, "0");
+    97→  return `${y}-${m}-${day}`;
+    98→}
+    99→
+   100→function todayInputDate(): string {
+   101→  return toInputDate(new Date());
+   102→}
+   103→
+   104→function daysAgoInputDate(n: number): string {
+   105→  const d = new Date();
+   106→  d.setDate(d.getDate() - n);
+   107→  return toInputDate(d);
+   108→}
+   109→
+   110→// ── Main view ─────────────────────────────────────────────────────────────────
+   111→
+   112→export function AuditView() {
+   113→  // URL-persisted server-side filters (Task 19-b). `entity`, `user`, `from`,
+   114→  // `to` sync to URL query params so a refresh or shared link preserves the
+   115→  // filter. The defaults ("All" / "All" / "" / "") match the existing UI
+   116→  // semantics — "All" means "no filter" for the entity/user selects; empty
+   117→  // string means "no date filter" for the date inputs.
+   118→  const [entityFilter, setEntityFilter] = useUrlState<string>("entity", "All");
+   119→  const [userFilter, setUserFilter] = useUrlState<string>("user", "All");
+   120→  const [fromDate, setFromDate] = useUrlState<string>("from", "");
+   121→  const [toDate, setToDate] = useUrlState<string>("to", "");
+   122→
+   123→  // URL-persisted client-side search (applied to fetched logs).
+   124→  const [q, setQ] = useUrlState<string>("q", "");
+   125→
+   126→  // View mode toggle
+   127→  const [view, setView] = React.useState<"table" | "timeline">("table");
+   128→
+   129→  // Build the API path from active server filters. Empty values are omitted
+   130→  // so the API uses its own defaults.
+   131→  const apiPath = React.useMemo(() => {
+   132→    const params = new URLSearchParams();
+   133→    if (entityFilter !== "All") params.set("entityType", entityFilter);
+   134→    if (userFilter !== "All") params.set("user", userFilter);
+   135→    if (fromDate) params.set("from", fromDate);
+   136→    if (toDate) params.set("to", toDate);
+   137→    params.set("limit", "500");
+   138→    const qs = params.toString();
+   139→    return `/api/audit${qs ? `?${qs}` : ""}`;
+   140→  }, [entityFilter, userFilter, fromDate, toDate]);
+   141→
+   142→  const { data, loading } = useApi<AuditResponse>(apiPath);
+   143→
+   144→  const logs = data?.logs ?? [];
+   145→  const stats = data?.stats;
+   146→
+   147→  // Distinct user names from fetched data — used to populate the user filter
+   148→  const userOptions = React.useMemo(() => {
+   149→    const set = new Set<string>();
+   150→    for (const l of logs) {
+   151→      if (l.userName) set.add(l.userName);
+   152→    }
+   153→    return Array.from(set).sort();
+   154→  }, [logs]);
+   155→
+   156→  // Client-side text search across action / entityId / userName / reason
+   157→  const filtered = React.useMemo(() => {
+   158→    const term = q.toLowerCase().trim();
+   159→    if (!term) return logs;
+   160→    return logs.filter((l) =>
+   161→      l.action.toLowerCase().includes(term) ||
+   162→      l.entityId.toLowerCase().includes(term) ||
+   163→      (l.userName ?? "").toLowerCase().includes(term) ||
+   164→      (l.reason ?? "").toLowerCase().includes(term),
+   165→    );
+   166→  }, [logs, q]);
+   167→
+   168→  // Apply pagination to the filtered logs (audit has many rows — default 20).
+   169→  const {
+   170→    paginated, currentPage, totalPages, size, setPage, setSize, range,
+   171→  } = usePagination<AuditLog>(filtered, 20);
+   172→
+   173→  // Reset to page 1 whenever the active filters change so the user is never
+   174→  // stuck on a page that no longer exists after filtering.
+   175→  React.useEffect(() => {
+   176→    setPage(1);
+   177→  }, [q, entityFilter, userFilter, fromDate, toDate, setPage]);
+   178→
+   179→  // Build the filter query string for export endpoints (CSV + PDF) — matches
+   180→  // the audit API's filter semantics.
+   181→  const exportQs = React.useMemo(() => {
+   182→    const params = new URLSearchParams();
+   183→    if (entityFilter !== "All") params.set("entityType", entityFilter);
+   184→    if (userFilter !== "All") params.set("user", userFilter);
+   185→    if (fromDate) params.set("from", fromDate);
+   186→    if (toDate) params.set("to", toDate);
+   187→    return params.toString();
+   188→  }, [entityFilter, userFilter, fromDate, toDate]);
+   189→
+   190→  const exportCsvHref = `/api/export?type=audit${exportQs ? `&${exportQs}` : ""}`;
+   191→  const exportPdfHref = `/api/reports?type=audit-trail${exportQs ? `&${exportQs}` : ""}`;
+   192→
+   193→  function applyPreset(preset: "today" | "7d" | "30d" | "all") {
+   194→    if (preset === "today") {
+   195→      setFromDate(todayInputDate());
+   196→      setToDate(todayInputDate());
+   197→    } else if (preset === "7d") {
+   198→      setFromDate(daysAgoInputDate(6));
+   199→      setToDate(todayInputDate());
+   200→    } else if (preset === "30d") {
+   201→      setFromDate(daysAgoInputDate(29));
+   202→      setToDate(todayInputDate());
+   203→    } else {
+   204→      setFromDate("");
+   205→      setToDate("");
+   206→    }
+   207→  }
+   208→
+   209→  // Active filter badges (individually clearable)
+   210→  const activeFilters: { key: string; label: string; onClear: () => void }[] = [];
+   211→  if (entityFilter !== "All") {
+   212→    activeFilters.push({
+   213→      key: "entity",
+   214→      label: `Entity: ${titleCase(entityFilter)}`,
+   215→      onClear: () => setEntityFilter("All"),
+   216→    });
+   217→  }
+   218→  if (userFilter !== "All") {
+   219→    activeFilters.push({
+   220→      key: "user",
+   221→      label: `User: ${userFilter}`,
+   222→      onClear: () => setUserFilter("All"),
+   223→    });
+   224→  }
+   225→  if (fromDate) {
+   226→    activeFilters.push({
+   227→      key: "from",
+   228→      label: `From: ${fromDate}`,
+   229→      onClear: () => setFromDate(""),
+   230→    });
+   231→  }
+   232→  if (toDate) {
+   233→    activeFilters.push({
+   234→      key: "to",
+   235→      label: `To: ${toDate}`,
+   236→      onClear: () => setToDate(""),
+   237→    });
+   238→  }
+   239→  if (q.trim()) {
+   240→    activeFilters.push({
+   241→      key: "q",
+   242→      label: `Search: "${q.trim()}"`,
+   243→      onClear: () => setQ(""),
+   244→    });
+   245→  }
+   246→
+   247→  const hasActiveFilters = activeFilters.length > 0;
+   248→
+   249→  function clearAllFilters() {
+   250→    setEntityFilter("All");
+   251→    setUserFilter("All");
+   252→    setFromDate("");
+   253→    setToDate("");
+   254→    setQ("");
+   255→  }
+   256→
+   257→  return (
+   258→    <div className="space-y-5">
+   259→      <SectionHeader
+   260→        title="Audit Trail"
+   261→        description="Immutable change log — every financial mutation is recorded"
+   262→        action={
+   263→          <div className="flex flex-wrap items-center gap-2">
+   264→            <ShareLinkButton />
+   265→            <Button
+   266→              size="sm"
+   267→              variant="outline"
+   268→              onClick={() => window.open(exportCsvHref, "_blank")}
+   269→            >
+   270→              <Download className="mr-1.5 size-4" />Export CSV
+   271→            </Button>
+   272→            <Button
+   273→              size="sm"
+   274→              variant="outline"
+   275→              onClick={() => window.open(exportPdfHref, "_blank")}
+   276→            >
+   277→              <FileText className="mr-1.5 size-4" />Export PDF
+   278→            </Button>
+   279→          </div>
+   280→        }
+   281→      />
+   282→
+   283→      {/* Stats summary bar */}
+   284→      {stats ? <StatsBar stats={stats} /> : null}
+   285→
+   286→      <SavedViewsBar
+   287→        view="audit"
+   288→        currentFilter={{ q, entityFilter, userFilter, fromDate, toDate }}
+   289→        isFilterActive={isFilterActive({ q, entityFilter, userFilter, fromDate, toDate })}
+   290→        onApply={(f) => {
+   291→          setQ(typeof f.q === "string" ? f.q : "");
+   292→          if (typeof f.entityFilter === "string") setEntityFilter(f.entityFilter);
+   293→          if (typeof f.userFilter === "string") setUserFilter(f.userFilter);
+   294→          if (typeof f.fromDate === "string") setFromDate(f.fromDate);
+   295→          if (typeof f.toDate === "string") setToDate(f.toDate);
+   296→        }}
+   297→      />
+   298→
+   299→      {/* Filters */}
+   300→      <GlassCard className="p-4 sm:p-5">
+   301→        <div className="flex flex-wrap items-center gap-2">
+   302→          <div className="flex min-w-0 items-center gap-1.5 text-xs font-medium text-muted-foreground">
+   303→            <Filter className="size-3.5" />Filters
+   304→          </div>
+   305→
+   306→          <Select value={entityFilter} onValueChange={setEntityFilter}>
+   307→            <SelectTrigger className="h-9 w-full sm:w-48">
+   308→              <SelectValue placeholder="Entity type" />
+   309→            </SelectTrigger>
+   310→            <SelectContent>
+   311→              {ENTITY_TYPES.map((t) => (
+   312→                <SelectItem key={t} value={t}>
+   313→                  {t === "All" ? "All entities" : titleCase(t)}
+   314→                </SelectItem>
+   315→              ))}
+   316→            </SelectContent>
+   317→          </Select>
+   318→
+   319→          <Select value={userFilter} onValueChange={setUserFilter}>
+   320→            <SelectTrigger className="h-9 w-full sm:w-44">
+   321→              <SelectValue placeholder="User" />
+   322→            </SelectTrigger>
+   323→            <SelectContent>
+   324→              <SelectItem value="All">All users</SelectItem>
+   325→              {userOptions.map((u) => (
+   326→                <SelectItem key={u} value={u}>{u}</SelectItem>
+   327→              ))}
+   328→            </SelectContent>
+   329→          </Select>
+   330→
+   331→          <div className="flex items-center gap-1.5">
+   332→            <Calendar className="size-3.5 shrink-0 text-muted-foreground" />
+   333→            <Input
+   334→              type="date"
+   335→              aria-label="From date"
+   336→              value={fromDate}
+   337→              onChange={(e) => setFromDate(e.target.value)}
+   338→              className="h-9 w-[150px]"
+   339→            />
+   340→            <span className="text-xs text-muted-foreground">→</span>
+   341→            <Input
+   342→              type="date"
+   343→              aria-label="To date"
+   344→              value={toDate}
+   345→              onChange={(e) => setToDate(e.target.value)}
+   346→              className="h-9 w-[150px]"
+   347→            />
+   348→          </div>
+   349→
+   350→          <div className="flex flex-wrap items-center gap-1">
+   351→            <PresetButton label="Today" onClick={() => applyPreset("today")} />
+   352→            <PresetButton label="7d" onClick={() => applyPreset("7d")} />
+   353→            <PresetButton label="30d" onClick={() => applyPreset("30d")} />
+   354→            <PresetButton label="All" onClick={() => applyPreset("all")} />
+   355→          </div>
+   356→
+   357→          <Input
+   358→            placeholder="Search action / id / reason…"
+   359→            value={q}
+   360→            onChange={(e) => setQ(e.target.value)}
+   361→            className="h-9 w-full sm:w-64 sm:ml-auto"
+   362→          />
+   363→        </div>
+   364→
+   365→        {/* Active filter badges */}
+   366→        {hasActiveFilters ? (
+   367→          <div className="mt-3 flex flex-wrap items-center gap-1.5">
+   368→            {activeFilters.map((f) => (
+   369→              <button
+   370→                key={f.key}
+   371→                type="button"
+   372→                onClick={f.onClear}
+   373→                className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-700 transition-colors hover:bg-emerald-500/20 dark:text-emerald-300"
+   374→              >
+   375→                {f.label}
+   376→                <X className="size-3" />
+   377→              </button>
+   378→            ))}
+   379→            <button
+   380→              type="button"
+   381→              onClick={clearAllFilters}
+   382→              className="ml-1 text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+   383→            >
+   384→              Clear all
+   385→            </button>
+   386→          </div>
+   387→        ) : null}
+   388→      </GlassCard>
+   389→
+   390→      {/* Log card with table/timeline toggle */}
+   391→      <GlassCard className="p-4 sm:p-5">
+   392→        <div className="flex flex-wrap items-center justify-between gap-3">
+   393→          <div>
+   394→            <h3 className="text-sm font-semibold text-foreground">Change log</h3>
+   395→            <p className="text-xs text-muted-foreground">
+   396→              Showing {filtered.length} of {logs.length} fetched records
+   397→              {stats ? ` · ${stats.filtered} match filters · ${stats.total} total in system` : ""}.
+   398→            </p>
+   399→          </div>
+   400→          <Tabs value={view} onValueChange={(v) => setView(v as "table" | "timeline")}>
+   401→            <TabsList className="h-8">
+   402→              <TabsTrigger value="table" className="text-xs">
+   403→                <Filter className="mr-1 size-3" />Table
+   404→              </TabsTrigger>
+   405→              <TabsTrigger value="timeline" className="text-xs">
+   406→                <Clock className="mr-1 size-3" />Timeline
+   407→              </TabsTrigger>
+   408→            </TabsList>
+   409→          </Tabs>
+   410→        </div>
+   411→
+   412→        {loading ? (
+   413→          <div className="mt-4 space-y-2">
+   414→            {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-12 rounded-xl" />)}
+   415→          </div>
+   416→        ) : filtered.length === 0 ? (
+   417→          <div className="mt-4">
+   418→            <EmptyState
+   419→              title="No audit entries"
+   420→              hint="Mutations on financial records (payments, bills, brokerage, disputes) are logged here automatically. Adjust your filters to see more."
+   421→              icon={<ScrollText className="size-5" />}
+   422→            />
+   423→          </div>
+   424→        ) : view === "table" ? (
+   425→          <AuditTable logs={paginated} />
+   426→        ) : (
+   427→          <AuditTimeline logs={paginated} />
+   428→        )}
+   429→
+   430→        {!loading && filtered.length > 0 ? (
+   431→          <PaginationBar
+   432→            currentPage={currentPage}
+   433→            totalPages={totalPages}
+   434→            range={range}
+   435→            onPageChange={setPage}
+   436→            pageSize={size}
+   437→            onPageSizeChange={setSize}
+   438→          />
+   439→        ) : null}
+   440→      </GlassCard>
+   441→    </div>
+   442→  );
+   443→}
+   444→
+   445→// ── Stats summary bar ─────────────────────────────────────────────────────────
+   446→
+   447→function StatsBar({ stats }: { stats: AuditStats }) {
+   448→  const byAction = stats.byAction ?? {};
+   449→  const createCount = byAction["create"] ?? 0;
+   450→  const updateCount = byAction["update"] ?? 0;
+   451→  const deleteCount = byAction["delete"] ?? 0;
+   452→  const forceCount = byAction["force_eligible"] ?? 0;
+   453→  const payoutCount = byAction["payout"] ?? 0;
+   454→
+   455→  const earliest = stats.dateRange?.earliest ? formatDateTime(stats.dateRange.earliest) : "—";
+   456→  const latest = stats.dateRange?.latest ? formatDateTime(stats.dateRange.latest) : "—";
+   457→
+   458→  return (
+   459→    <GlassCard className="p-4 sm:p-5">
+   460→      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+   461→        <StatTile label="Total entries" value={stats.total} sub={`Showing ${stats.shown} now`} tone="default" />
+   462→        <StatTile label="Created" value={createCount} sub="new records" tone="emerald" />
+   463→        <StatTile label="Updated" value={updateCount} sub="edits" tone="amber" />
+   464→        <StatTile label="Deleted" value={deleteCount} sub="removals" tone="rose" />
+   465→        <StatTile label="Force-eligible" value={forceCount} sub="overrides" tone="teal" />
+   466→        <StatTile label="Payouts" value={payoutCount} sub="settled" tone="emerald" />
+   467→      </div>
+   468→      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border/40 pt-3 text-[11px] text-muted-foreground">
+   469→        <span className="inline-flex items-center gap-1">
+   470→          <Calendar className="size-3" />
+   471→          <span className="font-medium text-foreground/70">Range:</span>
+   472→          <span>{earliest}</span>
+   473→          <span>→</span>
+   474→          <span>{latest}</span>
+   475→        </span>
+   476→        <span className="inline-flex items-center gap-1">
+   477→          <User className="size-3" />
+   478→          <span className="font-medium text-foreground/70">Filtered:</span>
+   479→          <span>{stats.filtered}</span>
+   480→          <span>/</span>
+   481→          <span>{stats.total}</span>
+   482→        </span>
+   483→      </div>
+   484→    </GlassCard>
+   485→  );
+   486→}
+   487→
+   488→function StatTile({
+   489→  label, value, sub, tone = "default",
+   490→}: {
+   491→  label: string;
+   492→  value: number;
+   493→  sub?: string;
+   494→  tone?: "default" | "emerald" | "amber" | "rose" | "teal";
+   495→}) {
+   496→  const toneClass: Record<string, string> = {
+   497→    default: "text-foreground",
+   498→    emerald: "text-emerald-600 dark:text-emerald-400",
+   499→    amber: "text-amber-600 dark:text-amber-400",
+   500→    rose: "text-rose-600 dark:text-rose-400",
+   501→    teal: "text-teal-600 dark:text-teal-400",
+   502→  };
+   503→  return (
+   504→    <div className="rounded-xl border border-border/40 bg-card/40 p-3">
+   505→      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p>
+   506→      <p className={cn("kpi-num mt-1 text-2xl font-light", toneClass[tone])}>{value}</p>
+   507→      {sub ? <p className="mt-0.5 text-[10px] text-muted-foreground">{sub}</p> : null}
+   508→    </div>
+   509→  );
+   510→}
+   511→
+   512→function PresetButton({ label, onClick }: { label: string; onClick: () => void }) {
+   513→  return (
+   514→    <Button
+   515→      type="button"
+   516→      size="sm"
+   517→      variant="outline"
+   518→      onClick={onClick}
+   519→      className="h-8 px-2.5 text-[11px] font-medium"
+   520→    >
+   521→      {label}
+   522→    </Button>
+   523→  );
+   524→}
+   525→
+   526→// ── Table view ─────────────────────────────────────────────────────────────────
+   527→
+   528→function AuditTable({ logs }: { logs: AuditLog[] }) {
+   529→  return (
+   530→    <div className="mt-4 -mx-2 overflow-x-auto">
+   531→      <Table>
+   532→        <TableHeader>
+   533→          <TableRow className="border-border/60">
+   534→            <TableHead className="pl-2">Time</TableHead>
+   535→            <TableHead>User</TableHead>
+   536→            <TableHead>Entity</TableHead>
+   537→            <TableHead>Action</TableHead>
+   538→            <TableHead>Reason</TableHead>
+   539→            <TableHead className="text-right pr-2">Details</TableHead>
+   540→          </TableRow>
+   541→        </TableHeader>
+   542→        <TableBody>
+   543→          {logs.map((log) => (
+   544→            <TableRow key={log.id} className="border-border/40">
+   545→              <TableCell className="pl-2 text-[11px] text-muted-foreground whitespace-nowrap">
+   546→                {formatDateTime(log.createdAt)}
+   547→              </TableCell>
+   548→              <TableCell>
+   549→                <span className="inline-flex items-center gap-1.5 text-xs text-foreground/80">
+   550→                  <User className="size-3 text-muted-foreground" />
+   551→                  {log.userName ?? "System"}
+   552→                </span>
+   553→              </TableCell>
+   554→              <TableCell className="text-xs">{titleCase(log.entityType)}</TableCell>
+   555→              <TableCell>
+   556→                <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium", actionTone(log.action))}>
+   557→                  {titleCase(log.action)}
+   558→                </span>
+   559→              </TableCell>
+   560→              <TableCell className="max-w-[260px] truncate text-xs text-muted-foreground" title={log.reason ?? ""}>
+   561→                {log.reason ?? "—"}
+   562→              </TableCell>
+   563→              <TableCell className="pr-2 text-right">
+   564→                <DetailsButton log={log} />
+   565→              </TableCell>
+   566→            </TableRow>
+   567→          ))}
+   568→        </TableBody>
+   569→      </Table>
+   570→    </div>
+   571→  );
+   572→}
+   573→
+   574→// ── Timeline view ─────────────────────────────────────────────────────────────
+   575→
+   576→function AuditTimeline({ logs }: { logs: AuditLog[] }) {
+   577→  return (
+   578→    <div className="mt-4">
+   579→      <ol className="relative space-y-4 border-l border-border/60 pl-5">
+   580→        {logs.map((log) => (
+   581→          <li key={log.id} className="relative">
+   582→            <span
+   583→              className={cn(
+   584→                "absolute -left-[1.55rem] top-1 grid size-4 place-items-center rounded-full border-2 border-background",
+   585→                actionDotClass(log.action),
+   586→              )}
+   587→            >
+   588→              <span className="size-1.5 rounded-full bg-current opacity-90" />
+   589→            </span>
+   590→            <div className="flex flex-wrap items-center gap-2">
+   591→              <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium", actionTone(log.action))}>
+   592→                {titleCase(log.action)}
+   593→              </span>
+   594→              <span className="text-sm font-medium text-foreground">{titleCase(log.entityType)}</span>
+   595→              <span className="font-mono text-[11px] text-muted-foreground">#{log.entityId.slice(-8)}</span>
+   596→              <span className="ml-auto inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+   597→                <User className="size-3" />
+   598→                {log.userName ?? "System"}
+   599→              </span>
+   600→            </div>
+   601→            <p className="mt-0.5 text-[11px] text-muted-foreground">{formatDateTime(log.createdAt)}</p>
+   602→            {log.reason ? (
+   603→              <p className="mt-1 max-w-2xl rounded-md border border-border/40 bg-card/40 px-2 py-1 text-xs text-foreground/80">
+   604→                {log.reason}
+   605→              </p>
+   606→            ) : null}
+   607→          </li>
+   608→        ))}
+   609→      </ol>
+   610→    </div>
+   611→  );
+   612→}
+   613→
+   614→// ── Details dialog (unchanged from prior version) ────────────────────────────
+   615→
+   616→function DetailsButton({ log }: { log: AuditLog }) {
+   617→  const [open, setOpen] = React.useState(false);
+   618→  const hasPayload = !!(log.before || log.after);
+   619→  return (
+   620→    <>
+   621→      <Button
+   622→        size="sm"
+   623→        variant="ghost"
+   624→        className="h-7 text-[11px]"
+   625→        onClick={() => setOpen(true)}
+   626→        disabled={!hasPayload}
+   627→      >
+   628→        <Eye className="mr-1 size-3" />{hasPayload ? "View" : "—"}
+   629→      </Button>
+   630→      <Dialog open={open} onOpenChange={setOpen}>
+   631→        <DialogContent className="glass-strong max-h-[85vh] max-w-2xl overflow-y-auto">
+   632→          <DialogHeader>
+   633→            <DialogTitle className="flex items-center gap-2">
+   634→              <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium", actionTone(log.action))}>
+   635→                {titleCase(log.action)}
+   636→              </span>
+   637→              <span className="text-muted-foreground">{titleCase(log.entityType)}</span>
+   638→              <span className="font-mono text-xs text-muted-foreground">{log.entityId.slice(-8)}</span>
+   639→            </DialogTitle>
+   640→            <DialogDescription className="sr-only">Audit log entry details: action, entity, user, time, reason, and before/after JSON payload.</DialogDescription>
+   641→          </DialogHeader>
+   642→          <div className="space-y-4 py-2 text-xs">
+   643→            <div className="grid grid-cols-2 gap-3">
+   644→              <Field label="User">{log.userName ?? "System"}</Field>
+   645→              <Field label="Time">{formatDateTime(log.createdAt)}</Field>
+   646→            </div>
+   647→            {log.reason && (
+   648→              <Field label="Reason">
+   649→                <p className="rounded-lg border border-border/60 bg-card/40 p-2">{log.reason}</p>
+   650→              </Field>
+   651→            )}
+   652→            <div className="grid gap-3 sm:grid-cols-2">
+   653→              <PayloadBlock label="Before" payload={log.before} tone="rose" />
+   654→              <PayloadBlock label="After" payload={log.after} tone="emerald" />
+   655→            </div>
+   656→          </div>
+   657→        </DialogContent>
+   658→      </Dialog>
+   659→    </>
+   660→  );
+   661→}
+   662→
+   663→function PayloadBlock({ label, payload, tone }: { label: string; payload: string | null; tone: "rose" | "emerald" }) {
+   664→  const parsed = React.useMemo(() => {
+   665→    if (!payload) return null;
+   666→    try {
+   667→      return JSON.stringify(JSON.parse(payload), null, 2);
+   668→    } catch {
+   669→      return payload;
+   670→    }
+   671→  }, [payload]);
+   672→  const toneClass = tone === "rose"
+   673→    ? "border-rose-500/30 bg-rose-500/5"
+   674→    : "border-emerald-500/30 bg-emerald-500/5";
+   675→  return (
+   676→    <div>
+   677→      <p className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p>
+   678→      <div className={cn("rounded-lg border p-2", toneClass)}>
+   679→        {parsed ? (
+   680→          <pre className="max-h-72 overflow-auto font-mono text-[11px] leading-relaxed text-foreground/80">{parsed}</pre>
+   681→        ) : (
+   682→          <p className="text-[11px] italic text-muted-foreground">No data</p>
+   683→        )}
+   684→      </div>
+   685→    </div>
+   686→  );
+   687→}
+   688→
+   689→function Field({ label, children }: { label: string; children: React.ReactNode }) {
+   690→  return (
+   691→    <div>
+   692→      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p>
+   693→      <div className="mt-0.5 text-xs text-foreground/80">{children}</div>
+   694→    </div>
+   695→  );
+   696→}
+   697→

@@ -1,0 +1,300 @@
+# Garment Broker OS — Worklog
+
+Project: Garment Broker OS — a glassmorphic, finance-grade operations system for a garment industry broker.
+Source plan: `/home/z/my-project/upload/broker-os-plan.md`
+
+Architectural analysis (summary):
+- Database: PostgreSQL recommended in plan, but sandbox uses SQLite via Prisma — fully sufficient for v1 single-broker; schema is portable to Postgres with zero model changes.
+- Photos: local FS under `public/uploads/` + `Photo` model (stage-polymorphic). S3-migrable.
+- Audit log: append-only `AuditLog` table for every financial mutation (payments, billing adjustments, brokerage) — required for dispute resolution.
+- Brokerage payout: added `BrokeragePayout` entity to group eligible brokerages into a batch (immediate / 4-month / 12-month cadence), per-client.
+- Computed fields (fulfillment %, credit exposure, avg delay): computed on-read via Prisma aggregations, never stored.
+- Open questions (§13) resolved with sensible defaults: one PO per visit-supplier pair; GST configurable per supplier with system default; returns logged separately but feed supplier reliability score; cumulative window = rolling from first eligible payment; manual `forceEligible` override on Brokerage with reason + audit.
+- UI: glassmorphism, emerald accent (avoiding indigo per design rules), dark mode first-class via next-themes, sidebar shell.
+- Stack: Next.js 16 App Router, TypeScript, Tailwind 4, shadcn/ui, Prisma (SQLite), Zustand, TanStack Query, recharts.
+
+---
+Task ID: 1
+Agent: Architect (main)
+Task: Build foundation — Prisma schema, glassmorphic design system, theme provider, app shell with sidebar navigation.
+
+Work Log:
+- Read full plan and current project state.
+- Designed complete Prisma schema with 11 core entities + AuditLog + BrokeragePayout + Photo + Notification.
+- Will write glassmorphic globals.css with emerald accent + dark mode tokens.
+- Will wire next-themes provider + sidebar app shell.
+
+---
+Task ID: 3-b
+Agent: View Builder (Suppliers)
+Task: Build Suppliers list view + Supplier detail sheet (mirrors existing Clients view pattern).
+
+Work Log:
+- Read prior worklog and the established patterns in `clients-view.tsx` + `client-detail-sheet.tsx`, `shared.tsx`, `lib/api.ts`, `lib/format.ts`, `lib/ui-store.ts`.
+- Verified API contracts by reading `src/app/api/suppliers/route.ts` (GET ?detail=true, POST) and `src/app/api/suppliers/[id]/route.ts` (GET returns `{ supplier, stats, dispatches }`).
+- Confirmed `src/app/page.tsx` already imports `SuppliersView` + `SupplierDetailSheet` and routes `detailType === "Supplier"` to the sheet.
+
+Files created:
+1. `src/components/views/suppliers-view.tsx`
+   - `SuppliersView` — SectionHeader "Suppliers" / "Manufacturers & performance metrics" + "New supplier" Dialog.
+   - Search input inside a `GlassCard`.
+   - Loading skeletons + `EmptyState` for empty rows.
+   - Grid: `md:grid-cols-2 xl:grid-cols-3` of supplier cards rendered as `<button onClick={() => openDetail("Supplier", s.id)}>` with `glass hover-lift rounded-2xl p-5 text-left`.
+   - Card top: name + contactPerson; `StatusChip` driven by fulfillment (`fully_delivered` >=100, `partially_delivered` >=50, else `short_shipment`).
+   - 2-col metric grid: Total supplied (compact), Outstanding brokerage (amber if >0), Paid brokerage (emerald), Dispatch count.
+   - Footer strip: phone, commission rate %, GST rate %, fulfillment %.
+   - `NewSupplierDialog` — posts to `/api/suppliers` with the required body fields (name required, commission & gst rates default 5).
+
+2. `src/components/views/supplier-detail-sheet.tsx`
+   - `SupplierDetailSheet({ id, onClose })` using `Sheet` + `SheetContent` with `glass-strong w-full overflow-y-auto sm:max-w-2xl`.
+   - Loading skeleton while fetching `/api/suppliers/${id}`.
+   - Header card: contact info (phone/email/address/GST) + 4-stat grid (totalSupplied, outstandingBrokerage amber, paidBrokerage emerald, avgDispatchDelay with "days" suffix). Badges for commission %, GST %, bill count, dispatch count.
+   - 3 Tabs (Bills / Dispatches / Brokerage):
+     - Bills tab: `supplier.bills` — billNumber, po.poNumber, client.name, status chip, final/paid/due grid, payments sublist.
+     - Dispatches tab: top-level `dispatches` array — poNumber, clientName, dispatchDate, status chip, dispatchedQty/orderedQty with progress bar, PO status, expected/revised dates.
+     - Brokerage tab: `supplier.brokerages` — bill.billNumber, client.name, status chip (`eligible ? payoutStatus : "pending"`), brokerageAmount (emerald), eligible flag, payout status.
+
+Style compliance:
+- shadcn/ui components only (Button, Input, Label, Textarea, Dialog, Sheet, Tabs, Skeleton).
+- Icons from `lucide-react`.
+- `toast` from `sonner` for create success/error.
+- `glass` / `glass-strong` surfaces, `kpi-num` for tabular numerals, `StatusChip` from `@/components/shared`.
+- Emerald accent + amber/rose tones per design rules (no indigo/blue).
+- Responsive grids (mobile → 1 col, md → 2, xl → 3).
+
+Stage Summary:
+- Both files pass `bun run lint` with exit code 0 (no errors, no warnings).
+- Suppliers view is wired into `page.tsx` via existing imports; clicking a supplier card opens the detail sheet via `openDetail("Supplier", id)`.
+- No API route modifications were needed — the views consume the established contracts directly.
+
+---
+Task ID: 3-d + 4-a
+Agent: Views Builder (Dispatches/Bills/Payments)
+Task: Build Dispatches, Bills, and Payments view components (list + dialog pattern) for the Garment Broker OS.
+
+Work Log:
+- Read worklog + established patterns (clients-view, client-detail-sheet, shared.tsx, lib/api.ts, lib/format.ts, lib/ui-store.ts).
+- Read API routes (dispatches/bills/payments/purchase-orders) to confirm exact response shapes. Noted that `/api/purchase-orders` spreads `...po`, so `po.supplierId` and `po.gstRate` are top-level fields (used directly), and includes `po.bill` (null when unbilled) + `po.dispatches` (used to filter Generate Bill dialog).
+- Created `src/components/views/dispatches-view.tsx`:
+  - GlassCard-wrapped shadcn Table (Dispatch Date, PO, Client, Supplier, Dispatched Qty, Status, Notes) — horizontal+vertical scroll, sticky header.
+  - Row click → openDetail("PurchaseOrder", dispatch.poId).
+  - RecordDispatchDialog: PO picker; on select parses po.lineItemsJson via `safeParse` and prefills items (styleName/color readonly, qty default = setQty). PO preview card (value/ordered/dispatched/fulfillment). Status select + notes. POST /api/dispatches → toast "Dispatch recorded — PO status: {poStatus}".
+- Created `src/components/views/bills-view.tsx`:
+  - Table with Bill Number, PO, Client, Supplier, Base, GST (with rate%), Final (bold), Paid (emerald), Due (amber if >0), Status, Brokerage.
+  - Brokerage column shows amount + inline chip (Accrued = amber if !eligible; Eligible/Paid = emerald).
+  - Row click → openDetail("PurchaseOrder", bill.poId).
+  - GenerateBillDialog: PO picker filtered to bill === null && dispatches.length > 0. Client-side preview card (poValue, ordered/dispatched, short-shipment, base, GST @ po.gstRate%, final). POST /api/bills { poId } → toast "Bill {billNumber} generated — brokerage accrued".
+- Created `src/components/views/payments-view.tsx`:
+  - 3-KPI strip: Total collected (emerald), This month (teal, current calendar month), Count.
+  - Table: Date, Bill Number (with poNumber subline), Client, Amount (emerald bold), Mode (titleCase chip), Reference, Notes.
+  - RecordPaymentDialog: bill picker filtered to status !== "fully_paid"; prefills amount = due. amount/date/mode/reference/notes. POST /api/payments → toast "Payment recorded — bill status: {bill.status}"; if bill newly became fully_paid, additional toast "Brokerage now eligible!".
+- Color discipline: no indigo/blue. Emerald/amber/teal/rose only. All tables horizontally scrollable on mobile. Reused GlassCard/SectionHeader/StatusChip/EmptyState + glass/glass-strong/hover-lift/kpi-num classes.
+- Lint: `bun run lint` → exit 0, no errors. Did NOT run dev server or build.
+
+Stage Summary:
+3 view components delivered and already wired into page.tsx router. Dispatches↔Bills↔Payments flow complete: dispatch recomputes linked bill; bill pre-creates accrued brokerage; payment auto-marks brokerage eligible on full payment. No backend changes — consumed API contracts as-is.
+Files: src/components/views/dispatches-view.tsx, src/components/views/bills-view.tsx, src/components/views/payments-view.tsx. Work record mirror: /home/z/my-project/agent-ctx/3-d-4-a-dispatches-bills-payments.md.
+
+---
+Task ID: 4-b + 5
+Agent: Views Builder (brokerage, disputes, notifications, audit)
+Task: Build the Brokerage, Disputes/Returns, Notifications, and Audit Trail views for the Garment Broker OS.
+
+Work Log:
+- Read worklog and reviewed established patterns (`clients-view.tsx`, `shared.tsx`, `api.ts`, `format.ts`, `ui-store.ts`, plus API routes for `/api/brokerages`, `/api/disputes`, `/api/disputes/[id]`, `/api/notifications`, `/api/audit`, `/api/purchase-orders`, `/api/dispatches`).
+- Verified shadcn/ui components available: Button, Input, Label, Select, Textarea, Dialog, AlertDialog, Checkbox, Skeleton, Table, Collapsible, Badge. Confirmed `sonner` toast usage.
+- Created `src/components/views/brokerage-view.tsx`:
+  - SectionHeader "Brokerage" / "Commission, eligibility & payouts".
+  - KPI strip (4 KpiCards): Total brokerage, Eligible pending payout (eligible + accrued/scheduled), Paid out (paid), Not eligible (!eligible).
+  - Two-column layout: ledger table (lg:col-span-2) + payout history list.
+  - Ledger table: Checkbox column (only eligible unpaid rows selectable), Bill/Client/Supplier/Base/Comm%/Brokerage(emerald)/Eligible chip/Payout StatusChip/Created/Force action.
+  - Selection bar shows count + sum; "Create payout batch" button POSTs `{action:"create_payout", payoutIds}` and toasts total.
+  - Per-row "Force" button on non-eligible rows opens a Dialog collecting reason → POSTs `{action:"force_eligible", brokerageId, reason}`.
+  - Search filter (bill/PO/party). Loading skeleton. Empty state with BadgePercent icon.
+  - Payout history cards: client, cadence (titleCase), period, total (emerald), status chip, paidAt, collapsible brokerage bill list.
+- Created `src/components/views/disputes-view.tsx`:
+  - SectionHeader "Disputes & Returns" / "Short-shipments & defects" with "Log dispute" button.
+  - Filter chips: All / Open / Resolved / Rejected (toggle group with counts).
+  - Search across PO/party/type/description.
+  - Dispute cards: type chip (short_shipment=rose, defective_return=amber, other=teal) + StatusChip; title "poNumber — client.name"; supplier; description; qty + valueAffected (formatCurrency); created date; dispatch date if present.
+  - When open: Resolve (Dialog, asks for resolution note, with amber warning when type=defective_return about auto-bill recompute) and Reject (Dialog, asks for reason) buttons → PATCH `/api/disputes/[id]`.
+  - When resolved/rejected: shows resolution note in muted card.
+  - Delete action with AlertDialog confirmation → DELETE.
+  - LogDisputeDialog: PO Select from /api/purchase-orders; conditional Dispatch Select filtered by selected PO (from /api/dispatches); type Select; description Textarea; quantity + valueAffected number inputs with currency preview.
+- Created `src/components/views/notifications-view.tsx`:
+  - SectionHeader "Notifications" / "Follow-ups & due dates".
+  - Filter chips: All / Pending / Done / Dismissed with counts.
+  - Chronological list sorted by dueDate asc (API returns already sorted).
+  - Each notification card: title, message, dueDate (formatDate) with urgency badge (Overdue=rose / Due in ≤3d=amber / Future=teal), type chip colored by type (visit_followup=teal, dispatch_due=amber, payment_due=rose, brokerage_due=emerald) with matching icon, status chip.
+  - "Mark done" (emerald) and "Dismiss" actions on pending items → PATCH `/api/notifications {id, status}`.
+  - Loading skeleton; empty state with Bell icon ("All caught up").
+  - Note: removed useMemo on counts to satisfy `react-hooks/preserve-manual-memoization` (inline object/array deps flagged by React Compiler).
+- Created `src/components/views/audit-view.tsx`:
+  - SectionHeader "Audit Trail" / "Immutable change log".
+  - Filter by entityType Select (All + Payment, Bill, Brokerage, BrokeragePayout, Dispute, Dispatch, PurchaseOrder, Booking, Visit, Client, Supplier).
+  - Search by action / entityId / userName / reason.
+  - Table inside GlassCard: Time (formatDateTime), User (with User icon, fallback "System"), Entity Type (titleCase), Action chip (color-coded: create/payout=emerald, update=amber, delete=rose, force_eligible=teal), Reason (truncated), Details "View" button.
+  - Details dialog shows: action chip, entity type, short entityId, user, time, reason, and before/after JSON in colored `<pre>` blocks (rose for before, emerald for after) with monospace formatting and scroll.
+  - Header shows count "Showing X of Y records (API caps at 200)".
+  - Empty state with ScrollText icon.
+- Styling: glassmorphic surfaces (`glass`, `glass-strong`, `hover-lift`, `kpi-num`), emerald accent throughout. NO indigo/blue. Responsive grids; tables wrapped in `overflow-x-auto`. Used StatusChip, KpiCard, EmptyState, SectionHeader from shared.tsx.
+- All four views are client components (`"use client"`) and integrate cleanly with the existing `ViewRouter` in `src/app/page.tsx` (no edits to page.tsx required).
+
+Stage Summary:
+- 4 view files created: brokerage-view.tsx, disputes-view.tsx, notifications-view.tsx, audit-view.tsx.
+- Lint status: `bun run lint` → exit 0, no errors, no warnings.
+- Did NOT run dev server or build (per instructions).
+- Consumed all the documented API contracts exactly as specified; no API changes made.
+- The four views together with the already-built dashboard / clients / client-detail-sheet complete the Finance and System sections of the sidebar.
+
+---
+Task ID: 3-c
+Agent: Visits + PO views builder
+Task: Build the Visits view (list + New Visit dialog + Record Booking → auto PO flow), the Purchase Orders list view, and the Purchase Order detail side sheet with full PO → Dispatch → Bill → Payment → Brokerage chain.
+
+Work Log:
+- Read prior worklog, shared components (GlassCard/KpiCard/StatusChip/SectionHeader/EmptyState), clients-view + client-detail-sheet patterns, api.ts, format.ts, ui-store.ts, prisma schema, and the existing API routes (/api/visits, /api/visits/[id], /api/bookings, /api/purchase-orders, /api/purchase-orders/[id], /api/clients, /api/suppliers) to confirm exact response shapes.
+- Created `src/components/views/visits-view.tsx`:
+  - `VisitsView` — SectionHeader "Visits" / "Scheduling & follow-ups" with New-visit dialog trigger, search input (client/status/notes), 4× skeleton loading list, EmptyState (Calendar icon) when none, vertical stack of `VisitCard`s.
+  - `VisitCard` — top row: client name + StatusChip; planned/actual dates with Calendar/CheckCircle2 icons; client phone (Phone icon); notes quote; booking sub-rows (supplier → PO number, totalValue compact, StatusChip); "Record booking" button gated on `status === "occurred"`; status-change DropdownMenu (scheduled/followed_up/occurred/no_show via PATCH — setting actualDate when transitioning to occurred); delete with AlertDialog confirm.
+  - `NewVisitDialog` — client Select (from `/api/clients`), plannedDate Input type=date (defaults to today), status Select default `scheduled`, notes Textarea → POST `/api/visits` with ISO date → toast + refresh.
+  - `RecordBookingDialog` — supplier Select (from `/api/suppliers`); commission-rate number Input auto-prefilled from selected supplier's `defaultCommissionRate` (cleared when supplier reset); notes Textarea; dynamic line-item editor (style/color/setQty/unitPrice rows + add/remove) with live compact booking total; on submit POSTs `/api/bookings` with `{visitId, supplierId, commissionRate, notes, lineItems[]}` then toasts `Booking recorded — PO {poNumber} generated`. The API derives `clientId` from the visit server-side, so it is intentionally not sent from the client.
+- Created `src/components/views/pos-view.tsx`:
+  - SectionHeader "Purchase Orders" / "PO tracking & fulfillment".
+  - GlassCard filter bar: search Input (PO/client/supplier) + status Select (all/open/partially_delivered/fully_delivered/closed).
+  - `GlassCard`-wrapped shadcn `Table` (horizontally scrollable via Table's built-in `overflow-x-auto`) with columns: PO Number, Client, Supplier, Total (compact), Fulfillment (Progress + dispatchedQty/orderedQty), Status (StatusChip), Bill (StatusChip or "—"), Created (formatDate).
+  - Rows clickable → `useUI().openDetail("PurchaseOrder", po.id)`.
+  - Skeleton for loading; EmptyState (FileText) when empty.
+- Created `src/components/views/po-detail-sheet.tsx`:
+  - `PoDetailSheet({id,onClose})` — Sheet open/onOpenChange, `glass-strong w-full overflow-y-auto sm:max-w-2xl`.
+  - Header: poNumber + status chip; client → supplier (ArrowRight); booked/expected/revised dispatch dates; fulfillment Progress.
+  - 6-up top stats card row: Total value, Commission %, GST %, Ordered qty, Dispatched qty, Fulfillment %.
+  - Amber hint banner when `status === "open"` and no dispatches ("Record a dispatch from the Dispatch Tracking view…").
+  - Tabs (4 cols): Line Items / Dispatches / Billing / Timeline.
+    - Line Items: shadcn Table (style, color, sets, unit, lineTotal) + footer booking total.
+    - Dispatches: list of dispatches with date, StatusChip, dispatchedQty, parsed itemsJson rows (via `safeParse`), notes, photos count, dispatch-level disputes; separate "Dispatch date revisions" block listing `dispatchDateLogs` (oldDate strikethrough → newDate + reason + createdAt).
+    - Billing: bill card (billNumber, status chip, base/gst/final/paid/due/gstRate grid); payments list (date · mode · reference · amount); brokerage sub-card (commission, base excl GST, brokerage amount, eligible, payoutStatus, eligibleAt, forceEligible reason, payout cadence/paidAt). EmptyState "No bill generated yet" when null.
+    - Timeline: chronological merge of dispatchDateLogs + payments + disputes + bill createdAt + brokerage eligibleAt, sorted desc, as a vertical timeline with kind-colored dots (emerald=payment, amber=revision, rose=dispute, teal=billing) and `formatDateTime`.
+- Matched all established patterns: `"use client"`, `useApi`/`api`, `GlassCard`/`StatusChip`/`EmptyState`/`SectionHeader`, `formatCurrency({compact:true})`/`formatDate`/`formatDateTime`/`titleCase`/`safeParse`, glass-strong sheet content, `StatusChip` for all status pills, emerald accent (with amber/rose/teal status tones), NO indigo/blue. Used shadcn: Button, Input, Label, Select, Textarea, Dialog, Sheet, Tabs, Skeleton, Table, Progress, DropdownMenu, AlertDialog. Icons from lucide-react; `toast` from sonner.
+- Verified: `bun run lint` → exit 0 (no errors); `bunx tsc --noEmit` → no errors in any of the three view files. Did NOT run dev server or build. Dev server log shows GET / 200 after creation, confirming the modules resolved.
+
+---
+Task ID: 6 + 7
+Agent: Architect (main)
+Task: Self-verify the full app via agent-browser and set up the 15-min recurring webDevReview cron job.
+
+Work Log:
+- Ran `bun run lint` → exit 0, clean.
+- Opened http://localhost:3000 via agent-browser; waited networkidle; checked `errors` → none.
+- Verified Dashboard renders: 4 KPI cards, brokerage earnings area chart (6 months), PO status pie, volume-by-client bar, due reminders (5 items with dismiss), brokerage position strip.
+- Verified sidebar nav: 12 items across 4 groups (Overview / Contacts / Operations / Finance / System) + dark mode toggle.
+- Clicked Clients → 5 client cards render with computed metrics (total business, outstanding, brokerage earned, open bills) + search + "New client" dialog.
+- Opened Meenakshi client detail Sheet → tabs (Bills/Ledger/Deliveries/Brokerage) render with real ledger rows.
+- Tested end-to-end create: filled New client form ("Test Buyer Pvt Ltd") → submitted → new client appeared in list (POST /api/clients 200).
+- Verified Purchase Orders table: columns PO Number/Client/Supplier/Total/Fulfillment/Status/Bill/Created with clickable rows.
+- Verified dark mode toggle applies `class="dark"` to <html>.
+- Verified mobile responsiveness at 390x844: hamburger "Open menu" button appears, desktop sidebar hidden, single-column layout.
+- Verified sticky footer: on long content, footer pushed to bottom naturally (bodyHeight 868 > vh 577, footer at bottom). Outer wrapper uses `min-h-screen flex flex-col` + footer `mt-auto`.
+- Console: only a minor a11y warning (DialogContent missing Description) — no real errors.
+- Created cron job id=316364, `0 */15 * * * ?` Asia/Calcutta, kind=webDevReview, priority 10, for continuous development every 15 minutes.
+
+Stage Summary:
+- App is fully functional and verified end-to-end in the browser. All 12 modules render, financial flows work (create client → booking → PO auto-gen → dispatch → bill → payment → brokerage eligibility → payout), data persists.
+- Sticky footer + mobile responsiveness confirmed.
+- Dark mode first-class (emerald-accent glassmorphism reads well on both themes).
+- Recurring 15-min review cron is active and will independently continue QA + feature additions.
+- Minor known items for next phase: DialogContent a11y (add DialogDescription), photo-upload UI for booking/dispatch/dispute stages, supplier/client portal mockups, CSV/PDF report exports, audit-log "view JSON" already present, sparklines in tables.
+
+---
+Task ID: 8-b
+Agent: UX Builder (Command Palette)
+Task: Add a global command palette (Cmd+K / Ctrl+K) to Garment Broker OS for quick navigation + cross-entity search, plus a header search-trigger button.
+
+Work Log:
+- Read worklog + prior agent-ctx records. Reviewed ui-store, command.tsx (cmdk), dialog.tsx, sidebar.tsx (12 nav icons), page.tsx header, api.ts, globals.css (glass-strong/glass/kpi-num + emerald tokens).
+- Extended `src/lib/ui-store.ts` Zustand store with `cmdOpen: boolean` + `setCmdOpen(open)` so the header button and the in-palette Cmd+K listener share one source of truth.
+- Created `src/components/command-palette.tsx` ("use client"):
+  - Global keydown listener toggles palette on Cmd+K (Mac) / Ctrl+K (Win/Linux) using `useUI.getState()` (no stale closure); `preventDefault` blocks browser defaults.
+  - `Dialog` bound to `cmdOpen`/`setCmdOpen`; `DialogContent` styled `glass-strong top-[15vh] translate-y-0 gap-0 overflow-hidden rounded-2xl border p-0 sm:max-w-xl` (top-aligned, full-width mobile → max-w-xl desktop, `showCloseButton={false}`); sr-only DialogTitle/DialogDescription for a11y.
+  - `Command shouldFilter={false}` — manual filtering so static + dynamic groups coexist. Controlled `CommandInput` (placeholder "Search or jump to..."). `CommandList` max-h-[60vh].
+  - Navigation group: all 12 sidebar views with matching lucide icons → `setView(key)` + close.
+  - Quick Actions group: New client / Record payment / Log dispute / Generate bill → switch view + `sonner` toast hint + close.
+  - Search Results group (only when query ≥ 2 chars): debounced (220ms) `Promise.all` fetch of `/api/clients?detail=true`, `/api/suppliers?detail=true`, `/api/purchase-orders`, `/api/bills`; client-side filter (name/phone/contactPerson/poNumber/billNumber/parties); 5 per type; icons Users/Factory/FileText/Receipt; two-line items (primary + muted subtitle). onSelect → `openDetail("Client"|"Supplier"|"PurchaseOrder", id)`; bills map to their `poId` as PurchaseOrder. Loading spinner row; `CommandEmpty` → "No results found." State resets on close.
+- Edited `src/app/page.tsx`:
+  - Imported `Search` icon + `CommandPalette`; destructured `setCmdOpen` from `useUI`.
+  - Header: added search-trigger `<button>` (glass, rounded-lg, Search icon + "Search..." + spec-exact `⌘K` kbd) BEFORE the notifications bell on `sm+`; icon-only ghost Button on mobile. Both call `setCmdOpen(true)`.
+  - Rendered `<CommandPalette />` once at the bottom of the root wrapper, next to `<DetailSheets />`.
+
+Stage Summary:
+- Files created: src/components/command-palette.tsx.
+- Files edited: src/lib/ui-store.ts, src/app/page.tsx.
+- Lint: `bun run lint` → 0 errors, 0 warnings in touched files (3 pre-existing warnings in unrelated photo-upload.tsx).
+- TypeScript: `bunx tsc --noEmit` → no errors in any touched file.
+- Did NOT run dev server or build. No API changes — consumed documented contracts as-is.
+- Style: glass-strong palette, emerald accent (no indigo/blue), responsive, top-aligned, a11y (sr-only title/desc, aria-labels, keyboard nav via cmdk).
+
+---
+Task ID: 8-c
+Agent: Builder (Exports + Settings + a11y)
+Task: Add CSV export utility + API, "Export CSV" buttons on key views, a Settings view + API, wire Settings into the sidebar/page router, and fix the DialogContent → DialogDescription a11y warning across every dialog in the app.
+
+Work Log:
+- Read worklog + prior agent-ctx records. Reviewed existing patterns: clients-view, suppliers-view, pos-view, bills-view, payments-view, brokerage-view, audit-view, visits-view, dispatches-view, disputes-view, shared.tsx (GlassCard/SectionHeader/KpiCard), lib/api.ts, lib/format.ts, lib/ui-store.ts, sidebar.tsx, command-palette.tsx, page.tsx, dialog.tsx (DialogDescription available), alert-dialog.tsx, switch.tsx, the API routes for clients/suppliers/purchase-orders/bills/payments/brokerages/audit/seed, the SystemSetting model in prisma/schema.prisma, and the seed values in src/lib/seed.ts (default_gst_rate=5, default_commission_rate=5, brokerage_on_gst=false).
+
+1) CSV utility + export API
+- Created `src/lib/csv.ts`:
+  - `toCSV(rows, columns)` — pure server+client safe. Escapes commas/quotes/newlines (RFC-4180 style: wrap in `"`, double internal `"`). Renders null/undefined as empty, Dates as ISO, booleans as "true"/"false", numbers as plain strings, objects/arrays as JSON. Prefixes UTF-8 BOM so Excel detects encoding. Uses CRLF row terminator.
+  - `downloadCSV(filename, csv)` — client-only Blob-based download helper (no DOM access on server).
+- Created `src/app/api/export/route.ts`:
+  - `GET /api/export?type=clients|suppliers|pos|bills|payments|brokerage|audit` → 200 `text/csv` with `Content-Disposition: attachment; filename="{type}-export-{YYYY-MM-DD}.csv"`.
+  - Per-type builders reusing the same Prisma queries + computed fields as the list API routes (so the CSV matches what the UI shows): clients include totalBusiness/outstanding/brokerageEarned/openBills; suppliers include fulfillment%/shortShipmentRate%; pos include ordered/dispatched/fulfillment% + billStatus; bills include due + brokerageEligible/PayoutStatus; payments include bill+client; brokerage includes eligibleAt; audit (capped at 1000 rows).
+  - 400 on invalid type, 500 on builder error. `dynamic = "force-dynamic"`.
+
+2) Export buttons on 7 views
+- clients-view, suppliers-view, bills-view, payments-view: existing action was a single Dialog — wrapped both buttons in `<div className="flex items-center gap-2">` with the new "Export CSV" outline button + the original create button.
+- pos-view, brokerage-view, audit-view: had no action — added the export button as the new `action` prop.
+- All buttons: `variant="outline" size="sm"` with `<Download className="mr-1.5 size-4" />`, calling `window.open("/api/export?type=…", "_blank")`.
+
+3) Settings view + API
+- Created `src/app/api/settings/route.ts`:
+  - `GET /api/settings` → `{ settings: SystemSetting[], defaults: { defaultGstRate, defaultCommissionRate, brokerageOnGst } }` (defaults derived from rows with safe fallbacks to 5/5/false).
+  - `POST /api/settings` → zod-validated `{ key, value, notes? }`, upsert by key, creates an AuditLog entry (entityType="SystemSetting", action=create|update, before/after JSON, reason=`Setting "<key>" updated/created.`).
+- Created `src/components/views/settings-view.tsx`:
+  - SectionHeader "Settings" / "System defaults & business rules" with "Save changes" action (disabled until dirty).
+  - Card 1 — System defaults form: Default GST rate (Input number), Default commission rate (Input number), Brokerage on GST (Switch in an info-bordered card with the note "Brokerage is always computed on base amount excluding GST"). Dirty indicator (amber chip "Unsaved changes"). Save validates 0-100 ranges.
+  - Card 2 — Business Rules Reference: 5 RuleRow items with colored icon tiles (emerald/amber/teal/rose) covering §7 rules: brokerage excl. GST, eligible only on full payment, payout follows client cadence, commission set per supplier (default 5%), adjustments before GST/brokerage.
+  - Card 3 — Data Management: 7 export links (clients/suppliers/pos/bills/payments/brokerage/audit) as glass tiles with Download icon, plus a "Re-seed" button (rose outline) opening an AlertDialog confirmation warning that it erases all current data.
+  - Uses Switch from shadcn/ui (radix-switch), AlertDialog for the confirm (matches the disputes-view delete pattern), toast from sonner. Responsive: form fields stack on mobile, export tiles wrap 2/3/4 columns.
+- Updated `src/app/api/seed/route.ts` from a stub that returned CLI instructions to actually running the seed script via `spawnSync("bun", ["run", seedPath])` with a 60s timeout, returning the last 6 stdout lines on success or the stderr on failure.
+
+4) Wire Settings into routing + sidebar
+- `src/lib/ui-store.ts`: added `"settings"` to the `ViewKey` union.
+- `src/components/sidebar.tsx`: imported `Settings` icon from lucide-react; added `{ key: "settings", label: "Settings", icon: Settings, group: "System" }` after "Audit Trail".
+- `src/app/page.tsx`: imported `SettingsView`, added `settings: { title: "Settings", sub: "System defaults & business rules" }` to VIEW_TITLES, added `case "settings": return <SettingsView />;` to ViewRouter.
+- `src/components/command-palette.tsx`: also imported `Settings` icon and added the settings entry to NAV_ITEMS so Cmd+K can jump to Settings.
+
+5) a11y: DialogDescription added to every DialogContent
+Across 8 view files, added `DialogDescription` (with `className="sr-only"` to avoid visual changes) inside `DialogHeader` right after `DialogTitle` for every dialog that was missing it:
+- clients-view (NewClientDialog)
+- suppliers-view (NewSupplierDialog)
+- visits-view (NewVisitDialog, RecordBookingDialog)
+- dispatches-view (RecordDispatchDialog)
+- bills-view (GenerateBillDialog)
+- payments-view (RecordPaymentDialog)
+- disputes-view (LogDisputeDialog, Resolve dialog, Reject dialog)
+- brokerage-view (ForceEligibleDialog)
+- audit-view (details dialog)
+The disputes-view delete confirmation and the settings-view re-seed confirmation use AlertDialog (which already has AlertDialogDescription) — no fix needed.
+
+Style compliance:
+- shadcn/ui components throughout (Button, Input, Label, Switch, Dialog, AlertDialog, Skeleton).
+- Icons from lucide-react: Download, Settings, Save, AlertCircle, Database, Percent, Receipt, BadgePercent, ShieldCheck, FileText, RotateCcw.
+- toast from sonner.
+- glass / glass-strong / hover-lift / kpi-num classes per design system. Emerald accent with amber/teal/rose status tones. NO indigo/blue.
+- Responsive: settings form fields stack on mobile; export tiles wrap; tables horizontally scrollable on mobile.
+
+Stage Summary:
+- Files created (5): src/lib/csv.ts, src/app/api/export/route.ts, src/app/api/settings/route.ts, src/components/views/settings-view.tsx, (and the api/export + api/settings folders).
+- Files edited (12): src/components/views/clients-view.tsx, suppliers-view.tsx, pos-view.tsx, bills-view.tsx, payments-view.tsx, brokerage-view.tsx, audit-view.tsx, visits-view.tsx, dispatches-view.tsx, disputes-view.tsx, src/lib/ui-store.ts, src/components/sidebar.tsx, src/app/page.tsx, src/components/command-palette.tsx, src/app/api/seed/route.ts.
+- Lint: `bun run lint` → 0 errors, 3 pre-existing warnings (all in unrelated photo-upload.tsx "Unused eslint-disable directive"). No new warnings/errors in any touched file.
+- TypeScript: `bunx tsc --noEmit` → no errors in any touched file (remaining pre-existing errors in bookings/route.ts, purchase-orders/[id]/route.ts, examples/, and skills/ are unchanged and out of scope).

@@ -1,0 +1,300 @@
+2. **Notification Auto-Generation Engine** (Task 9-b):
+   - `POST /api/notifications/generate` + `GET /api/notifications/generate` (read-only counts).
+   - Idempotent: builds a Set of "type|entityType|entityId" keys; skips existing pending. Single `createMany` batch.
+   - 4 channels: (a) visit_followup for overdue scheduled visits; (b) dispatch_due for POs with ETA within 7 days or past; (c) payment_due for bills with computed due (createdAt + client.defaultPaymentCycleDays) within 14 days or past; (d) brokerage_due for eligible unpaid brokerages (immediate = now; cumulative = period end).
+   - Master toggle: reads `auto_generate_notifications` SystemSetting (default true); short-circuits if disabled.
+   - "Generate reminders" button added to Notifications view; dashboard auto-fires the POST on mount (silent, guarded by useRef for StrictMode).
+   - Settings page: new "Auto-generate reminders" Switch.
+   - Verified: first run generated 3 new reminders (dispatch_due, brokerage_due, payment_due); second run generated 0 (idempotency confirmed).
+3. **Dashboard Date-Range Filter** (Task 9-c):
+   - `GET /api/dashboard?range=month|quarter|year|all` with full date filtering.
+   - Range buckets: month=30 daily, quarter=13 weekly, year=12 monthly, all=6 monthly. XAxis auto-skips labels (interval=floor(len/8)).
+   - KPIs filtered by eligibleAt/payout.paidAt/createdAt as appropriate. Outstanding receivable kept as all-time snapshot (labeled).
+   - UI: ToggleGroup (This Month/Quarter/Year/All Time) + emerald Badge showing date span + subtle Loader2 during refetch.
+   - Added `formatDateShort()` to format.ts.
+   - Verified: "This Quarter" shows "Showing data from 01 Jul 2026 to 10 Aug 2026" + badge "01 Jul – 10 Aug".
+4. **Sparklines on Client & Supplier Cards** (manual, styling polish):
+   - Created reusable `Sparkline` component (inline SVG, no axes, area+line+last-point dot, graceful empty state with dashed baseline).
+   - Enhanced `/api/clients?detail=true` + `/api/suppliers?detail=true` to return `volumeTrend` (6-month buckets of finalAmount/baseAmount by bill.createdAt).
+   - Added sparkline row to client cards (emerald stroke, "6-mo volume" label) and supplier cards (teal stroke, "6-mo supplied" label).
+   - Verified: 5 sparklines render on Clients view, 5 on Suppliers view.
+
+## Verification Results
+- `bun run lint` → **0 errors, 0 warnings** (fully clean).
+- agent-browser QA: all 10+ views render with **0 console errors, 0 warnings**.
+- Lightbox: opens on thumbnail click, shows counter + caption, keyboard nav works, Escape closes.
+- Notification generation: 3 new reminders created on first run, 0 on second (idempotent).
+- Dashboard range: "This Quarter" correctly filters to Jul–Aug data, badge updates.
+- Sparklines: 5 rendered on Clients, 5 on Suppliers, responsive.
+- Dark mode: toggles correctly; sparklines + lightbox work in both themes.
+- Screenshots saved: `broker-os-lightbox.png`, `broker-os-clients-sparklines.png`, `broker-os-clients-dark.png`.
+
+## Unresolved Issues / Risks + Next Phase Recommendations
+1. **PDF report exports** — currently only CSV. A monthly brokerage statement / client ledger PDF would be valuable (use the `pdf` skill).
+2. **Supplier/Client portal mockups** — the plan mentions future portals; could add read-only mockup views accessible via a toggle.
+3. **Bulk operations** — bulk mark notifications done, bulk select for payout already exists in brokerage.
+4. **Notification scheduling** — currently generate-on-demand. Could add a cron-like scheduled job to auto-generate daily.
+5. **Dashboard drill-down** — clicking a KPI could filter the list views (e.g. click "Outstanding ₹56k" → opens bills filtered to due).
+6. **Advanced analytics** — supplier reliability scoring, client credit exposure trends, forecasting.
+7. **Mobile gesture support** — swipe to navigate lightbox photos on touch devices.
+8. **Image optimization** — uploaded photos stored at full resolution; could add sharp-based resizing for thumbnails.
+
+Priority for next round: **PDF report exports** (high-value for finance tool) + **Dashboard drill-down** (UX depth) + **Notification scheduling** (automation).
+
+---
+Task ID: 10-b
+Agent: Builder (Dashboard Drill-Down)
+Task: Make dashboard KPI cards + chart elements clickable so the broker can drill into filtered list views (bills due, brokerage eligible/pending, disputes open, POs by status, client detail).
+
+Work Log:
+- Read worklog + prior agent-ctx records. Reviewed ui-store.ts, shared.tsx (KpiCard), dashboard-view.tsx, dashboard API route, bills/brokerage/disputes/pos views, recharts Bar/Pie onClick type signatures, and format.ts.
+
+1) UI store (`src/lib/ui-store.ts`):
+   - Added `DrillFilter` type = `{ view: ViewKey; preset: string }` and a `drillFilter: DrillFilter | null` field.
+   - Added `drillTo(view, preset)` action — sets `view`, clears detail, and pushes `drillFilter = { view, preset }`.
+   - Added `clearDrill()` action — sets `drillFilter = null`.
+   - Modified `setView(v)` to also clear `drillFilter` — so manual sidebar/nav clicks never carry a stale drill preset. Only `drillTo()` pushes a preset.
+
+2) KpiCard component (`src/components/shared.tsx`):
+   - Added optional `onClick?: () => void` prop.
+   - When `onClick` is provided: renders as a `<button>` with `group glass relative block w-full overflow-hidden rounded-2xl p-5 text-left hover-lift focus-visible:ring-2 focus-visible:ring-emerald-500/50`. A "Drill ›" cue (ChevronRight) absolutely positioned bottom-right fades in on `group-hover` in emerald.
+   - When no `onClick`: stays a `GlassCard` div (unchanged — brokerage view's KpiCards continue to render as divs).
+   - Imported `ChevronRight` from lucide-react.
+
+3) Dashboard API (`src/app/api/dashboard/route.ts`):
+   - `volumeByClient` entries now include `id: clientId` alongside `name` and `value`, so the bar chart's onClick can open the client detail sheet.
+
+4) Dashboard view (`src/components/views/dashboard-view.tsx`):
+   - Pulled `drillTo` from useUI.
+   - Wired 4 KPI onClick handlers:
+     • Outstanding Receivable → `drillTo("bills", "due")`
+     • Brokerage Earned → `drillTo("brokerage", "eligible")`
+     • Pending (not eligible) → `drillTo("brokerage", "pending")`
+     • Active POs / Disputes → `drillTo("disputes", "open")`
+   - PO Status pie: added `onClick` that reads `payload.name` and calls `drillTo("pos", status)`. Cells get `cursor-pointer`.
+   - Volume by Client bar: added `onClick` that reads `payload.id` and calls `openDetail("Client", id)`. Bar gets `cursor-pointer`.
+   - Updated `DashboardData` type: `volumeByClient: { id: string; name: string; value: number }[]`.
+
+5) Bills view (`src/components/views/bills-view.tsx`):
+   - Added `dueOnly` local state (default false).
+   - `useEffect` consumes `drillFilter` when `view==="bills" && preset==="due"` → `setDueOnly(true)` + `clearDrill()`. Guarded by a `consumedDrill` ref keyed on `"view:preset"` to fire exactly once.
+   - Row filter: `matchesDue = !dueOnly || (finalAmount - paidAmount) > 0`.
+   - Added a "Due only" toggle Button (Filter icon) next to the search input — turns default-variant when active.
+   - When `dueOnly` is true, an emerald Filtered badge with an X clear-button renders under the search row.
+
+6) Brokerage view (`src/components/views/brokerage-view.tsx`):
+   - Added `eligFilter: "all" | "eligible" | "pending"` local state + `ELIG_FILTERS` array.
+   - `useEffect` consumes `drillFilter` for `view==="brokerage"`: preset "eligible" → eligFilter "eligible"; preset "pending" → eligFilter "pending". Then `clearDrill()`.
+   - `filtered` now also applies `matchesElig`.
+   - Added an eligibility filter chip row (All / Eligible / Not eligible with counts) below the search.
+   - When `eligFilter !== "all"`, an emerald Filtered badge with X renders next to the chips.
+   - Imported `cn` from `@/lib/utils` (needed for chip classes), `Badge`, `Filter`, `X`.
+
+7) Disputes view (`src/components/views/disputes-view.tsx`):
+   - `useEffect` consumes `drillFilter` for `view==="disputes" && preset==="open"` → `setFilter("open")` (existing chip state) + `clearDrill()`.
+   - When `filter !== "all"`, an emerald Filtered badge with X renders under the existing chip row.
+   - Imported `Badge`, `Filter` (X was already imported).
+
+8) POs view (`src/components/views/pos-view.tsx`):
+   - `useEffect` consumes `drillFilter` for `view==="pos"`: if preset matches one of `STATUS_OPTIONS` values (open/partially_delivered/fully_delivered/closed) → `setStatus(preset)` + `clearDrill()`.
+   - When `status !== "all"`, an emerald Filtered badge (titleCased label) with X renders under the search/select row.
+   - Imported `Badge`, `Filter`, `X`, `titleCase`.
+
+Style compliance:
+- shadcn/ui: Badge, Button, Input, Select, GlassCard.
+- Icons from lucide-react: ChevronRight (KpiCard cue), Filter, X (clear buttons), + existing.
+- KPI cards: cursor-pointer + hover-lift + emerald "Drill ›" hover cue.
+- Filtered badges: `border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300` (emerald tint, no indigo/blue).
+- Responsive: search + filter rows stack on mobile; badges wrap with `flex-wrap`.
+
+Stage Summary:
+- Files edited (8): src/lib/ui-store.ts, src/components/shared.tsx, src/app/api/dashboard/route.ts, src/components/views/dashboard-view.tsx, src/components/views/bills-view.tsx, src/components/views/brokerage-view.tsx, src/components/views/disputes-view.tsx, src/components/views/pos-view.tsx.
+- Agent-ctx record written: src/agent-ctx/10-b-dashboard-kpi-drilldown.md.
+- Lint: `bun run lint` → 0 errors, 0 warnings.
+- TypeScript: `bunx tsc --noEmit` → no errors in any touched file (remaining pre-existing errors in examples/, skills/, bookings/route.ts unchanged and out of scope).
+- Dev log: clean compiles after edits.
+- Did NOT run dev server or build (per instructions).
+- Drill-down flows now live: 4 KPI cards → filtered lists; PO-status pie → POs filtered by status; volume-by-client bar → client detail sheet. Manual nav (sidebar) clears drill state so no stale filters leak between visits.
+
+---
+Task ID: 10-c
+Agent: Builder (Analytics View)
+Task: Create dedicated Analytics view + `/api/analytics` endpoint combining §8.1/§8.2/§8.3 insights — supplier reliability scoring, client credit exposure trends, brokerage payout forecasting, and 12-month business volume trends.
+
+Work Log:
+- Read worklog + agent-ctx records. Reviewed patterns: `/api/dashboard/route.ts` (in-memory aggregations + `buildEarningsBuckets`), `/api/suppliers/route.ts` (fulfillment from PO lineItemsJson), `/api/clients/route.ts` (outstanding computation), `/api/brokerages/route.ts` (eligible/payoutStatus semantics), `/api/disputes/route.ts`, `/api/payments/route.ts` (last-payment-date computation), and `prisma/schema.prisma`. Confirmed chart palette convention (emerald/teal/amber/rose/plum oklch, no indigo/blue). Confirmed `ui-store.ts` already had a drill-down mechanism from a prior task — only needed `"analytics"` added to the `ViewKey` union.
+
+1) API — created `src/app/api/analytics/route.ts`
+- `GET /api/analytics` returns `{ suppliers, clients, brokerage, volume }`. Single Promise.all pulls 8 collections (suppliers, clients, dispatches w/ PO, POs, bills, payments, disputes, brokerages w/ bill); lookup maps precomputed (`poById`, `billsByClient`, `disputesByPo`, `posBySupplier`, `dispatchesBySupplier`, `paymentsByBill`, `clientCadence`, `clientName`, `supplierName`).
+- Helper `monthlyBuckets(count, now)` → labelled `[start, end)` month ranges; 2-digit year suffix when count ≥ 12.
+
+**a) Supplier reliability scores** — per supplier:
+  - Fulfillment (40% wt): avg of `min(1, dispatchedQty/orderedQty)`; empty → 100. `totalSupplied` ≈ `po.totalValue × share`.
+  - On-time dispatch (30% wt): `% of dispatches where dispatchDate <= (revisedDispatchDate ?? expectedDispatchDate)`; only counts dispatches with an expected date; empty → 100.
+  - Low short-shipment (20% wt): `100 - shortShipmentRate%` (% not `short_shipment`).
+  - Low dispute rate (10% wt): `100 - (disputes on their POs / total POs × 100)`.
+  - Composite = `0.4×F + 0.3×OT + 0.2×(100-SS) + 0.1×(100-D)`, clamped [0,100].
+  - Tier: ≥85 excellent, ≥70 good, ≥55 average, <55 needs attention.
+  - Sorted by score desc. Returns `{ supplierId, name, score, fulfillment, onTimeRate, shortShipmentRate, disputeRate, dispatchCount, totalSupplied, tier }[]`.
+
+**b) Client credit exposure** — per client:
+  - Outstanding: `sum(finalAmount - paidAmount)`.
+  - Exposure trend (6 monthly buckets): outstanding snapshot at month end — `sum(finalAmount - paidAmount)` for bills where `createdAt <= monthEnd` (uses current paidAmount; per spec's "approximate" note).
+  - Avg payment delay (days): for fully-paid bills, `avg(lastPaymentDate - bill.createdAt)`; ignores negative outliers.
+  - Return rate: `defective_return disputes on client's POs / total bills × 100`.
+  - Sorted by outstanding desc. Returns `{ clientId, name, outstanding, exposureTrend: [{month, value}], avgPaymentDelay, returnRate, billCount }[]`.
+
+**c) Brokerage forecast**:
+  - pendingTotal: sum where `eligible=false`.
+  - eligibleUnpaidTotal: sum where `eligible=true && payoutStatus != "paid"`.
+  - byCadence: groups eligible-unpaid by client's `payoutCadence` → `{ immediate, 4_month, 12_month }`.
+  - projectedByMonth (next 3 months): immediate → 100% in month 0; 4_month → 1/4 each month for 4 months; 12_month → 1/12 each month for 12 months. Summed per month, rounded.
+  - Returns `{ pendingTotal, eligibleUnpaidTotal, projectedByMonth: [{month, amount}], byCadence }`.
+
+**d) Business volume trends**:
+  - monthlyBilled (12 monthly buckets): sum of `bill.finalAmount` by createdAt.
+  - monthlyDispatched (12 monthly buckets): per-dispatch value ≈ `po.totalValue × min(1, dispatchedQty/orderedQty)` bucketed by dispatchDate (since Dispatch.itemsJson has qty only, not price).
+  - topPairs: top 5 client–supplier pairs by total `bill.finalAmount`. Returns `{ clientName, supplierName, value }[]`.
+
+2) UI — created `src/components/views/analytics-view.tsx`
+- `useApi<AnalyticsData>("/api/analytics")`; first-load skeleton while `!data`.
+- Inline `ScoreRing({ score, size = 48 })` SVG component per spec — two `<circle>`s with `strokeDasharray`/`strokeDashoffset` math; color emerald/teal/amber/rose by tier; score centered.
+- Chart palette object `COLORS` (emerald/teal/amber/rose/plum oklch).
+- **Supplier Reliability section**: sortable `Table` (sorted by score desc by default); columns Supplier | Score (ScoreRing) | Tier (Badge) | Fulfillment | On-time | Short-ship | Disputes | Dispatches | Supplied. Per-cell color hints (emerald/amber/rose). Tier badge classes per tier.
+- **Client Credit Exposure section**: 5-col grid (3+2). Left = `Table` of clients (Outstanding color-coded: >₹1L rose, >₹50k amber; avg delay >120d rose, >60d amber; return rate 0% emerald, ≥10% rose). Right = horizontal `BarChart` of outstanding by top-6 clients with per-bar `<Cell>` color (rose/amber/emerald thresholds).
+- **Brokerage Forecast section**: 3 `KpiCard`s (Pending rose / Eligible unpaid amber / Projected 3-mo emerald). 5-col grid (3+2): left = vertical `BarChart` of `projectedByMonth` (emerald gradient fill); right = `CadenceRow` list (Immediate emerald / 4-month teal / 12-month plum dots + amounts).
+- **Volume Trends section**: 5-col grid (3+2). Left = combined `AreaChart` with two areas (Billed emerald, Dispatched teal) over 12 monthly buckets, XAxis `interval=floor(len/8)`. Right = top-5 client–supplier pairs as cards with rank-tinted progress bars + `ArrowDownRight` icon hinting client→supplier flow.
+- All empty states handled via `<EmptyState />`.
+- Removed unused lucide imports (`TrendingDown`, `AlertTriangle`, `ArrowUpRight`) after writing.
+
+3) Wiring:
+- `src/lib/ui-store.ts`: added `"analytics"` to `ViewKey` union (pre-existing drill-down fields untouched).
+- `src/components/sidebar.tsx`: imported `BarChart3`; added `{ key: "analytics", label: "Analytics", icon: BarChart3, group: "Overview" }` after Dashboard.
+- `src/app/page.tsx`: imported `AnalyticsView`; added `analytics: { title: "Analytics", sub: "Performance insights & forecasting" }` to `VIEW_TITLES`; added `case "analytics": return <AnalyticsView />;` to `ViewRouter`.
+- `src/components/command-palette.tsx`: imported `BarChart3`; added `{ key: "analytics", label: "Analytics", icon: BarChart3 }` to `NAV_ITEMS`.
+
+Style compliance:
+- shadcn/ui: `Badge`, `Skeleton`, `Table` (+ TableHeader/Body/Head/Row/Cell), `KpiCard`/`GlassCard`/`SectionHeader`/`EmptyState`.
+- recharts: `ResponsiveContainer`, `BarChart`, `Bar`, `AreaChart`, `Area`, `XAxis`, `YAxis`, `Tooltip`, `CartesianGrid`, `Cell`.
+- Icons from lucide-react: `Award`, `TrendingUp`, `Clock`, `BarChart3`, `Factory`, `Users`, `Wallet`, `ArrowDownRight`.
+- `glass` surfaces, `kpi-num` numerals, `hover-lift` on table rows.
+- ScoreRing uses emerald/teal/amber/rose per tier (no indigo/blue).
+- Responsive: 5-col grids collapse on mobile; `Table` wraps with overflow-x-auto; `ResponsiveContainer` on all charts.
+
+Verification:
+- `bun run lint` → **0 errors, 0 warnings** (fully clean).
+- `bunx tsc --noEmit` → no errors in any touched file. Pre-existing errors in `examples/`, `skills/`, `bookings/route.ts` unchanged and out of scope.
+- Did NOT start the dev server or run `bun run build` (per instructions). Dev server was already stopped at task time; dev.log shows prior `GET / 200` and successful compiles.
+
+Stage Summary:
+- Files created (2): `src/app/api/analytics/route.ts`, `src/components/views/analytics-view.tsx`.
+- Files edited (4): `src/lib/ui-store.ts`, `src/components/sidebar.tsx`, `src/app/page.tsx`, `src/components/command-palette.tsx`.
+- Agent-ctx record written: `agent-ctx/10-c-analytics-view.md`.
+- Lint: 0 errors, 0 warnings. TypeScript: 0 errors in touched files.
+- The new Analytics view is reachable from the sidebar (Overview group, second item, BarChart3 icon), the Cmd+K command palette, and the view router. It surfaces four insight sections end-to-end: (a) Supplier reliability scores with circular ScoreRing + tier badges; (b) Client credit exposure with table + outstanding-by-client bar chart (amber/rose thresholds at ₹50k/₹1L); (c) Brokerage forecast with 3 KPI mini-cards + next-3-months payout bar chart + per-cadence breakdown; (d) Volume trends with 12-month billed-vs-dispatched area chart + top-5 client–supplier pair cards. All four sections reuse the existing emerald/teal/amber/rose/plum palette and glassmorphic GlassCard/KpiCard system; no indigo/blue introduced; responsive across breakpoints.
+
+---
+Task ID: 10-a
+Agent: Builder (PDF Reports)
+Task: Add server-side PDF report generation via standalone print-optimized HTML — brokerage statement, client ledger, supplier performance summary — plus UI entry points in the brokerage view, client/supplier detail sheets, and Settings Data Management card.
+
+Work Log:
+- Read worklog (Tasks 1–9-c) + prior agent-ctx records. Reviewed `/api/export` (CSV pattern), `/api/clients/[id]` + `/api/suppliers/[id]` (ledger + brokerage query patterns), `/api/dashboard` (range-bounds helper), `/api/brokerages` (payout query), Prisma schema, and the four UI files to be edited.
+
+1) Created `src/app/api/reports/route.ts` — single `GET` handler returning a fully self-contained HTML document (Content-Type: text/html). Three report types via the `type` query:
+   - `type=brokerage-statement&range=month|quarter|year|all` — Monthly Brokerage Statement
+   - `type=client-ledger&clientId=X` — Client Ledger Report
+   - `type=supplier-summary&supplierId=Y` — Supplier Performance Summary
+   - Architecture: `htmlShell(title, rangeLabel, body, footerNote?)` builds the outer document with inline `<style>` (no external CSS), brand header (emerald "B" mark + "Broker OS" + Garment Brokerage Operations sub-line), report meta (title + range label + generated-at timestamp), body, optional rules-note callout, and footer line. The auto-print script is appended at end of `<body>`: `window.onload = setTimeout(window.print, 500)`.
+   - `getRangeBounds(range)` reuses the dashboard's semantics (month = 1st of current month, quarter = 1st of quarter, year = Jan 1, all = undefined start). Server-safe formatters (`fmtCurrency`/`fmtDate`/`fmtDateTime`/`titleCase`/`escapeHtml`) mirror `lib/format.ts` but are inlined. `statusPill(status)` and `eligiblePill(eligible, forceEligible?)` emit print-safe emerald/amber/rose/zinc pills mirroring `statusChipClass` colors.
+   - **Brokerage Statement**: 4 KPI cards (Total brokerage / Eligible pending / Paid out / Not eligible). Ledger table grouped by client — each group has an emerald group-header row (`Name — N entries`), detail rows (Bill | Client | Supplier | Base excl GST | Comm % | Brokerage | Eligible | Payout | Eligible At), and a per-client amber sub-total row. Grand total in `<tfoot>`. Payout history table on a new page (Client | Cadence | Period start/end | Total paid | Status | Paid at | # Entries). Footer rules-note: brokerage computed on base excl GST; eligible only on full bill payment; payouts follow client cadence; adjustments before GST & brokerage.
+   - **Client Ledger**: subject card (emerald left-border) with 8-cell meta grid (contact / phone / email / GST / payment cycle / payout cadence / GST rate / client since). 4 KPI cards (Total business / Outstanding / Brokerage earned / Brokerage paid). Running-balance ledger table (Date | Type | Reference | Debit | Credit | Balance) — emerald credit column. PO delivery summary on a new page (PO Number | Supplier | Status | Ordered sets | Dispatched | Fulfillment % | Expected | Revised). Brokerage entries on a new page (Bill | Supplier | Created | Comm % | Brokerage | Eligible | Payout | Paid at). Footer note on reporting basis.
+   - **Supplier Performance Summary**: subject card with 8-cell meta grid. 8 KPI cards (Total supplied / Outstanding brokerage / Paid brokerage / Avg dispatch delay (signed, colored) / Fulfillment % / Short-shipment rate / Bills / Dispatches). Bills table (Bill | PO | Client | Base | GST % | GST | Final | Paid | Due | Status — Due amber when > 0). Dispatches table on a new page (PO | Client | Dispatch date | Dispatched | Ordered | Fulfillment | Status | Expected). Brokerage entries on a new page. Footer note on performance-basis metrics.
+   - Styling: `@page { margin: 1.5cm; size: A4; }`, Inter font + system sans-serif fallback, emerald accent (#10b981 / #059669 / #ecfdf5 / #047857 / #a7f3d0) — NO indigo/blue. Tables: `font-variant-numeric: tabular-nums`, right-aligned numeric cells (`.num`), zebra striping. Print CSS: `.no-print { display: none }`, `.section-break { page-break-before: always }`, `table.report tr { page-break-inside: avoid }`, `table.report thead { display: table-header-group }`. Floating emerald "🖨 Print" button (fixed top-right, z-index 1000) calls `window.print()` and is hidden in print mode.
+   - Response headers: `Content-Type: text/html; charset=utf-8`, `Cache-Control: no-store, no-cache, must-revalidate`, `X-Content-Type-Options: nosniff`. `export const dynamic = "force-dynamic"` ensures fresh data on every request.
+   - Error handling: invalid `type` → 400 JSON; missing `clientId`/`supplierId` → 400 JSON; unknown client/supplier → 200 HTML with "Not found" body (graceful browser display rather than a JSON 404); wrapped exceptions → 500 JSON.
+
+2) UI entry points:
+   - `brokerage-view.tsx`: added `FileText` import. Wrapped the existing "Export CSV" button in a `<div className="flex items-center gap-2">` with a new "PDF statement" outline Button (`FileText` icon, `variant="outline"`, `size="sm"`) calling `window.open("/api/reports?type=brokerage-statement&range=all", "_blank")`. Placed before the CSV button.
+   - `client-detail-sheet.tsx`: added `Printer` import + imported `Button`. Wrapped `SheetTitle` + `SheetDescription` in a `flex items-start justify-between gap-3` div with a "Print ledger" outline Button on the right (only rendered when `data && !loading`). Calls `window.open(`/api/reports?type=client-ledger&clientId=${data.client.id}`, "_blank")`.
+   - `supplier-detail-sheet.tsx`: same pattern — added `Printer` + `Button` imports, wrapped the sheet header in a justify-between flex with a "Print summary" outline Button calling `window.open(`/api/reports?type=supplier-summary&supplierId=${data.supplier.id}`, "_blank")`.
+   - `settings-view.tsx`: added `Printer` to the lucide imports. Defined a new `PDF_REPORTS` array constant — brokerage statement is a real link (`href="/api/reports?type=brokerage-statement&range=all"`); client ledger + supplier summary entries have empty `href` (rendered as static `<span>` cards with reduced opacity + `cursor-default`) and a hint pointing to the corresponding detail sheet. Added a new "Print-ready PDF reports" section in the Data Management card (after the CSV grid, before the re-seed block) with a one-line explainer ("Opens a print-optimized page in a new tab — the browser's print dialog auto-launches, where you can choose 'Save as PDF' as the destination."). Each card has an emerald-tinted icon, a bold title, a small hint, and a `Printer` icon on the right. Grid is `grid-cols-1 sm:grid-cols-3`.
+
+Style compliance:
+- All new buttons use shadcn `Button` `variant="outline"` `size="sm"`.
+- All icons from `lucide-react` (`FileText`, `Printer`).
+- HTML report uses only emerald accents — no indigo/blue.
+- Right-aligned numeric cells with `font-variant-numeric: tabular-nums` on `table.report`.
+- Zebra striping on all detail tables.
+- `@page { margin: 1.5cm }`; page breaks before major sections; tables avoid row-split across page breaks; thead repeats on each printed page.
+- Standalone HTML — no external CSS, no fetched fonts (system sans-serif fallback), no JS libraries. Only a tiny inline `<script>` for auto-print.
+- Settings-view PDF report cards stack on mobile (`grid-cols-1 sm:grid-cols-3`).
+
+Verification:
+- `cd /home/z/my-project && bun run lint` → **0 errors, 0 warnings** (fully clean).
+- `bunx tsc --noEmit` → no TypeScript errors in any of the 5 touched files (`src/app/api/reports/route.ts`, `brokerage-view.tsx`, `client-detail-sheet.tsx`, `supplier-detail-sheet.tsx`, `settings-view.tsx`). Pre-existing errors in `examples/websocket/*`, `skills/*`, and `src/app/api/bookings/route.ts` are out of scope and unchanged.
+- Dev server was not running on port 3000 at the time of verification (only Caddy on :81), so a curl smoke test against `/api/reports` couldn't be performed. Did NOT start the dev server (per instructions). Did NOT run `bun run build` (per instructions).
+- Agent-ctx record written: `agent-ctx/10-a-pdf-reports.md`.
+
+Stage Summary:
+- Files created (1): `src/app/api/reports/route.ts` — standalone print-optimized HTML report API with 3 report types (brokerage-statement, client-ledger, supplier-summary), auto-print script, emerald-accented styling, page-break-aware layout.
+- Files edited (4): `src/components/views/brokerage-view.tsx` (added "PDF statement" button), `src/components/views/client-detail-sheet.tsx` (added "Print ledger" button in sheet header), `src/components/views/supplier-detail-sheet.tsx` (added "Print summary" button in sheet header), `src/components/views/settings-view.tsx` (added "Print-ready PDF reports" section with 3 cards in Data Management).
+- Lint: 0 errors, 0 warnings. TypeScript: 0 errors in touched files.
+- The Broker OS now has end-to-end print-ready PDF report exports — opens a print-optimized page in a new tab where the browser's print dialog auto-launches and the user picks "Save as PDF" as the destination. Reuses all existing Prisma query patterns (no schema changes) and respects the project's emerald-only color rule.
+
+---
+Task ID: 10 (QA + Feature Round 3)
+Agent: Architect (cron review round 3)
+Task: Assess project status, QA via agent-browser, add new features (PDF report exports, dashboard KPI drill-down, advanced analytics view).
+
+## Current Project Status Assessment
+- All API endpoints return 200. All 11 views render with 0 console errors, 0 warnings.
+- `bun run lint` → 0 errors, 0 warnings (clean).
+- No critical bugs found — foundation is stable.
+- Dev server required restart (daemon pattern) but is now stable across tool calls.
+- Proceeded with the worklog's top 3 priorities: PDF reports, dashboard drill-down, analytics.
+
+## Completed Modifications
+
+### New Features (3 parallel subagents)
+1. **PDF Report Exports** (Task 10-a):
+   - `GET /api/reports?type=brokerage-statement|client-ledger|supplier-summary` → returns standalone print-optimized HTML (auto-opens print dialog, "Save as PDF" capable).
+   - 3 report types: (a) Brokerage Statement — KPIs + ledger grouped by client + payout history + business-rules footer; (b) Client Ledger — 8-cell meta grid + 4 KPIs + running-balance ledger + PO delivery summary + brokerage entries; (c) Supplier Summary — 8 KPIs (incl. avg dispatch delay, fulfillment%, short-ship rate) + bills + dispatches + brokerage tables.
+   - Print CSS: `@page { margin: 1.5cm; size: A4 }`, page breaks before sections, zebra-striped tables, tabular-nums, emerald accents, auto-print script, floating Print button (hidden in print).
+   - UI: "PDF statement" button in Brokerage view, "Print ledger" in client detail sheet, "Print summary" in supplier detail sheet, 3 report cards in Settings → Data Management.
+   - Verified: opened brokerage-statement (14KB HTML, 2 tables, title "Brokerage Statement"), client-ledger (3 tables), all render correctly.
+2. **Dashboard KPI Drill-Down** (Task 10-b):
+   - Added `drillFilter` + `drillTo(view, preset)` + `clearDrill()` to Zustand UI store. `setView()` clears drillFilter so manual nav doesn't carry stale filters.
+   - 4 KPI cards now clickable with "DRILL" hint: Outstanding Receivable → bills filtered "due"; Brokerage Earned → brokerage "eligible"; Pending → brokerage "pending"; Active POs/Disputes → disputes "open".
+   - PO Status pie slice → POs filtered by that status. Volume-by-Client bar → opens client detail sheet (API now returns clientId in volumeByClient).
+   - List views consume preset once (guarded by ref), show emerald "Filtered: X" badge with clear button, then clearDrill().
+   - Verified: clicked Outstanding Receivable → Bills view with "Filtered: due only" badge, only 1 bill (the one with due > 0) shown.
+3. **Advanced Analytics View** (Task 10-c):
+   - `GET /api/analytics` with 4 sections computed on-read: (a) supplier reliability scores (40% fulfillment + 30% on-time + 20% low-short-ship + 10% low-dispute, tiered excellent/good/average/needs-attention); (b) client credit exposure (outstanding, 6-mo trend, avg payment delay, return rate); (c) brokerage forecast (pending, eligible unpaid, projected 3-month payouts by cadence); (d) volume trends (12-mo billed vs dispatched, top-5 client-supplier pairs).
+   - Analytics view with inline `ScoreRing` SVG (circular progress colored by tier), 4 sections with recharts (bar/area charts), sortable supplier table, color-coded client exposure.
+   - Wired into sidebar (Overview group, after Dashboard) + page router + command palette.
+   - Verified: 5 suppliers scored (top: Krishna Knit Fab 100/excellent), 5 clients, 18 SVGs render, all 4 section headings present.
+
+## Verification Results
+- `bun run lint` → **0 errors, 0 warnings** (fully clean).
+- agent-browser QA: all 11 views render with **0 console errors, 0 warnings**.
+- Analytics API: 5 suppliers + 5 clients + brokerage forecast (pending 5370, eligible unpaid 7525, 3-month projection) + volume trends.
+- PDF reports: brokerage-statement (14KB, 2 tables), client-ledger (3 tables), supplier-summary — all render as standalone HTML with auto-print.
+- Drill-down: Outstanding KPI → Bills "due only" (1 bill) — filter + badge + clear all work.
+- ScoreRing: 18 SVGs render on Analytics view (score rings + charts).
+- Dark mode: analytics view screenshot saved.
+- Screenshots: `broker-os-analytics.png`, `broker-os-analytics-dark.png`.
+
+## Unresolved Issues / Risks + Next Phase Recommendations
+1. **Notification scheduling (cron)** — auto-generate daily via a scheduled job instead of only on dashboard load.
+2. **Image optimization** — uploaded photos stored full-res; add sharp-based thumbnail generation.
+3. **Supplier/Client portal mockups** — read-only portal views for the future phase.
+4. **Bulk operations** — bulk mark notifications done, bulk assign disputes.
+5. **Forecasting depth** — extend brokerage forecast with confidence intervals, seasonal trends.
+6. **Report scheduling** — email weekly/monthly PDF statements automatically.
+7. **Data visualization polish** — add a geographic map view if supplier/client addresses are geocoded.
+8. **Mobile gesture support** — swipe for lightbox, pull-to-refresh.
+9. **Audit log export** — export audit trail as CSV/PDF for compliance.
+10. **Multi-broker/agent support** — the data model supports it; UI needs scoping.
+
+Priority for next round: **Notification scheduling cron** (automation) + **Image optimization** (performance) + **Supplier/Client portal mockups** (plan §3 future-ready).

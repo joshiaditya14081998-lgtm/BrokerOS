@@ -1,0 +1,242 @@
+   900→
+   901→3) GET /api/photos: switched from `db.photo.findMany` to a raw `db.$queryRaw` SELECT explicitly projecting `thumbnailUrl` (and all other Photo columns). Same rationale as the POST INSERT — the dev server's HMR occasionally holds a stale PrismaClient class that silently drops newly-added scalar columns from the default projection. `ORDER BY datetime(createdAt) DESC` preserves newest-first ordering; `createdAt` normalised to ISO string for JSON transport. Verified via curl that the response now contains `thumbnailUrl`.
+   902→
+   903→4) DELETE /api/photos/[id]: file-deletion loop now iterates `[photo.url, photo.thumbnailUrl]` and unlinks both. Best-effort, DB record remains the source of truth.
+   904→
+   905→5) Backfill script (src/lib/backfill-thumbnails.ts): queries `Photo where thumbnailUrl IS NULL`; for each row derives originalPath from p.url (skips if not under /uploads/); skips if original is itself `thumb_*`; generates `thumb_<p.id>.jpg` via sharp (400px / q80); updates the row. Idempotent — safe to re-run. Prints per-photo ✓/✗ + a final summary. Ran successfully: 5 scanned, **4 generated**, 0 missing, **1 failed** (a 69-byte 1×1 placeholder PNG that sharp's libspng loader can't decode → correctly left null, consumer falls back to `url`).
+   906→
+   907→6) New endpoint GET /api/photos/stats (src/app/api/photos/stats/route.ts): returns `{ count, totalSizeBytes, totalSizeMB }`. `count` = `db.photo.count()`; `totalSizeBytes` = sum of fs.statSync size for every file in public/uploads (originals + thumbnails + legacy orphans); `totalSizeMB` = bytes/1024² rounded to 2 decimals. `force-dynamic` for fresh data. Verified via curl: `{"count":5,"totalSizeBytes":2454190,"totalSizeMB":2.34}`.
+   908→
+   909→7) photo-upload.tsx: added `thumbnailUrl: string | null` to the exported `Photo` type. Gallery grid `<img src>` → `p.thumbnailUrl || p.url` (falls back to original for legacy/broken-thumb records). Same change in the read-only `PhotoStrip` (used in dispute lists).
+   910→
+   911→8) lightbox.tsx: re-verified — the modal `<img src>` uses `current.url` (full-res original). No change required. The `LightboxPhoto` type intentionally exposes only `{ id, url, caption, createdAt }`; `PhotoUpload.Photo` is structurally compatible (extra `thumbnailUrl` field is fine).
+   912→
+   913→9) settings-view.tsx: added `ImageIcon` + `HardDrive` imports from lucide-react; a `PhotoStats` type; and a `useApi<PhotoStats>("/api/photos/stats")` call alongside the existing settings fetch. In the Data Management card, added a 2-col mini-stat grid right under the header (before the CSV export grid): Photos (count + "record"/"records" suffix) and Storage used (`${MB} MB` + raw byte count). Both render `—` placeholders while loading. Followed by an explainer line about original-vs-thumbnail storage. Glass surfaces, emerald accent, no indigo/blue. Responsive 1-col on mobile → 2-col on sm+.
+   914→
+   915→Style compliance:
+   916→- shadcn/ui components (Button, Input, Label, GlassCard).
+   917→- Icons from lucide-react: ImageIcon, HardDrive (+ existing Database, Download, etc.).
+   918→- glass surfaces, emerald accent, NO indigo/blue.
+   919→- Thumbnails: 400px max width, JPEG q80 — quality/size balance as specified.
+   920→- kpi-num numerals on the stat values; responsive 1-col → 2-col mini-stat grid.
+   921→
+   922→Verification:
+   923→- `bun run db:push` → schema in sync, Prisma Client regenerated.
+   924→- `bun run src/lib/backfill-thumbnails.ts` → 5 scanned, 4 generated, 1 failed (tiny placeholder PNG; correctly left null).
+   925→- `bun run lint` → 0 errors, 1 pre-existing warning (untouched portal-view.tsx "Unused eslint-disable directive"). Targeted eslint on the 8 touched files → 0 errors, 0 warnings.
+   926→- `bunx tsc --noEmit` → 0 errors in any touched file. Pre-existing errors in examples/, skills/, bookings/route.ts unchanged.
+   927→- Live API checks (dev server HMR'd cleanly): /api/photos/stats returns `{"count":5,"totalSizeBytes":2454190,"totalSizeMB":2.34}`; /api/photos GET now returns `thumbnailUrl` in each photo object.
+   928→- Did NOT start the dev server or run `bun run build` (per instructions).
+   929→
+   930→Stage Summary:
+   931→- Files created (2): src/lib/backfill-thumbnails.ts, src/app/api/photos/stats/route.ts.
+   932→- Files edited (5): prisma/schema.prisma, src/lib/db.ts, src/app/api/photos/route.ts, src/app/api/photos/[id]/route.ts, src/components/photo-upload.tsx, src/components/views/settings-view.tsx.
+   933→- Files verified (1): src/components/lightbox.tsx — already uses full-res `url`, no change needed.
+   934→- Agent-ctx record written: agent-ctx/11-b-photo-thumbnails.md.
+   935→- Lint: 0 errors / 0 warnings on all touched files. TypeScript: 0 errors in touched files.
+   936→- Photo count: 5 Photo records in the DB; 4 now have thumbnails (1 tiny placeholder PNG correctly skipped by sharp).
+   937→- Storage stat surfaced in Settings: 2.34 MB across 14 files in public/uploads/.
+   938→- End-to-end: new uploads generate a 400px JPEG thumbnail synchronously; gallery grid loads ~25–43 KB thumbnails instead of multi-hundred-KB originals; lightbox still shows the full-res original; Settings → Data Management surfaces the storage usage with an emerald-accented glass mini-stat. Resolves Task 10 round 3's "Image optimization" priority.
+   939→
+   940→---
+   941→Task ID: 11-a
+   942→Agent: Builder (Portal Mockup Views)
+   943→Task: Build read-only portal mockup views for suppliers and clients — accessed via a persona switcher (no auth) — to demonstrate what each party would see in their own portal. Per plan §3 future-ready portals: suppliers view their own POs/dispatch actions/brokerage; clients view their own orders/bills/payments/deliveries/brokerage.
+   944→
+   945→Work Log:
+   946→- Read worklog (Tasks 1–10-c) + prior agent-ctx records. Reviewed `/api/suppliers/[id]` and `/api/clients/[id]` (existing query patterns + ledger computation), `/api/suppliers` and `/api/clients` (picker list shape), `/api/purchase-orders` (ordered/dispatched qty + fulfillment computation from lineItemsJson), Prisma schema (all relations already in place — every entity has supplierId/clientId), shared.tsx (GlassCard/KpiCard/StatusChip/SectionHeader/EmptyState), format.ts (formatters + statusChipClass), and the analytics-view (ScoreRing SVG pattern + chart palette).
+   947→
+   948→1) Created `src/app/api/portal/route.ts` — single GET handler dispatching on `persona` query param:
+   949→   - **`GET /api/portal?persona=supplier&id=X`** → returns `{ persona, profile, performance, sections }`:
+   950→     • `profile`: supplier record (name, contactPerson, phone, email, address, gstNo, defaultCommissionRate, defaultGstRate, notes, createdAt).
+   951→     • `performance`: fulfillment % (sum dispatchedQty / sum orderedQty across dispatches), on-time rate (% dispatches by revisedDispatchDate ?? expectedDispatchDate), short-ship rate (% status="short_shipment"), totalSupplied (sum brokerage.baseAmount), brokerageEarned/paid/outstanding (by eligible+payoutStatus), poCount, dispatchCount.
+   952→     • `sections.posAwaitingDispatch`: POs with status "open" or "partially_delivered" — reshaped with buyer name (replaces "client"), orderedQty, dispatchedQty, expected/revised dispatch dates, billStatus.
+   953→     • `sections.recentDispatches`: last 5 dispatches with poNumber, buyer, dispatchDate, dispatchedQty, orderedQty, status.
+   954→     • `sections.brokerage`: brokerage entries with billNumber, buyer, baseAmount, commissionRate, brokerageAmount, eligible, payoutStatus, payout linkage.
+   955→   - **`GET /api/portal?persona=client&id=X`** → returns `{ persona, profile, summary, sections }`:
+   956→     • `profile`: client record (name, contactPerson, phone, email, address, gstNo, defaultPaymentCycleDays, payoutCadence, gstRate, notes, createdAt).
+   957→     • `summary`: totalBusiness, outstanding (sum finalAmount - paidAmount), totalPaid, brokerageEarned (eligible), brokeragePaid (payoutStatus="paid"), billCount, poCount.
+   958→     • `sections.myOrders`: all POs reshaped with supplier name, status, orderedQty/dispatchedQty/fulfillment, expected/revised dispatch, lastDispatch date, billStatus, finalAmount, paidAmount.
+   959→     • `sections.outstandingBills`: bills with dueAmount > 0, with computed dueDate (createdAt + defaultPaymentCycleDays) + overdue flag (now > dueDate).
+   960→     • `sections.paymentHistory`: last 8 payments with billNumber, poNumber, amount, date, mode, reference.
+   961→     • `sections.recentDeliveries`: last 5 dispatches with poNumber, supplier, dispatchDate, dispatchedQty, orderedQty, status.
+   962→     • `sections.brokerage`: brokerage entries with billNumber, supplier, baseAmount, commissionRate, brokerageAmount, eligible, payoutStatus.
+   963→   - 400 on missing/invalid persona or id; 500 wrapper on unexpected errors. Reuses existing Prisma query patterns (no schema changes).
+   964→
+   965→2) Created `src/components/views/portal-view.tsx` — ~880-line client component:
+   966→   - Top-level SectionHeader with amber "Read-only mockup" badge.
+   967→   - **Preview-mode amber info banner**: "Preview mode — This is a read-only mockup of the supplier/client portal experience. In production, each party would log in to see only their own data." (Info icon).
+   968→   - **Persona switcher glass card**: two large tab-like buttons ("Supplier Portal" / "Client Portal") with Factory/Users icons (active = emerald-tinted border + bg). Select dropdown below to pick which supplier/client to view as (from `/api/suppliers` or `/api/clients`); auto-picks first entity when list arrives or persona switches. Stacks vertically on mobile.
+   969→   - Fetches `/api/portal?persona=X&id=Y` via `useApi` hook. Loading skeleton / empty / error states handled.
+   970→   - **Supplier portal dashboard** (action-oriented):
+   971→     • Welcome header: "Welcome, {name}" + ContactStrip (phone/email/address/gst) + commission/GST/PO/dispatch/since badges + circular ScoreRing (composite of fulfillment+onTime+(100-shortShip)÷3, colored by tier).
+   972→     • 4 KpiCards: Fulfillment % (Package icon, accent by threshold emerald/amber/rose), On-time rate (Clock3), Short-ship rate (AlertCircle, inverted threshold), Total supplied (Wallet, teal).
+   973→     • "POs Awaiting Dispatch" section: card list for open/partially_delivered POs with poNumber + StatusChip + buyer + overdue badge if expected date passed + Progress bar with "X to go" emphasis (amber tint). Emphasizes the dispatch action the supplier owes.
+   974→     • "Recent Dispatches" (left, 3-col) + "Brokerage Earned" (right, 2-col) side-by-side. Brokerage column has KpiCard for outstanding brokerage (amber when > 0, emerald when settled) + scrollable list of brokerage entries (max-h-72 overflow-y-auto) with buyer/commission %/amount.
+   975→   - **Client portal dashboard** (obligation-oriented):
+   976→     • Welcome header: "Welcome, {name}" + ContactStrip + payment-cycle/payout-cadence/bill/order/since badges.
+   977→     • 4 KpiCards: Total business (teal), Outstanding (rose when > 0, emerald when settled), Paid to date (emerald), Brokerage earned (amber).
+   978→     • "My Orders" (left, 3-col) + donut chart (right, 2-col). Orders list with poNumber + StatusChip + supplier + Progress bar with fulfillment % emphasis. Donut chart (PieChart/Pie/Cell/ResponsiveContainer/Tooltip) shows order-status breakdown with 4 emerald/teal/amber/rose cells (NO indigo/blue) + legend badges.
+   979→     • "Outstanding Bills" section: 2-col grid of bills emphasizing due amount (amber/rose by overdue). Includes computed dueDate + overdue flag + 3-cell mini-grid (Final/Paid/Due).
+   980→     • "Payment History" (left) + "Recent Deliveries" (right) side-by-side. Payment history shows billNumber + poNumber + date + mode + reference + amount (emerald). Deliveries shows poNumber + supplier + date + qty + StatusChip.
+   981→   - Reusable subcomponents: PersonaButton, ContactStrip, PortalSkeleton, ScoreRing.
+   982→   - All StatusChip / KpiCard / SectionHeader / EmptyState / GlassCard usage from shared.tsx.
+   983→   - recharts PieChart for the client order-status donut.
+   984→   - Emerald accent throughout, amber for warnings (outstanding/overdue), rose for alerts (overdue/short-ship), teal for secondary. NO indigo/blue.
+   985→
+   986→3) Wiring:
+   987→   - `src/lib/ui-store.ts`: added `"portal"` to `ViewKey` union.
+   988→   - `src/components/sidebar.tsx`: imported `Store` from lucide-react; added `{ key: "portal", label: "Portals", icon: Store, group: "Portals" }` between brokerage (Finance) and disputes (Operations). The sidebar's group Map preserves insertion order, so the "Portals" group appears between Finance and System in the rendered sidebar.
+   989→   - `src/app/page.tsx`: imported `PortalView` from `@/components/views/portal-view`; added `portal: { title: "Portals", sub: "Supplier & client portal preview" }` to VIEW_TITLES; added `case "portal": return <PortalView />;` to ViewRouter.
+   990→   - `src/components/command-palette.tsx`: imported `Store`; added `{ key: "portal", label: "Portals", icon: Store }` to NAV_ITEMS.
+   991→
+   992→Style compliance:
+   993→- shadcn/ui: Button, Select/SelectContent/SelectItem/SelectTrigger/SelectValue, Badge, Skeleton, Progress (via Progress primitive), Card (via GlassCard).
+   994→- Icons from lucide-react: Users, Factory, Store, Info, Package, Truck, Wallet, BadgePercent, Phone, Mail, MapPin, FileText, CalendarClock, CheckCircle2, Clock3, AlertCircle, ArrowRightCircle.
+   995→- recharts: PieChart, Pie, Cell, ResponsiveContainer, Tooltip (client order-status donut).
+   996→- `glass` / `glass-strong` surfaces, `kpi-num` numerals, `hover-lift` on interactive rows.
+   997→- `StatusChip` from shared.tsx for all status badges.
+   998→- `KpiCard` from shared.tsx with accent variants (emerald/amber/rose/teal).
+   999→- NO indigo/blue. Emerald accent throughout; amber for warnings; rose for alerts; teal for secondary.
+  1000→- Responsive: persona switcher stacks on mobile; KPI grids 4→2→1 cols; side-by-side cards collapse on mobile; donut chart container responsive.
+  1001→
+  1002→Verification:
+  1003→- `cd /home/z/my-project && bun run lint` → **0 errors, 0 warnings** (fully clean).
+  1004→- `bunx tsc --noEmit` → no TypeScript errors in any of the 6 touched files (`src/app/api/portal/route.ts`, `src/components/views/portal-view.tsx`, `src/lib/ui-store.ts`, `src/components/sidebar.tsx`, `src/app/page.tsx`, `src/components/command-palette.tsx`). Pre-existing errors in `examples/`, `skills/`, and other API routes (`audit/route.ts`, `bookings/route.ts`, `export/route.ts`, `reports/route.ts`) are out of scope and unchanged.
+  1005→- Dev server log shows `✓ Compiled` lines after each file save — no compile errors.
+  1006→- Did NOT start the dev server manually (per instructions; it was already running and picked up the new files via HMR). Did NOT run `bun run build` (per instructions).
+  1007→- Agent-ctx record written: `agent-ctx/11-a-portal-mockup-views.md`.
+  1008→
+  1009→Stage Summary:
+  1010→- Files created (2): `src/app/api/portal/route.ts`, `src/components/views/portal-view.tsx`.
+  1011→- Files edited (4): `src/lib/ui-store.ts`, `src/components/sidebar.tsx`, `src/app/page.tsx`, `src/components/command-palette.tsx`.
+  1012→- Lint: 0 errors, 0 warnings. TypeScript: 0 errors in touched files.
+  1013→- The Portals view is reachable from the sidebar (new "Portals" group, with Store icon), the Cmd+K command palette, and the view router.
+  1014→- Both portal experiences are end-to-end: (a) Supplier portal — action-oriented: shows POs awaiting dispatch with overdue alerts + Progress bar of remaining qty, recent dispatches, brokerage earned with outstanding KPI, plus 4 performance KPIs (fulfillment/on-time/short-ship/total supplied) and a composite ScoreRing; (b) Client portal — obligation-oriented: shows my orders with fulfillment Progress + supplier info, outstanding bills with computed due date + overdue flag emphasizing what's owed, payment history, recent deliveries, plus 4 summary KPIs (total business/outstanding/paid/brokerage earned) and an order-status donut chart.
+  1015→- Amber "Preview mode" info banner sets expectations that this is a mockup — in production each party would log in to see only their own data. Plan §3 future-ready portals are now demonstrable end-to-end.
+  1016→
+  1017→---
+  1018→
+  1019→Task ID: 11-c
+  1020→Agent: Audit Trail Enhancer (subagent)
+  1021→Task: Enhance the Audit Trail view with date-range + user filtering, CSV/PDF export respecting active filters, a stats summary bar, and an optional timeline view.
+  1022→
+  1023→Work Log:
+  1024→
+  1025→**1. Audit API enhancements** (`src/app/api/audit/route.ts`)
+  1026→- Rewrote the GET handler to accept query params: `entityType`, `user`, `from`, `to`, `limit` (default 200, clamped to 1–1000).
+  1027→- `entityType` → exact match on `entityType` (SQLite BINARY collation; UI dropdown uses matching PascalCase values).
+  1028→- `user` → `contains` on `userName` (case-sensitive in SQLite).
+  1029→- `from`/`to` → `createdAt` range filter; `to` is inclusive of the entire day (set to 23:59:59.999).
+  1030→- Added `stats` to the response shape: `{ total, filtered, shown, byAction, byEntityType, dateRange: { earliest, latest } }`.
+  1031→- Computed via parallel `Promise.all` of `findMany`, two `groupBy` calls (action / entityType), an `aggregate` for min/max createdAt, and a global `count` (no filter) for the system-wide total.
+  1032→- **Important SQLite gotcha**: removed `mode: "insensitive"` from all Prisma filters because SQLite (the configured provider) does not support it — Prisma threw `Unknown argument 'mode'` at runtime. Added an explanatory comment. Functionality is preserved because stored entityTypes/userNames are already in the canonical case the UI emits.
+  1033→
+  1034→**2. CSV export enhancements** (`src/app/api/export/route.ts`)
+  1035→- Refactored `buildAudit` to accept the request's `URLSearchParams` and parse the same filters as the audit route (shared `parseAuditFilter` helper).
+  1036→- Added two new CSV columns: `Before` and `After` (both truncated to 200 chars with ellipsis so the CSV stays readable).
+  1037→- Changed the `BUILDERS` map to exclude `audit` (which now needs params) and special-cased the audit type in the GET handler so the other 6 builders keep their zero-arg signature.
+  1038→- Added `Prisma` type import for the where-clause type annotation.
+  1039→
+  1040→**3. PDF audit-trail report** (`src/app/api/reports/route.ts`)
+  1041→- Added `"audit-trail"` to the `ReportType` union and `VALID_TYPES` array; added its title to `REPORT_TITLES`.
+  1042→- Wrote `buildAuditTrail(params: URLSearchParams)`:
+  1043→  - Parses `entityType`, `from`, `to` (same semantics as the audit route).
+  1044→  - Fetches logs (capped at 1000), `groupBy` action and entityType, and aggregates min/max `createdAt` — all in parallel.
+  1045→  - Renders an 8-card KPI grid: Total entries, Created (emerald), Updated (amber), Deleted (rose), Force-eligible (teal), Payouts (emerald), First entry, Latest entry.
+  1046→  - Two summary tables: Breakdown by action (with colored action pills), Breakdown by entity type — both with count + share%.
+  1047→  - Detail table: Time | User | Entity | Action | Reason. Inserts a `page-break-row` CSS class on every 50th row to force page breaks (CSS rule added to the htmlShell `<style>` block).
+  1048→  - Footer note: "Immutable append-only log. Every financial mutation is recorded for dispute resolution and compliance." (verbatim from task spec).
+  1049→  - Header range label incorporates the date range and entity filter (e.g. `08 Aug 2026 → 31 Dec 2026 · Bill only`).
+  1050→- Added `auditActionPill(action)` helper mapping actions to print-safe pill colors matching the UI tone palette.
+  1051→- Added `.page-break-row { page-break-before: always; }` to the print media query and `.nowrap { white-space: nowrap; }` to the global CSS in `htmlShell`.
+  1052→- Modified the GET route handler: split the prior `else` (supplier-summary) into an explicit `else if` and added a final `else` branch for `audit-trail` calling `buildAuditTrail(searchParams)`.
+  1053→- Added `Prisma` type import.
+  1054→
+  1055→**4. Audit view UI rewrite** (`src/components/views/audit-view.tsx`)
+  1056→- State: `entityFilter`, `userFilter`, `fromDate`, `toDate` (all server-side, drive the API path), `q` (client-side search), `view` (`"table" | "timeline"`).
+  1057→- `apiPath` is memoized from active server filters; `useApi` auto-refetches whenever the path changes (its `useEffect` deps include the path string).
+  1058→- `userOptions` is derived client-side from the distinct `userName` values present in the fetched logs, populating the user filter dropdown.
+  1059→- `q` search is applied client-side across `action`, `entityId`, `userName`, `reason` (kept client-side because the API doesn't expose a text-search param).
+  1060→- **Stats summary bar** (`StatsBar`): a 6-tile grid showing Total entries / Created (emerald) / Updated (amber) / Deleted (rose) / Force-eligible (teal) / Payouts (emerald), plus a footer row with the displayed date range and `filtered / total` counts.
+  1061→- **Filter card** (`GlassCard`): entity-type Select, user Select (populated dynamically), from/to date Inputs (`type=date`), four preset buttons (Today / 7d / 30d / All), and a search Input. All filters wrap responsively on mobile.
+  1062→- **Active filter badges**: each active filter renders as an emerald pill with an `X` icon — clicking it clears just that filter. A "Clear all" link appears when any filter is active.
+  1063→- **Export buttons** in the SectionHeader action area: "Export CSV" → `window.open(/api/export?type=audit&...activeFilters)`, "Export PDF" → `window.open(/api/reports?type=audit-trail&...activeFilters, _blank)`. Both respect the current entity/user/date filters (search `q` is intentionally not included since it's a client-only filter).
+  1064→- **Table/Timeline toggle**: a `Tabs` component at the top-right of the log card with two triggers — Table (default) and Timeline.
+  1065→- **Table view** (`AuditTable`): unchanged columns (Time / User / Entity / Action / Reason / Details) with horizontal scroll on mobile.
+  1066→- **Timeline view** (`AuditTimeline`): a vertical timeline with a left border and colored dots per action type (create=emerald, update=amber, delete=rose, force_eligible=teal, payout=emerald). Each entry shows the action chip, entity title, last-8 of entityId, user, timestamp, and a styled reason box. Mirrors the visual language of the PO-detail timeline.
+  1067→- Preserved the existing `DetailsButton` dialog (before/after JSON payload viewer) verbatim.
+  1068→- All action chips use the existing `actionTone(action)` helper; new `actionDotClass(action)` helper mirrors the tones for the timeline dots.
+  1069→- No indigo/blue; emerald accent throughout. Responsive: filters wrap, table scrolls horizontally, timeline stacks.
+  1070→
+  1071→**Verification**
+  1072→- `bun run lint` → clean (no warnings, no errors).
+  1073→- Manual curl tests confirmed:
+  1074→  - `GET /api/audit?entityType=Payment` → 200, returns `{ logs, stats }` with correct filtered counts.
+  1075→  - `GET /api/audit?entityType=Bill&from=2026-08-01&to=2026-12-31&user=Broker&limit=50` → 200, all filters respected.
+  1076→  - `GET /api/export?type=audit&entityType=Payment` → 200, returns CSV with the new `Before`/`After` columns.
+  1077→  - `GET /api/reports?type=audit-trail` → 200, returns print-optimized HTML with KPI grid, action/entity breakdown tables, full entry table with page-break-row classes, and the compliance footer note.
+  1078→- Dev server compiled all three route files and the audit-view component without errors after the SQLite `mode` fix.
+  1079→
+  1080→Stage Summary:
+  1081→The Audit Trail view is now compliance-grade: every financial mutation can be sliced by entity type, user, and arbitrary date range, with the active filter set serialized into both CSV and PDF exports so an auditor can pull a defensible snapshot of any window of activity. A live stats summary bar surfaces the create/update/delete/force-eligible/payout mix at a glance, and the optional timeline view gives a visual sense of activity over time — useful for spotting clusters of changes during dispute windows. The PDF report is print-optimized (page breaks every 50 rows) and carries the immutable-log compliance footer required for dispute resolution. All filters are individually clearable via active-filter badges, and the design stays within the emerald-accented glassmorphic system (no indigo/blue).
+  1082→
+  1083→---
+  1084→Task ID: 11 (QA + Feature Round 4)
+  1085→Agent: Architect (cron review round 4)
+  1086→Task: Assess project status, QA via agent-browser, fix portal crash bug, add new features (portal mockups, image optimization, audit log export + filtering).
+  1087→
+  1088→## Current Project Status Assessment
+  1089→- All API endpoints return 200. Lint clean (0 errors, 0 warnings).
+  1090→- Found 1 runtime bug: ClientPortalDashboard crashed when switching personas (stale data shape mismatch). Fixed.
+  1091→- Foundation is stable; proceeded with the worklog's top 3 priorities.
+  1092→
+  1093→## Completed Modifications
+  1094→
+  1095→### Bug Fixes
+  1096→1. **Portal persona-switch crash** (critical): When switching from Supplier to Client persona, the `data` state still held the supplier-shaped response (stale fetch), but `ClientPortalDashboard` tried to access `sections.myOrders` (which doesn't exist on supplier data) → crash. Fixed by: (a) rendering condition checks both `persona` (intended state) AND `data.persona` (actual data shape) — shows skeleton if mismatch; (b) added defensive guards in both `SupplierPortalDashboard` and `ClientPortalDashboard` that return a skeleton if `sections` or its arrays are missing/stale. Hooks order preserved (useMemo called unconditionally before the guard return).
+  1097→
+  1098→### New Features (3 parallel subagents + manual bug fix)
+  1099→1. **Supplier & Client Portal Mockups** (Task 11-a):
+  1100→   - `GET /api/portal?persona=supplier|client&id=X` — reshapes existing data for each party's perspective (no schema changes).
+  1101→   - Supplier Portal (action-oriented): welcome header with ScoreRing, 4 KPIs (fulfillment/on-time/short-ship/total supplied), "POs Awaiting Dispatch" action list, recent dispatches, brokerage earned + outstanding.
+  1102→   - Client Portal (obligation-oriented): welcome header, 4 KPIs (business/outstanding/paid/brokerage), "My Orders" + order-status donut chart, "Outstanding Bills" with due emphasis, payment history, recent deliveries.
+  1103→   - Amber "Preview mode" info banner. Persona switcher + entity picker. Wired into sidebar (new "Portals" group) + page router + command palette.
+  1104→   - Verified: both portals render all sections; persona switching works without crash.
+  1105→2. **Image Optimization with Sharp** (Task 11-b):
+  1106→   - Added `thumbnailUrl String?` to Photo model; `db:push` applied.
+  1107→   - POST `/api/photos` now generates a 400px JPEG q80 thumbnail via `sharp` alongside the original.
+  1108→   - `PhotoUpload` component uses `thumbnailUrl || url` for grid (faster load); Lightbox uses full-res `url`.
+  1109→   - Backfill script (`src/lib/backfill-thumbnails.ts`) ran: 5 photos scanned, 4 thumbnails generated (1 tiny placeholder couldn't be decoded by sharp — left null, falls back to original).
+  1110→   - `GET /api/photos/stats` → `{ count, totalSizeBytes, totalSizeMB }`. Settings view shows "Photos: 5 · Storage: 2.34 MB" mini-stat.
+  1111→3. **Audit Log Export + Enhanced Filtering** (Task 11-c):
+  1112→   - `GET /api/audit` now accepts `entityType`, `user`, `from`, `to`, `limit` params + returns `stats` (total, byAction, byEntityType, dateRange).
+  1113→   - CSV export respects active filters; added Before/After columns (truncated).
+  1114→   - New `audit-trail` PDF report: 8-card KPI grid + breakdown tables (by action/entity) + full entry table with page breaks every 50 rows + compliance footer.
+  1115→   - Audit view UI: date-range filter (from/to inputs + Today/7d/30d/All presets), user filter dropdown, stats summary bar (6 tiles with action colors), active-filter badges (individually clearable), Export CSV + Export PDF buttons, Table/Timeline toggle (timeline has colored dots per action type).
+  1116→   - Note: Prisma `mode: "insensitive"` not supported on SQLite — removed; canonical case matching used instead.
+  1117→
+  1118→## Verification Results
+  1119→- `bun run lint` → **0 errors, 0 warnings** (fully clean).
+  1120→- agent-browser QA: all 12 views render with **0 console errors, 0 warnings** (after fresh browser session to clear stale Fast Refresh state).
+  1121→- Portal fix verified: switched Supplier → Client → Supplier multiple times, no crash, all sections render.
+  1122→- Portal API: 200 for both personas with correct data shapes.
+  1123→- Photo thumbnails: 4/5 photos have thumbnails (1 fallback to original); storage stat shows 2.34 MB.
+  1124→- Audit view: Export CSV/PDF buttons present, Table/Timeline toggle works, stats bar renders, date-range presets work.
+  1125→- Screenshot: `broker-os-portal-supplier.png`.
+  1126→
+  1127→## Unresolved Issues / Risks + Next Phase Recommendations
+  1128→1. **Notification scheduling cron** — auto-generate daily via a scheduled job (still pending from round 3).
+  1129→2. **Report scheduling/email** — email weekly/monthly PDF statements automatically.
+  1130→3. **Multi-broker/agent support** — data model supports it; UI needs user auth + scoping.
+  1131→4. **Forecasting depth** — confidence intervals, seasonal trends in analytics.
+  1132→5. **Mobile gesture support** — swipe for lightbox, pull-to-refresh.
+  1133→6. **Geographic map view** — if addresses are geocoded.
+  1134→7. **Real-time updates** — WebSocket for live notification/audit updates.
+  1135→8. **Data backup/restore** — DB backup + restore UI in settings.
+  1136→9. **Bulk operations** — bulk mark notifications done, bulk assign disputes.
+  1137→10. **Performance** — pagination for large audit log / bills tables.
+  1138→
+  1139→Priority for next round: **Notification scheduling cron** (automation) + **Real-time WebSocket updates** (live data) + **Pagination for large tables** (performance at scale).
+
+[showing lines 900-1139 of 1140; use offset=1140 with limit to continue reading]

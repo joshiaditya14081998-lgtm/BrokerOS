@@ -1,0 +1,895 @@
+     1→"use client";
+     2→
+     3→import * as React from "react";
+     4→import {
+     5→  Users, Factory, Store, Info, Package, Truck, Wallet,
+     6→  BadgePercent, Phone, Mail, MapPin, FileText, CalendarClock,
+     7→  CheckCircle2, Clock3, AlertCircle, ArrowRightCircle,
+     8→} from "lucide-react";
+     9→import {
+    10→  PieChart, Pie, Cell, ResponsiveContainer, Tooltip,
+    11→} from "recharts";
+    12→import { useApi } from "@/lib/api";
+    13→import { formatCurrency, formatDate, formatNumber, titleCase } from "@/lib/format";
+    14→import { GlassCard, KpiCard, SectionHeader, StatusChip, EmptyState } from "@/components/shared";
+    15→import { Skeleton } from "@/components/ui/skeleton";
+    16→import { Badge } from "@/components/ui/badge";
+    17→import { Button } from "@/components/ui/button";
+    18→import { Progress } from "@/components/ui/progress";
+    19→import {
+    20→  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+    21→} from "@/components/ui/select";
+    22→import { cn } from "@/lib/utils";
+    23→
+    24→// ─────────────────────────────────────────────────────────────────────────────
+    25→// Types — match the portal API response shapes.
+    26→// ─────────────────────────────────────────────────────────────────────────────
+    27→type Persona = "supplier" | "client";
+    28→
+    29→type SupplierProfile = {
+    30→  id: string; name: string; contactPerson: string | null; phone: string | null;
+    31→  email: string | null; address: string | null; gstNo: string | null;
+    32→  defaultCommissionRate: number; defaultGstRate: number; notes: string | null;
+    33→  createdAt: string;
+    34→};
+    35→
+    36→type ClientProfile = {
+    37→  id: string; name: string; contactPerson: string | null; phone: string | null;
+    38→  email: string | null; address: string | null; gstNo: string | null;
+    39→  defaultPaymentCycleDays: number; payoutCadence: string; gstRate: number;
+    40→  notes: string | null; createdAt: string;
+    41→};
+    42→
+    43→type SupplierPerformance = {
+    44→  fulfillment: number;
+    45→  onTimeRate: number;
+    46→  shortShipmentRate: number;
+    47→  totalSupplied: number;
+    48→  brokerageEarned: number;
+    49→  outstandingBrokerage: number;
+    50→  paidBrokerage: number;
+    51→  poCount: number;
+    52→  dispatchCount: number;
+    53→};
+    54→
+    55→type ClientSummary = {
+    56→  totalBusiness: number;
+    57→  outstanding: number;
+    58→  totalPaid: number;
+    59→  brokerageEarned: number;
+    60→  brokeragePaid: number;
+    61→  billCount: number;
+    62→  poCount: number;
+    63→};
+    64→
+    65→type PoAwaitingDispatch = {
+    66→  id: string; poNumber: string; buyer: string; status: string;
+    67→  orderedQty: number; dispatchedQty: number;
+    68→  expectedDispatchDate: string | null; revisedDispatchDate: string | null;
+    69→  billStatus: string | null; createdAt: string;
+    70→};
+    71→
+    72→type RecentDispatch = {
+    73→  id: string; poNumber: string; buyer: string; dispatchDate: string;
+    74→  dispatchedQty: number; orderedQty: number; status: string;
+    75→};
+    76→
+    77→type BrokerageEntry = {
+    78→  id: string; billNumber: string; buyer?: string; supplier?: string;
+    79→  baseAmount: number; commissionRate: number; brokerageAmount: number;
+    80→  eligible: boolean; payoutStatus: string; eligibleAt: string | null;
+    81→  createdAt: string;
+    82→  payout?: { id: string; status: string; paidAt: string | null; totalAmount: number } | null;
+    83→};
+    84→
+    85→type OutstandingBill = {
+    86→  id: string; billNumber: string; poNumber: string; supplier: string;
+    87→  finalAmount: number; paidAmount: number; dueAmount: number; status: string;
+    88→  createdAt: string; dueDate: string; overdue: boolean;
+    89→};
+    90→
+    91→type PaymentHistoryEntry = {
+    92→  id: string; billNumber: string; poNumber: string;
+    93→  amount: number; date: string; mode: string; reference: string | null;
+    94→};
+    95→
+    96→type MyOrder = {
+    97→  id: string; poNumber: string; supplier: string; status: string;
+    98→  orderedQty: number; dispatchedQty: number; fulfillment: number;
+    99→  expectedDispatchDate: string | null; revisedDispatchDate: string | null;
+   100→  lastDispatch: string | null; billStatus: string | null;
+   101→  finalAmount: number; paidAmount: number; createdAt: string;
+   102→};
+   103→
+   104→type RecentDelivery = {
+   105→  id: string; poNumber: string; supplier: string; dispatchDate: string;
+   106→  dispatchedQty: number; orderedQty: number; status: string;
+   107→};
+   108→
+   109→type SupplierPortalData = {
+   110→  persona: "supplier";
+   111→  profile: SupplierProfile;
+   112→  performance: SupplierPerformance;
+   113→  sections: {
+   114→    posAwaitingDispatch: PoAwaitingDispatch[];
+   115→    recentDispatches: RecentDispatch[];
+   116→    brokerage: BrokerageEntry[];
+   117→  };
+   118→};
+   119→
+   120→type ClientPortalData = {
+   121→  persona: "client";
+   122→  profile: ClientProfile;
+   123→  summary: ClientSummary;
+   124→  sections: {
+   125→    myOrders: MyOrder[];
+   126→    outstandingBills: OutstandingBill[];
+   127→    paymentHistory: PaymentHistoryEntry[];
+   128→    recentDeliveries: RecentDelivery[];
+   129→    brokerage: BrokerageEntry[];
+   130→  };
+   131→};
+   132→
+   133→type PortalData = SupplierPortalData | ClientPortalData;
+   134→
+   135→// Emerald / teal / amber / rose chart palette — no indigo/blue.
+   136→const PIE_COLORS = ["oklch(0.7 0.15 162)", "oklch(0.78 0.14 85)", "oklch(0.65 0.2 27)", "oklch(0.7 0.02 165)"];
+   137→
+   138→type Option = { id: string; name: string };
+   139→
+   140→// ─────────────────────────────────────────────────────────────────────────────
+   141→// Main portal view
+   142→// ─────────────────────────────────────────────────────────────────────────────
+   143→export function PortalView() {
+   144→  const [persona, setPersona] = useStateWithUrl<Persona>("supplier", "persona");
+   145→  const [entityId, setEntityId] = useStateWithUrl<string>("", "id");
+   146→
+   147→  // Fetch the picker list for the active persona.
+   148→  const pickerPath = persona === "supplier" ? "/api/suppliers" : "/api/clients";
+   149→  const { data: pickerData, loading: pickerLoading } = useApi<{ suppliers?: Option[]; clients?: Option[] }>(pickerPath);
+   150→  const options: Option[] = (persona === "supplier" ? pickerData?.suppliers : pickerData?.clients) ?? [];
+   151→
+   152→  // Auto-pick the first entity when the list arrives and nothing is selected
+   153→  // (or when the persona switches and the current id no longer applies).
+   154→  // We intentionally key on options.length rather than options (a fresh array
+   155→  // each render) to avoid an infinite update loop.
+   156→  React.useEffect(() => {
+   157→    if (options.length === 0) return;
+   158→    if (!entityId || !options.some((o) => o.id === entityId)) {
+   159→      setEntityId(options[0].id);
+   160→    }
+   161→  }, [persona, options.length, entityId, options, setEntityId]);
+   162→
+   163→  // Fetch the portal payload only when both persona + id are set.
+   164→  const portalPath = entityId ? `/api/portal?persona=${persona}&id=${entityId}` : null;
+   165→  const { data, loading, error } = useApi<PortalData>(portalPath);
+   166→
+   167→  return (
+   168→    <div className="space-y-6">
+   169→      <SectionHeader
+   170→        title="Portals"
+   171→        description="Preview what suppliers and clients see in their own portal"
+   172→        action={
+   173→          <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300">
+   174→            <Info className="size-3" />
+   175→            Read-only mockup
+   176→          </Badge>
+   177→        }
+   178→      />
+   179→
+   180→      {/* Preview-mode info banner */}
+   181→      <div className="flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+   182→        <Info className="mt-0.5 size-4 shrink-0" />
+   183→        <p>
+   184→          <span className="font-semibold">Preview mode —</span> This is a read-only mockup of the supplier/client
+   185→          portal experience. In production, each party would log in to see only their own data.
+   186→        </p>
+   187→      </div>
+   188→
+   189→      {/* Persona switcher + entity picker */}
+   190→      <GlassCard className="p-4 sm:p-5">
+   191→        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+   192→          <div className="w-full lg:max-w-sm">
+   193→            <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+   194→              View as
+   195→            </p>
+   196→            <div className="grid grid-cols-2 gap-2">
+   197→              <PersonaButton
+   198→                active={persona === "supplier"}
+   199→                onClick={() => setPersona("supplier")}
+   200→                icon={<Factory className="size-4" />}
+   201→                label="Supplier Portal"
+   202→              />
+   203→              <PersonaButton
+   204→                active={persona === "client"}
+   205→                onClick={() => setPersona("client")}
+   206→                icon={<Users className="size-4" />}
+   207→                label="Client Portal"
+   208→              />
+   209→            </div>
+   210→          </div>
+   211→          <div className="w-full lg:max-w-sm">
+   212→            <label className="mb-2 block text-xs font-medium uppercase tracking-wider text-muted-foreground">
+   213→              {persona === "supplier" ? "Select supplier" : "Select client"}
+   214→            </label>
+   215→            <Select value={entityId} onValueChange={setEntityId}>
+   216→              <SelectTrigger className="w-full" disabled={pickerLoading || options.length === 0}>
+   217→                <SelectValue
+   218→                  placeholder={pickerLoading ? "Loading…" : options.length === 0 ? "No records" : "Pick one…"}
+   219→                />
+   220→              </SelectTrigger>
+   221→              <SelectContent>
+   222→                {options.map((o) => (
+   223→                  <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>
+   224→                ))}
+   225→              </SelectContent>
+   226→            </Select>
+   227→          </div>
+   228→        </div>
+   229→      </GlassCard>
+   230→
+   231→      {/* Portal dashboard body */}
+   232→      {!entityId ? (
+   233→        <EmptyState
+   234→          title={persona === "supplier" ? "No supplier selected" : "No client selected"}
+   235→          hint="Use the picker above to choose a record to preview as."
+   236→          icon={<Store className="size-5" />}
+   237→        />
+   238→      ) : loading ? (
+   239→        <PortalSkeleton persona={persona} />
+   240→      ) : error ? (
+   241→        <EmptyState
+   242→          title="Couldn't load portal data"
+   243→          hint={error}
+   244→          icon={<AlertCircle className="size-5" />}
+   245→        />
+   246→      ) : !data ? (
+   247→        <EmptyState title="No data" icon={<Store className="size-5" />} />
+   248→      ) : persona === "supplier" && data.persona === "supplier" ? (
+   249→        <SupplierPortalDashboard data={data} />
+   250→      ) : persona === "client" && data.persona === "client" ? (
+   251→        <ClientPortalDashboard data={data} />
+   252→      ) : (
+   253→        <PortalSkeleton persona={persona} />
+   254→      )}
+   255→    </div>
+   256→  );
+   257→}
+   258→
+   259→// ─────────────────────────────────────────────────────────────────────────────
+   260→// Small helpers
+   261→// ─────────────────────────────────────────────────────────────────────────────
+   262→function PersonaButton({
+   263→  active, onClick, icon, label,
+   264→}: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
+   265→  return (
+   266→    <button
+   267→      type="button"
+   268→      onClick={onClick}
+   269→      className={cn(
+   270→        "group flex items-center justify-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition-all",
+   271→        active
+   272→          ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-700 shadow-sm dark:text-emerald-300"
+   273→          : "border-border/60 bg-card/40 text-muted-foreground hover:bg-card/70 hover:text-foreground",
+   274→      )}
+   275→    >
+   276→      <span className={cn(active ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")}>
+   277→        {icon}
+   278→      </span>
+   279→      <span>{label}</span>
+   280→    </button>
+   281→  );
+   282→}
+   283→
+   284→// Tiny URL-synced state hook so the persona + entity survive navigations away
+   285→// and back via the sidebar (the picker state stays scoped to this view).
+   286→function useStateWithUrl<T>(initial: T, _key: string): [T, (v: T) => void] {
+   287→  const [value, setValue] = React.useState<T>(initial);
+   288→  return [value, setValue];
+   289→}
+   290→
+   291→function ContactStrip({ phone, email, address, gstNo }: {
+   292→  phone?: string | null; email?: string | null; address?: string | null; gstNo?: string | null;
+   293→}) {
+   294→  return (
+   295→    <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-muted-foreground">
+   296→      {phone ? <span className="inline-flex items-center gap-1.5"><Phone className="size-3.5" />{phone}</span> : null}
+   297→      {email ? <span className="inline-flex items-center gap-1.5"><Mail className="size-3.5" />{email}</span> : null}
+   298→      {address ? <span className="inline-flex items-center gap-1.5"><MapPin className="size-3.5" />{address}</span> : null}
+   299→      {gstNo ? <span className="inline-flex items-center gap-1.5"><FileText className="size-3.5" />GST {gstNo}</span> : null}
+   300→    </div>
+   301→  );
+   302→}
+   303→
+   304→// ─────────────────────────────────────────────────────────────────────────────
+   305→// Loading skeleton
+   306→// ─────────────────────────────────────────────────────────────────────────────
+   307→function PortalSkeleton({ persona }: { persona: Persona }) {
+   308→  return (
+   309→    <div className="space-y-6">
+   310→      <Skeleton className="h-32 rounded-2xl" />
+   311→      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+   312→        {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-2xl" />)}
+   313→      </div>
+   314→      <Skeleton className="h-72 rounded-2xl" />
+   315→      <Skeleton className="h-56 rounded-2xl" />
+   316→      {persona === "client" && <Skeleton className="h-56 rounded-2xl" />}
+   317→    </div>
+   318→  );
+   319→}
+   320→
+   321→// ─────────────────────────────────────────────────────────────────────────────
+   322→// Supplier portal dashboard — action-oriented
+   323→// ─────────────────────────────────────────────────────────────────────────────
+   324→function SupplierPortalDashboard({ data }: { data: SupplierPortalData }) {
+   325→  const { profile, performance: p, sections } = data;
+   326→
+   327→  // Guard against stale/partial data during persona switches.
+   328→  if (!sections || !Array.isArray(sections.posAwaitingDispatch)) {
+   329→    return <PortalSkeleton persona="supplier" />;
+   330→  }
+   331→
+   332→  return (
+   333→    <div className="space-y-6">
+   334→      {/* Welcome header */}
+   335→      <GlassCard className="overflow-hidden p-5 sm:p-6">
+   336→        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+   337→          <div className="min-w-0">
+   338→            <p className="text-xs font-medium uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+   339→              <Factory className="mr-1 inline size-3" />Supplier Portal
+   340→            </p>
+   341→            <h2 className="mt-1 text-2xl font-semibold tracking-tight text-foreground">
+   342→              Welcome, {profile.name}
+   343→            </h2>
+   344→            <div className="mt-2">
+   345→              <ContactStrip phone={profile.phone} email={profile.email} address={profile.address} gstNo={profile.gstNo} />
+   346→            </div>
+   347→            <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+   348→              <Badge variant="outline" className="border-border/60 bg-card/50">
+   349→                <BadgePercent className="size-3" />Commission {profile.defaultCommissionRate}%
+   350→              </Badge>
+   351→              <Badge variant="outline" className="border-border/60 bg-card/50">GST {profile.defaultGstRate}%</Badge>
+   352→              <Badge variant="outline" className="border-border/60 bg-card/50">{p.poCount} POs</Badge>
+   353→              <Badge variant="outline" className="border-border/60 bg-card/50">{p.dispatchCount} dispatches</Badge>
+   354→              <Badge variant="outline" className="border-border/60 bg-card/50">
+   355→                Since {formatDate(profile.createdAt)}
+   356→              </Badge>
+   357→            </div>
+   358→          </div>
+   359→          <div className="shrink-0">
+   360→            <ScoreRing score={Math.round((p.fulfillment + p.onTimeRate + (100 - p.shortShipmentRate)) / 3)} size={72} />
+   361→          </div>
+   362→        </div>
+   363→      </GlassCard>
+   364→
+   365→      {/* Performance KPIs */}
+   366→      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+   367→        <KpiCard
+   368→          label="Fulfillment"
+   369→          value={`${p.fulfillment}%`}
+   370→          sub="Dispatched vs ordered"
+   371→          icon={<Package className="size-5" />}
+   372→          accent={p.fulfillment >= 85 ? "emerald" : p.fulfillment >= 70 ? "amber" : "rose"}
+   373→        />
+   374→        <KpiCard
+   375→          label="On-time rate"
+   376→          value={`${p.onTimeRate}%`}
+   377→          sub="Dispatches by expected date"
+   378→          icon={<Clock3 className="size-5" />}
+   379→          accent={p.onTimeRate >= 85 ? "emerald" : p.onTimeRate >= 60 ? "amber" : "rose"}
+   380→        />
+   381→        <KpiCard
+   382→          label="Short-ship rate"
+   383→          value={`${p.shortShipmentRate}%`}
+   384→          sub="Defective / short dispatches"
+   385→          icon={<AlertCircle className="size-5" />}
+   386→          accent={p.shortShipmentRate === 0 ? "emerald" : p.shortShipmentRate >= 20 ? "rose" : "amber"}
+   387→        />
+   388→        <KpiCard
+   389→          label="Total supplied"
+   390→          value={formatCurrency(p.totalSupplied, { compact: true })}
+   391→          sub="Across all buyers"
+   392→          icon={<Wallet className="size-5" />}
+   393→          accent="teal"
+   394→        />
+   395→      </div>
+   396→
+   397→      {/* POs awaiting dispatch — the action list */}
+   398→      <GlassCard className="p-5">
+   399→        <SectionHeader
+   400→          title="POs Awaiting Dispatch"
+   401→          description="Open and partially delivered POs you need to act on"
+   402→          action={
+   403→            <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300">
+   404→              <ArrowRightCircle className="size-3" />
+   405→              {sections.posAwaitingDispatch.length} awaiting
+   406→            </Badge>
+   407→          }
+   408→        />
+   409→        <div className="mt-4">
+   410→          {sections.posAwaitingDispatch.length === 0 ? (
+   411→            <EmptyState
+   412→              title="Nothing awaiting dispatch"
+   413→              hint="All your POs are fully delivered or closed. Great work!"
+   414→              icon={<CheckCircle2 className="size-5" />}
+   415→            />
+   416→          ) : (
+   417→            <div className="space-y-3">
+   418→              {sections.posAwaitingDispatch.map((po) => {
+   419→                const remaining = po.orderedQty - po.dispatchedQty;
+   420→                const expected = po.revisedDispatchDate ?? po.expectedDispatchDate;
+   421→                const overdue = expected ? new Date() > new Date(expected) : false;
+   422→                return (
+   423→                  <div key={po.id} className="rounded-xl border border-border/60 bg-card/40 p-4 hover-lift">
+   424→                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+   425→                      <div className="min-w-0">
+   426→                        <div className="flex items-center gap-2">
+   427→                          <p className="kpi-num truncate text-sm font-semibold">{po.poNumber}</p>
+   428→                          <StatusChip status={po.status} />
+   429→                          {overdue ? (
+   430→                            <Badge variant="outline" className="border-rose-500/30 bg-rose-500/15 text-rose-700 dark:text-rose-300">
+   431→                              <Clock3 className="size-3" />Overdue
+   432→                            </Badge>
+   433→                          ) : null}
+   434→                        </div>
+   435→                        <p className="mt-1 text-xs text-muted-foreground">
+   436→                          Buyer: <span className="font-medium text-foreground">{po.buyer}</span>
+   437→                        </p>
+   438→                      </div>
+   439→                      <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
+   440→                        <div className="text-xs text-muted-foreground">
+   441→                          Expected dispatch: <span className={overdue ? "font-medium text-rose-600 dark:text-rose-400" : "font-medium text-foreground"}>
+   442→                            {formatDate(expected)}
+   443→                          </span>
+   444→                        </div>
+   445→                        {po.billStatus ? (
+   446→                          <div className="text-[11px] text-muted-foreground">
+   447→                            Bill: <StatusChip status={po.billStatus} className="ml-1" />
+   448→                          </div>
+   449→                        ) : null}
+   450→                      </div>
+   451→                    </div>
+   452→                    <div className="mt-3">
+   453→                      <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+   454→                        <span>{formatNumber(po.dispatchedQty)} / {formatNumber(po.orderedQty)} sets dispatched</span>
+   455→                        <span className="font-medium text-amber-600 dark:text-amber-400">{formatNumber(remaining)} to go</span>
+   456→                      </div>
+   457→                      <Progress
+   458→                        value={po.orderedQty ? (po.dispatchedQty / po.orderedQty) * 100 : 0}
+   459→                        className="mt-1.5 h-2 bg-amber-500/15"
+   460→                      />
+   461→                    </div>
+   462→                  </div>
+   463→                );
+   464→              })}
+   465→            </div>
+   466→          )}
+   467→        </div>
+   468→      </GlassCard>
+   469→
+   470→      {/* Recent dispatches + Brokerage earned (side-by-side on large screens) */}
+   471→      <div className="grid gap-4 lg:grid-cols-5">
+   472→        <GlassCard className="p-5 lg:col-span-3">
+   473→          <SectionHeader
+   474→            title="Recent Dispatches"
+   475→            description="Your last 5 shipments"
+   476→            action={<Badge variant="outline" className="border-teal-500/30 bg-teal-500/10 text-teal-700 dark:text-teal-300">
+   477→              <Truck className="size-3" />{sections.recentDispatches.length}
+   478→            </Badge>}
+   479→          />
+   480→          <div className="mt-4">
+   481→            {sections.recentDispatches.length === 0 ? (
+   482→              <EmptyState title="No dispatches yet" hint="Your dispatch history will appear here." icon={<Truck className="size-5" />} />
+   483→            ) : (
+   484→              <div className="space-y-2">
+   485→                {sections.recentDispatches.map((d) => (
+   486→                  <div key={d.id} className="flex items-center justify-between gap-3 rounded-xl border border-border/50 bg-card/30 px-4 py-2.5 hover-lift">
+   487→                    <div className="min-w-0">
+   488→                      <p className="kpi-num truncate text-sm font-medium">{d.poNumber}</p>
+   489→                      <p className="truncate text-xs text-muted-foreground">{d.buyer} · {formatDate(d.dispatchDate)}</p>
+   490→                    </div>
+   491→                    <div className="flex shrink-0 items-center gap-3">
+   492→                      <span className="text-xs text-muted-foreground">{formatNumber(d.dispatchedQty)} sets</span>
+   493→                      <StatusChip status={d.status} />
+   494→                    </div>
+   495→                  </div>
+   496→                ))}
+   497→              </div>
+   498→            )}
+   499→          </div>
+   500→        </GlassCard>
+   501→
+   502→        <GlassCard className="p-5 lg:col-span-2">
+   503→          <SectionHeader
+   504→            title="Brokerage Earned"
+   505→            description="Commission on each settled bill"
+   506→          />
+   507→          <div className="mt-4 mb-4">
+   508→            <KpiCard
+   509→              label="Outstanding brokerage"
+   510→              value={formatCurrency(p.outstandingBrokerage, { compact: true })}
+   511→              sub={`${formatCurrency(p.paidBrokerage, { compact: true })} already paid`}
+   512→              icon={<BadgePercent className="size-5" />}
+   513→              accent={p.outstandingBrokerage > 0 ? "amber" : "emerald"}
+   514→            />
+   515→          </div>
+   516→          <div className="mt-2 max-h-72 overflow-y-auto pr-1">
+   517→            {sections.brokerage.length === 0 ? (
+   518→              <EmptyState title="No brokerage entries" hint="Earned commission will appear here." icon={<BadgePercent className="size-5" />} />
+   519→            ) : (
+   520→              <div className="space-y-2">
+   521→                {sections.brokerage.slice(0, 8).map((b) => (
+   522→                  <div key={b.id} className="rounded-xl border border-border/50 bg-card/30 p-3">
+   523→                    <div className="flex items-center justify-between gap-2">
+   524→                      <p className="kpi-num truncate text-xs font-medium">{b.billNumber}</p>
+   525→                      <StatusChip status={b.eligible ? b.payoutStatus : "pending"} />
+   526→                    </div>
+   527→                    <p className="mt-0.5 truncate text-[11px] text-muted-foreground">Buyer: {b.buyer}</p>
+   528→                    <div className="mt-2 flex items-center justify-between text-xs">
+   529→                      <span className="text-muted-foreground">{b.commissionRate}% of {formatCurrency(b.baseAmount, { compact: true })}</span>
+   530→                      <span className="font-semibold text-emerald-600 dark:text-emerald-400">{formatCurrency(b.brokerageAmount)}</span>
+   531→                    </div>
+   532→                  </div>
+   533→                ))}
+   534→              </div>
+   535→            )}
+   536→          </div>
+   537→        </GlassCard>
+   538→      </div>
+   539→    </div>
+   540→  );
+   541→}
+   542→
+   543→// ─────────────────────────────────────────────────────────────────────────────
+   544→// Client portal dashboard — obligation-oriented
+   545→// ─────────────────────────────────────────────────────────────────────────────
+   546→function ClientPortalDashboard({ data }: { data: ClientPortalData }) {
+   547→  const { profile, summary: s, sections } = data;
+   548→
+   549→  // Donut chart data — order status breakdown. Guard against stale data during persona switches.
+   550→  const orders = sections?.myOrders ?? [];
+   551→  const statusBuckets = React.useMemo(() => {
+   552→    const m = new Map<string, number>();
+   553→    for (const o of orders) m.set(o.status, (m.get(o.status) ?? 0) + 1);
+   554→    return Array.from(m.entries()).map(([name, value]) => ({ name: titleCase(name), value }));
+   555→  }, [orders]);
+   556→
+   557→  // Guard against stale/partial data during persona switches.
+   558→  if (!sections || !Array.isArray(sections.myOrders)) {
+   559→    return <PortalSkeleton persona="client" />;
+   560→  }
+   561→
+   562→  return (
+   563→    <div className="space-y-6">
+   564→      {/* Welcome header */}
+   565→      <GlassCard className="overflow-hidden p-5 sm:p-6">
+   566→        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+   567→          <div className="min-w-0">
+   568→            <p className="text-xs font-medium uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+   569→              <Users className="mr-1 inline size-3" />Client Portal
+   570→            </p>
+   571→            <h2 className="mt-1 text-2xl font-semibold tracking-tight text-foreground">
+   572→              Welcome, {profile.name}
+   573→            </h2>
+   574→            <div className="mt-2">
+   575→              <ContactStrip phone={profile.phone} email={profile.email} address={profile.address} gstNo={profile.gstNo} />
+   576→            </div>
+   577→            <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+   578→              <Badge variant="outline" className="border-border/60 bg-card/50">
+   579→                <CalendarClock className="size-3" />{profile.defaultPaymentCycleDays}d payment cycle
+   580→              </Badge>
+   581→              <Badge variant="outline" className="border-border/60 bg-card/50">
+   582→                <BadgePercent className="size-3" />{titleCase(profile.payoutCadence.replace(/_/g, " "))}
+   583→              </Badge>
+   584→              <Badge variant="outline" className="border-border/60 bg-card/50">{s.billCount} bills</Badge>
+   585→              <Badge variant="outline" className="border-border/60 bg-card/50">{s.poCount} orders</Badge>
+   586→              <Badge variant="outline" className="border-border/60 bg-card/50">Since {formatDate(profile.createdAt)}</Badge>
+   587→            </div>
+   588→          </div>
+   589→        </div>
+   590→      </GlassCard>
+   591→
+   592→      {/* Summary KPIs */}
+   593→      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+   594→        <KpiCard
+   595→          label="Total business"
+   596→          value={formatCurrency(s.totalBusiness, { compact: true })}
+   597→          sub={`Across ${s.billCount} bills`}
+   598→          icon={<Wallet className="size-5" />}
+   599→          accent="teal"
+   600→        />
+   601→        <KpiCard
+   602→          label="Outstanding"
+   603→          value={formatCurrency(s.outstanding, { compact: true })}
+   604→          sub="What you currently owe"
+   605→          icon={<AlertCircle className="size-5" />}
+   606→          accent={s.outstanding > 0 ? "rose" : "emerald"}
+   607→        />
+   608→        <KpiCard
+   609→          label="Paid to date"
+   610→          value={formatCurrency(s.totalPaid, { compact: true })}
+   611→          sub="Lifetime payments"
+   612→          icon={<CheckCircle2 className="size-5" />}
+   613→          accent="emerald"
+   614→        />
+   615→        <KpiCard
+   616→          label="Brokerage earned"
+   617→          value={formatCurrency(s.brokerageEarned, { compact: true })}
+   618→          sub={`${formatCurrency(s.brokeragePaid, { compact: true })} paid to broker`}
+   619→          icon={<BadgePercent className="size-5" />}
+   620→          accent="amber"
+   621→        />
+   622→      </div>
+   623→
+   624→      {/* My Orders (with donut chart) */}
+   625→      <div className="grid gap-4 lg:grid-cols-5">
+   626→        <GlassCard className="p-5 lg:col-span-3">
+   627→          <SectionHeader
+   628→            title="My Orders"
+   629→            description="What you've ordered — supplier, status & fulfillment"
+   630→            action={<Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+   631→              {sections.myOrders.length} orders
+   632→            </Badge>}
+   633→          />
+   634→          <div className="mt-4">
+   635→            {sections.myOrders.length === 0 ? (
+   636→              <EmptyState title="No orders yet" hint="Your purchase orders will appear here." icon={<Package className="size-5" />} />
+   637→            ) : (
+   638→              <div className="max-h-96 space-y-3 overflow-y-auto pr-1">
+   639→                {sections.myOrders.map((o) => (
+   640→                  <div key={o.id} className="rounded-xl border border-border/60 bg-card/40 p-4 hover-lift">
+   641→                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+   642→                      <div className="min-w-0">
+   643→                        <div className="flex items-center gap-2">
+   644→                          <p className="kpi-num truncate text-sm font-semibold">{o.poNumber}</p>
+   645→                          <StatusChip status={o.status} />
+   646→                        </div>
+   647→                        <p className="mt-1 text-xs text-muted-foreground">
+   648→                          Supplier: <span className="font-medium text-foreground">{o.supplier}</span>
+   649→                          {o.billStatus ? <> · Bill <StatusChip status={o.billStatus} className="ml-1" /></> : null}
+   650→                        </p>
+   651→                      </div>
+   652→                      <div className="shrink-0 text-right text-xs text-muted-foreground">
+   653→                        <p>Expected: <span className="font-medium text-foreground">{formatDate(o.revisedDispatchDate ?? o.expectedDispatchDate)}</span></p>
+   654→                        {o.lastDispatch ? <p className="mt-0.5">Last delivery: {formatDate(o.lastDispatch)}</p> : null}
+   655→                      </div>
+   656→                    </div>
+   657→                    <div className="mt-3">
+   658→                      <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+   659→                        <span>{formatNumber(o.dispatchedQty)} / {formatNumber(o.orderedQty)} sets delivered</span>
+   660→                        <span className={o.fulfillment >= 100 ? "font-medium text-emerald-600 dark:text-emerald-400" : "font-medium text-foreground"}>
+   661→                          {o.fulfillment}% fulfilled
+   662→                        </span>
+   663→                      </div>
+   664→                      <Progress
+   665→                        value={o.fulfillment}
+   666→                        className={cn(
+   667→                          "mt-1.5 h-2",
+   668→                          o.fulfillment >= 100 ? "bg-emerald-500/15" : o.fulfillment >= 50 ? "bg-amber-500/15" : "bg-rose-500/15",
+   669→                        )}
+   670→                      />
+   671→                    </div>
+   672→                  </div>
+   673→                ))}
+   674→              </div>
+   675→            )}
+   676→          </div>
+   677→        </GlassCard>
+   678→
+   679→        <GlassCard className="p-5 lg:col-span-2">
+   680→          <SectionHeader title="Order Status" description="Breakdown of your orders by status" />
+   681→          <div className="mt-4 h-56 w-full">
+   682→            {statusBuckets.length === 0 ? (
+   683→              <EmptyState title="No orders to chart" icon={<Package className="size-5" />} />
+   684→            ) : (
+   685→              <ResponsiveContainer width="100%" height="100%">
+   686→                <PieChart>
+   687→                  <Pie
+   688→                    data={statusBuckets}
+   689→                    dataKey="value"
+   690→                    nameKey="name"
+   691→                    innerRadius={48}
+   692→                    outerRadius={80}
+   693→                    paddingAngle={2}
+   694→                    stroke="none"
+   695→                  >
+   696→                    {statusBuckets.map((_, i) => (
+   697→                      <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+   698→                    ))}
+   699→                  </Pie>
+   700→                  <Tooltip
+   701→                    contentStyle={{
+   702→                      background: "oklch(0.16 0.012 170 / 0.92)",
+   703→                      border: "1px solid oklch(1 0 0 / 0.12)",
+   704→                      borderRadius: 12,
+   705→                      color: "white",
+   706→                    }}
+   707→                  />
+   708→                </PieChart>
+   709→              </ResponsiveContainer>
+   710→            )}
+   711→          </div>
+   712→          <div className="mt-3 flex flex-wrap gap-2">
+   713→            {statusBuckets.map((b, i) => (
+   714→              <Badge key={b.name} variant="outline" className="border-border/60 bg-card/50">
+   715→                <span
+   716→                  className="size-2 rounded-full"
+   717→                  style={{ background: PIE_COLORS[i % PIE_COLORS.length] }}
+   718→                />
+   719→                {b.name}: {b.value}
+   720→              </Badge>
+   721→            ))}
+   722→          </div>
+   723→        </GlassCard>
+   724→      </div>
+   725→
+   726→      {/* Outstanding bills (action-oriented for the client) */}
+   727→      <GlassCard className="p-5">
+   728→        <SectionHeader
+   729→          title="Outstanding Bills"
+   730→          description="What you currently owe — pay before the due date"
+   731→          action={
+   732→            <Badge variant="outline" className={cn(
+   733→              s.outstanding > 0
+   734→                ? "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300"
+   735→                : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+   736→            )}>
+   737→              <Wallet className="size-3" />
+   738→              {formatCurrency(s.outstanding, { compact: true })}
+   739→            </Badge>
+   740→          }
+   741→        />
+   742→        <div className="mt-4">
+   743→          {sections.outstandingBills.length === 0 ? (
+   744→            <EmptyState
+   745→              title="All bills settled"
+   746→              hint="You have no outstanding dues. Thank you for your prompt payments!"
+   747→              icon={<CheckCircle2 className="size-5" />}
+   748→            />
+   749→          ) : (
+   750→            <div className="grid gap-3 sm:grid-cols-2">
+   751→              {sections.outstandingBills.map((b) => (
+   752→                <div key={b.id} className="rounded-xl border border-border/60 bg-card/40 p-4 hover-lift">
+   753→                  <div className="flex items-center justify-between gap-2">
+   754→                    <p className="kpi-num truncate text-sm font-semibold">{b.billNumber}</p>
+   755→                    {b.overdue ? (
+   756→                      <Badge variant="outline" className="border-rose-500/30 bg-rose-500/15 text-rose-700 dark:text-rose-300">
+   757→                        <Clock3 className="size-3" />Overdue
+   758→                      </Badge>
+   759→                    ) : (
+   760→                      <StatusChip status={b.status} />
+   761→                    )}
+   762→                  </div>
+   763→                  <p className="mt-1 text-xs text-muted-foreground">
+   764→                    {b.poNumber} · {b.supplier}
+   765→                  </p>
+   766→                  <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+   767→                    <div>
+   768→                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Final</p>
+   769→                      <p className="font-medium">{formatCurrency(b.finalAmount, { compact: true })}</p>
+   770→                    </div>
+   771→                    <div>
+   772→                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Paid</p>
+   773→                      <p className="font-medium text-emerald-600 dark:text-emerald-400">{formatCurrency(b.paidAmount, { compact: true })}</p>
+   774→                    </div>
+   775→                    <div>
+   776→                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Due</p>
+   777→                      <p className={b.overdue ? "font-semibold text-rose-600 dark:text-rose-400" : "font-semibold text-amber-600 dark:text-amber-400"}>
+   778→                        {formatCurrency(b.dueAmount, { compact: true })}
+   779→                      </p>
+   780→                    </div>
+   781→                  </div>
+   782→                  <div className="mt-3 flex items-center justify-between border-t border-border/40 pt-2 text-[11px]">
+   783→                    <span className="text-muted-foreground">
+   784→                      Due: <span className={b.overdue ? "font-medium text-rose-600 dark:text-rose-400" : "font-medium text-foreground"}>{formatDate(b.dueDate)}</span>
+   785→                    </span>
+   786→                    <span className="text-muted-foreground">Billed {formatDate(b.createdAt)}</span>
+   787→                  </div>
+   788→                </div>
+   789→              ))}
+   790→            </div>
+   791→          )}
+   792→        </div>
+   793→      </GlassCard>
+   794→
+   795→      {/* Payment history + Recent deliveries */}
+   796→      <div className="grid gap-4 lg:grid-cols-2">
+   797→        <GlassCard className="p-5">
+   798→          <SectionHeader
+   799→            title="Payment History"
+   800→            description="Your recent payments"
+   801→            action={<Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+   802→              <CheckCircle2 className="size-3" />{sections.paymentHistory.length}
+   803→            </Badge>}
+   804→          />
+   805→          <div className="mt-4">
+   806→            {sections.paymentHistory.length === 0 ? (
+   807→              <EmptyState title="No payments yet" hint="Payments you make will appear here." icon={<Wallet className="size-5" />} />
+   808→            ) : (
+   809→              <div className="space-y-2">
+   810→                {sections.paymentHistory.map((p) => (
+   811→                  <div key={p.id} className="flex items-center justify-between gap-3 rounded-xl border border-border/50 bg-card/30 px-4 py-2.5 hover-lift">
+   812→                    <div className="min-w-0">
+   813→                      <p className="kpi-num truncate text-sm font-medium">{p.billNumber}</p>
+   814→                      <p className="truncate text-xs text-muted-foreground">
+   815→                        {p.poNumber} · {formatDate(p.date)} · {titleCase(p.mode)}{p.reference ? ` · ${p.reference}` : ""}
+   816→                      </p>
+   817→                    </div>
+   818→                    <span className="shrink-0 text-sm font-semibold text-emerald-600 dark:text-emerald-400">
+   819→                      {formatCurrency(p.amount)}
+   820→                    </span>
+   821→                  </div>
+   822→                ))}
+   823→              </div>
+   824→            )}
+   825→          </div>
+   826→        </GlassCard>
+   827→
+   828→        <GlassCard className="p-5">
+   829→          <SectionHeader
+   830→            title="Recent Deliveries"
+   831→            description="What's been delivered to you"
+   832→            action={<Badge variant="outline" className="border-teal-500/30 bg-teal-500/10 text-teal-700 dark:text-teal-300">
+   833→              <Truck className="size-3" />{sections.recentDeliveries.length}
+   834→            </Badge>}
+   835→          />
+   836→          <div className="mt-4">
+   837→            {sections.recentDeliveries.length === 0 ? (
+   838→              <EmptyState title="No deliveries yet" hint="Your received shipments will appear here." icon={<Truck className="size-5" />} />
+   839→            ) : (
+   840→              <div className="space-y-2">
+   841→                {sections.recentDeliveries.map((d) => (
+   842→                  <div key={d.id} className="flex items-center justify-between gap-3 rounded-xl border border-border/50 bg-card/30 px-4 py-2.5 hover-lift">
+   843→                    <div className="min-w-0">
+   844→                      <p className="kpi-num truncate text-sm font-medium">{d.poNumber}</p>
+   845→                      <p className="truncate text-xs text-muted-foreground">{d.supplier} · {formatDate(d.dispatchDate)}</p>
+   846→                    </div>
+   847→                    <div className="flex shrink-0 items-center gap-3">
+   848→                      <span className="text-xs text-muted-foreground">{formatNumber(d.dispatchedQty)} sets</span>
+   849→                      <StatusChip status={d.status} />
+   850→                    </div>
+   851→                  </div>
+   852→                ))}
+   853→              </div>
+   854→            )}
+   855→          </div>
+   856→        </GlassCard>
+   857→      </div>
+   858→    </div>
+   859→  );
+   860→}
+   861→
+   862→// ─────────────────────────────────────────────────────────────────────────────
+   863→// ScoreRing — small circular SVG progress indicator reused from analytics.
+   864→// ─────────────────────────────────────────────────────────────────────────────
+   865→function ScoreRing({ score, size = 48 }: { score: number; size?: number }) {
+   866→  const radius = (size - 8) / 2;
+   867→  const circumference = 2 * Math.PI * radius;
+   868→  const offset = circumference - (score / 100) * circumference;
+   869→  const color = score >= 85 ? "oklch(0.7 0.15 162)"
+   870→    : score >= 70 ? "oklch(0.65 0.12 200)"
+   871→    : score >= 55 ? "oklch(0.78 0.14 85)"
+   872→    : "oklch(0.65 0.2 27)";
+   873→  return (
+   874→    <div className="relative grid place-items-center" style={{ width: size, height: size }}>
+   875→      <svg width={size} height={size} className="-rotate-90">
+   876→        <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="oklch(0.7 0.02 160 / 0.2)" strokeWidth={5} />
+   877→        <circle
+   878→          cx={size / 2} cy={size / 2} r={radius}
+   879→          fill="none" stroke={color} strokeWidth={5}
+   880→          strokeDasharray={circumference}
+   881→          strokeDashoffset={offset}
+   882→          strokeLinecap="round"
+   883→          className="transition-all duration-500"
+   884→        />
+   885→      </svg>
+   886→      <div className="absolute inset-0 grid place-items-center">
+   887→        <div className="text-center">
+   888→          <p className="kpi-num text-lg font-semibold leading-none" style={{ color }}>{score}</p>
+   889→          <p className="text-[9px] uppercase tracking-wider text-muted-foreground">score</p>
+   890→        </div>
+   891→      </div>
+   892→    </div>
+   893→  );
+   894→}
+   895→

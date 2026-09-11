@@ -1,0 +1,807 @@
+     1→"use client";
+     2→
+     3→import * as React from "react";
+     4→import {
+     5→  AlertCircle, AlertTriangle, Info, CheckCircle2, ChevronDown, Wrench,
+     6→  HardDrive, Clock, Database, RefreshCw, Activity, Zap, ScrollText,
+     7→} from "lucide-react";
+     8→import { toast } from "sonner";
+     9→import { useApi, api } from "@/lib/api";
+    10→import { formatNumber, formatDateTime } from "@/lib/format";
+    11→import { GlassCard, SectionHeader, EmptyState } from "@/components/shared";
+    12→import { Button } from "@/components/ui/button";
+    13→import { Badge } from "@/components/ui/badge";
+    14→import { Progress } from "@/components/ui/progress";
+    15→import {
+    16→  Collapsible, CollapsibleTrigger, CollapsibleContent,
+    17→} from "@/components/ui/collapsible";
+    18→import {
+    19→  AlertDialog,
+    20→  AlertDialogAction,
+    21→  AlertDialogCancel,
+    22→  AlertDialogContent,
+    23→  AlertDialogDescription,
+    24→  AlertDialogFooter,
+    25→  AlertDialogHeader,
+    26→  AlertDialogTitle,
+    27→} from "@/components/ui/alert-dialog";
+    28→import { Skeleton } from "@/components/ui/skeleton";
+    29→import { useUI, type ViewKey } from "@/lib/ui-store";
+    30→import { cn } from "@/lib/utils";
+    31→
+    32→// ─────────────────────────────────────────────────────────────────────────────
+    33→// Types — mirror the API response shape exactly.
+    34→// ─────────────────────────────────────────────────────────────────────────────
+    35→type Severity = "error" | "warning" | "info";
+    36→
+    37→type IssueExample = { id: string; label: string };
+    38→
+    39→type DataHealthIssue = {
+    40→  id: string;
+    41→  severity: Severity;
+    42→  category: string;
+    43→  title: string;
+    44→  description: string;
+    45→  count: number;
+    46→  entityType: string;
+    47→  actionView: string;
+    48→  examples?: IssueExample[];
+    49→  // Auto-fix metadata (added in Task 18-a). `fixable` is true when the issue
+    50→  // can be programmatically resolved by POST /api/data-health/fix; `fixType`
+    51→  // names the corresponding fix routine.
+    52→  fixable: boolean;
+    53→  fixType: string | null;
+    54→};
+    55→
+    56→type MissingField = { field: string; label: string };
+    57→type MissingRecord = { id: string; label: string; missing: MissingField[] };
+    58→
+    59→type CompletenessBucket = {
+    60→  total: number;
+    61→  complete: number;
+    62→  pct: number;
+    63→  missing: MissingRecord[];
+    64→};
+    65→
+    66→type DataHealthResponse = {
+    67→  summary: {
+    68→    totalEntities: number;
+    69→    lastUpdated: string | null;
+    70→    storageUsedMB: number;
+    71→  };
+    72→  issues: DataHealthIssue[];
+    73→  completeness: {
+    74→    clients: CompletenessBucket;
+    75→    suppliers: CompletenessBucket;
+    76→    pos: CompletenessBucket;
+    77→    bills: CompletenessBucket;
+    78→  };
+    79→  canFixAll: boolean;
+    80→  lastFixedAt: string | null;
+    81→};
+    82→
+    83→// ─────────────────────────────────────────────────────────────────────────────
+    84→// Severity palette (rose / amber / teal) — no indigo/blue anywhere.
+    85→// ─────────────────────────────────────────────────────────────────────────────
+    86→const SEVERITY_STYLES: Record<
+    87→  Severity,
+    88→  {
+    89→    icon: React.ComponentType<{ className?: string }>;
+    90→    iconWrap: string;
+    91→    iconColor: string;
+    92→    badge: string;
+    93→    bar: string;
+    94→    accent: string;
+    95→    ring: string;
+    96→  }
+    97→> = {
+    98→  error: {
+    99→    icon: AlertCircle,
+   100→    iconWrap: "bg-rose-500/15 text-rose-600 dark:text-rose-400",
+   101→    iconColor: "text-rose-600 dark:text-rose-400",
+   102→    badge: "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300",
+   103→    bar: "bg-rose-500",
+   104→    accent: "rose",
+   105→    ring: "oklch(0.65 0.22 12)",
+   106→  },
+   107→  warning: {
+   108→    icon: AlertTriangle,
+   109→    iconWrap: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+   110→    iconColor: "text-amber-600 dark:text-amber-400",
+   111→    badge: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+   112→    bar: "bg-amber-500",
+   113→    accent: "amber",
+   114→    ring: "oklch(0.78 0.16 75)",
+   115→  },
+   116→  info: {
+   117→    icon: Info,
+   118→    iconWrap: "bg-teal-500/15 text-teal-600 dark:text-teal-400",
+   119→    iconColor: "text-teal-600 dark:text-teal-400",
+   120→    badge: "border-teal-500/30 bg-teal-500/10 text-teal-700 dark:text-teal-300",
+   121→    bar: "bg-teal-500",
+   122→    accent: "teal",
+   123→    ring: "oklch(0.7 0.11 200)",
+   124→  },
+   125→};
+   126→
+   127→// Health score thresholds for the ScoreRing colour.
+   128→function scoreColor(score: number): string {
+   129→  if (score > 85) return "oklch(0.7 0.15 162)"; // emerald
+   130→  if (score >= 60) return "oklch(0.78 0.16 75)"; // amber
+   131→  return "oklch(0.65 0.22 12)"; // rose
+   132→}
+   133→
+   134→function scoreTone(score: number): "emerald" | "amber" | "rose" {
+   135→  if (score > 85) return "emerald";
+   136→  if (score >= 60) return "amber";
+   137→  return "rose";
+   138→}
+   139→
+   140→// ─────────────────────────────────────────────────────────────────────────────
+   141→// ScoreRing — circular SVG progress (reuse the pattern from analytics).
+   142→// ─────────────────────────────────────────────────────────────────────────────
+   143→function ScoreRing({ score, size = 96 }: { score: number; size?: number }) {
+   144→  const radius = (size - 10) / 2;
+   145→  const circumference = 2 * Math.PI * radius;
+   146→  const offset = circumference - (score / 100) * circumference;
+   147→  const color = scoreColor(score);
+   148→  return (
+   149→    <div className="relative" style={{ width: size, height: size }}>
+   150→      <svg width={size} height={size} className="-rotate-90">
+   151→        <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="oklch(0.7 0.02 160 / 0.2)" strokeWidth={6} />
+   152→        <circle
+   153→          cx={size / 2}
+   154→          cy={size / 2}
+   155→          r={radius}
+   156→          fill="none"
+   157→          stroke={color}
+   158→          strokeWidth={6}
+   159→          strokeDasharray={circumference}
+   160→          strokeDashoffset={offset}
+   161→          strokeLinecap="round"
+   162→          className="transition-all duration-500"
+   163→        />
+   164→      </svg>
+   165→      <div className="absolute inset-0 flex flex-col items-center justify-center">
+   166→        <span className="kpi-num text-2xl font-semibold" style={{ color }}>
+   167→          {score}
+   168→        </span>
+   169→        <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">/ 100</span>
+   170→      </div>
+   171→    </div>
+   172→  );
+   173→}
+   174→
+   175→// ─────────────────────────────────────────────────────────────────────────────
+   176→// Main view
+   177→// ─────────────────────────────────────────────────────────────────────────────
+   178→export function DataHealthView() {
+   179→  const { data, loading, refresh } = useApi<DataHealthResponse>("/api/data-health");
+   180→  const { setView } = useUI();
+   181→
+   182→  // Fix-all dialog state — opens the prominent "Fix all auto-fixable"
+   183→  // confirmation. The dialog body explains the impact (N issues across 5
+   184→  // categories) before the broker commits.
+   185→  const [fixAllOpen, setFixAllOpen] = React.useState(false);
+   186→  const [fixAllBusy, setFixAllBusy] = React.useState(false);
+   187→
+   188→  // Single-issue fix in-flight marker — used to render the "Fixing…" label
+   189→  // on the matching IssueCard and disable its Fix button. Other cards stay
+   190→  // interactive (parallel fixes are fine, they touch disjoint tables).
+   191→  // Declared above the early-return so the rules-of-hooks are satisfied.
+   192→  const [fixingId, setFixingId] = React.useState<string | null>(null);
+   193→
+   194→  if (loading || !data) {
+   195→    return (
+   196→      <div className="space-y-6">
+   197→        <Skeleton className="h-10 w-full max-w-md rounded-lg" />
+   198→        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+   199→          {Array.from({ length: 4 }).map((_, i) => (
+   200→            <Skeleton key={i} className="h-28 rounded-2xl" />
+   201→          ))}
+   202→        </div>
+   203→        <Skeleton className="h-72 rounded-2xl" />
+   204→        <Skeleton className="h-72 rounded-2xl" />
+   205→      </div>
+   206→    );
+   207→  }
+   208→
+   209→  const { summary, issues, completeness, canFixAll, lastFixedAt } = data;
+   210→
+   211→  // Health score = % of non-error checks out of all checks. Treat each issue
+   212→  // as one "check"; if there are no issues at all, score = 100.
+   213→  const errorCount = issues.filter((i) => i.severity === "error").length;
+   214→  const totalChecks = issues.length;
+   215→  const healthScore = totalChecks === 0
+   216→    ? 100
+   217→    : Math.round(((totalChecks - errorCount) / totalChecks) * 100);
+   218→
+   219→  const tone = scoreTone(healthScore);
+   220→
+   221→  // Sum of fixable issue counts — shown on the "Fix all" button badge.
+   222→  const fixableTotalCount = issues
+   223→    .filter((i) => i.fixable)
+   224→    .reduce((sum, i) => sum + i.count, 0);
+   225→
+   226→  const goTo = (view: string) => {
+   227→    setView(view as ViewKey);
+   228→  };
+   229→
+   230→  // ── Single-issue fix ──────────────────────────────────────────────────────
+   231→  // Called by each `IssueCard`'s "Fix" button. If the issue has count > 1
+   232→  // the card itself shows a confirm (so this callback is only invoked once
+   233→  // the broker has confirmed). We always call /api/data-health/fix with
+   234→  // `entityId: null` so the fix applies to every matching record of that
+   235→  // type — that matches the "Fix all N" promise on the button.
+   236→  const runSingleFix = async (issue: DataHealthIssue) => {
+   237→    if (!issue.fixType) return;
+   238→    setFixingId(issue.id);
+   239→    try {
+   240→      const res = await api<{ fixed: number; fixType: string }>("/api/data-health/fix", {
+   241→        method: "POST",
+   242→        body: JSON.stringify({ fixType: issue.fixType, entityId: null }),
+   243→      });
+   244→      toast.success(
+   245→        `Fixed ${res.fixed} ${issue.entityType.toLowerCase()}${res.fixed === 1 ? "" : "s"}`,
+   246→        { description: res.fixed > 0 ? undefined : "No matching records to fix." },
+   247→      );
+   248→      refresh();
+   249→    } catch (e) {
+   250→      toast.error(e instanceof Error ? e.message : "Auto-fix failed");
+   251→    } finally {
+   252→      setFixingId(null);
+   253→    }
+   254→  };
+   255→
+   256→  // ── Fix-all ───────────────────────────────────────────────────────────────
+   257→  const runFixAll = async () => {
+   258→    setFixAllBusy(true);
+   259→    try {
+   260→      const res = await api<{ totalFixed: number; results: { fixType: string; fixed: number }[] }>(
+   261→        "/api/data-health/fix-all",
+   262→        { method: "POST", body: JSON.stringify({}) },
+   263→      );
+   264→      toast.success(`Fixed ${res.totalFixed} issue${res.totalFixed === 1 ? "" : "s"} total`, {
+   265→        description: res.results
+   266→          .filter((r) => r.fixed > 0)
+   267→          .map((r) => `${r.fixType}: ${r.fixed}`)
+   268→          .join(" · ") || "No matching records to fix.",
+   269→      });
+   270→      setFixAllOpen(false);
+   271→      refresh();
+   272→    } catch (e) {
+   273→      toast.error(e instanceof Error ? e.message : "Fix-all failed");
+   274→    } finally {
+   275→      setFixAllBusy(false);
+   276→    }
+   277→  };
+   278→
+   279→  return (
+   280→    <div className="space-y-6">
+   281→      <SectionHeader
+   282→        title="Data Health"
+   283→        description="System integrity & data quality"
+   284→        action={
+   285→          <div className="flex flex-wrap items-center gap-2">
+   286→            {lastFixedAt && (
+   287→              <Badge
+   288→                variant="outline"
+   289→                className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+   290→              >
+   291→                <Wrench className="size-3" />
+   292→                Last auto-fix: {formatDateTime(lastFixedAt)}
+   293→              </Badge>
+   294→            )}
+   295→            <Button variant="outline" size="sm" onClick={() => refresh()}>
+   296→              <RefreshCw className="size-3.5" />
+   297→              <span className="hidden sm:inline">Re-run checks</span>
+   298→            </Button>
+   299→          </div>
+   300→        }
+   301→      />
+   302→
+   303→      {/* ─── Summary strip: 4 KPI mini-cards ─────────────────────────────── */}
+   304→      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+   305→        <GlassCard className="relative overflow-hidden p-5">
+   306→          <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-emerald-500/10 to-emerald-500/0" />
+   307→          <div className="relative flex items-start justify-between gap-3">
+   308→            <div className="min-w-0">
+   309→              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Total Entities</p>
+   310→              <p className="kpi-num mt-2 text-3xl font-light text-foreground">{formatNumber(summary.totalEntities)}</p>
+   311→              <p className="mt-1 text-xs text-muted-foreground">Across 13 tables</p>
+   312→            </div>
+   313→            <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+   314→              <Database className="size-5" />
+   315→            </div>
+   316→          </div>
+   317→        </GlassCard>
+   318→
+   319→        <GlassCard className="relative overflow-hidden p-5">
+   320→          <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-teal-500/10 to-teal-500/0" />
+   321→          <div className="relative flex items-start justify-between gap-3">
+   322→            <div className="min-w-0">
+   323→              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Storage Used</p>
+   324→              <p className="kpi-num mt-2 text-3xl font-light text-foreground">
+   325→                {summary.storageUsedMB.toFixed(2)}
+   326→                <span className="ml-1 text-base font-normal text-muted-foreground">MB</span>
+   327→              </p>
+   328→              <p className="mt-1 text-xs text-muted-foreground">DB + photos on disk</p>
+   329→            </div>
+   330→            <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-teal-500/15 text-teal-600 dark:text-teal-400">
+   331→              <HardDrive className="size-5" />
+   332→            </div>
+   333→          </div>
+   334→        </GlassCard>
+   335→
+   336→        <GlassCard className="relative overflow-hidden p-5">
+   337→          <div className="relative flex items-start justify-between gap-3">
+   338→            <div className="min-w-0">
+   339→              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Last Updated</p>
+   340→              <p className="mt-2 text-sm font-medium text-foreground">
+   341→                {summary.lastUpdated ? formatDateTime(summary.lastUpdated) : "—"}
+   342→              </p>
+   343→              <p className="mt-1 text-xs text-muted-foreground">Most recent record change</p>
+   344→            </div>
+   345→            <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-amber-500/15 text-amber-600 dark:text-amber-400">
+   346→              <Clock className="size-5" />
+   347→            </div>
+   348→          </div>
+   349→        </GlassCard>
+   350→
+   351→        {/* Overall Health Score with ScoreRing */}
+   352→        <GlassCard className="relative overflow-hidden p-5">
+   353→          <div
+   354→            className={cn(
+   355→              "pointer-events-none absolute inset-0 bg-gradient-to-br",
+   356→              tone === "emerald" && "from-emerald-500/10 to-emerald-500/0",
+   357→              tone === "amber" && "from-amber-500/10 to-amber-500/0",
+   358→              tone === "rose" && "from-rose-500/10 to-rose-500/0",
+   359→            )}
+   360→          />
+   361→          <div className="relative flex items-start justify-between gap-3">
+   362→            <div className="min-w-0">
+   363→              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Overall Health</p>
+   364→              <p className="mt-2 text-xs text-muted-foreground">
+   365→                {totalChecks === 0
+   366→                  ? "No issues detected"
+   367→                  : `${errorCount} error${errorCount === 1 ? "" : "s"} · ${totalChecks} total check${totalChecks === 1 ? "" : "s"}`}
+   368→              </p>
+   369→              <p className="mt-1 text-[11px] text-muted-foreground">
+   370→                {tone === "emerald" ? "Healthy" : tone === "amber" ? "Needs attention" : "Critical"}
+   371→              </p>
+   372→            </div>
+   373→            <ScoreRing score={healthScore} />
+   374→          </div>
+   375→        </GlassCard>
+   376→      </div>
+   377→
+   378→      {/* ─── Issues list ────────────────────────────────────────────────── */}
+   379→      <GlassCard className="p-5">
+   380→        <SectionHeader
+   381→          title="Issues"
+   382→          description="Detected data quality problems, grouped by severity"
+   383→          action={
+   384→            <div className="flex flex-wrap items-center gap-2">
+   385→              {canFixAll && (
+   386→                <Button
+   387→                  size="sm"
+   388→                  className="bg-emerald-600 text-white hover:bg-emerald-700"
+   389→                  onClick={() => setFixAllOpen(true)}
+   390→                >
+   391→                  <Zap className="size-3.5" />
+   392→                  Fix all auto-fixable
+   393→                  <Badge
+   394→                    variant="outline"
+   395→                    className="ml-1 border-white/30 bg-white/15 text-white"
+   396→                  >
+   397→                    {fixableTotalCount}
+   398→                  </Badge>
+   399→                </Button>
+   400→              )}
+   401→              <Badge
+   402→                variant="outline"
+   403→                className={cn(
+   404→                  "border-border/60",
+   405→                  tone === "emerald"
+   406→                    ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+   407→                    : tone === "amber"
+   408→                      ? "bg-amber-500/10 text-amber-700 dark:text-amber-300"
+   409→                      : "bg-rose-500/10 text-rose-700 dark:text-rose-300",
+   410→                )}
+   411→              >
+   412→                <Activity className="size-3" />
+   413→                {issues.length === 0 ? "All clear" : `${issues.length} issue${issues.length === 1 ? "" : "s"}`}
+   414→              </Badge>
+   415→            </div>
+   416→          }
+   417→        />
+   418→
+   419→        <div className="mt-4">
+   420→          {issues.length === 0 ? (
+   421→            <EmptyState
+   422→              title="All data healthy"
+   423→              hint="No compliance gaps, stuck records, or integrity issues detected. Keep it up!"
+   424→              icon={<CheckCircle2 className="size-5 text-emerald-600 dark:text-emerald-400" />}
+   425→            />
+   426→          ) : (
+   427→            <div className="space-y-3">
+   428→              {issues.map((issue) => (
+   429→                <IssueCard
+   430→                  key={issue.id}
+   431→                  issue={issue}
+   432→                  fixing={fixingId === issue.id}
+   433→                  onNavigate={() => goTo(issue.actionView)}
+   434→                  onFix={() => runSingleFix(issue)}
+   435→                />
+   436→              ))}
+   437→            </div>
+   438→          )}
+   439→        </div>
+   440→
+   441→        {/* Audit trail note — auto-fixes are logged identically to manual
+   442→            mutations so the broker can audit them later. */}
+   443→        <div className="mt-4 flex items-start gap-2 rounded-lg border border-border/40 bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground">
+   444→          <ScrollText className="mt-0.5 size-3.5 shrink-0" />
+   445→          <span>
+   446→            Auto-fixable issues can be resolved in one click. Issues marked{" "}
+   447→            <span className="font-medium text-foreground">Manual</span> require a
+   448→            decision (entering a GST number, uploading a photo, recording a payment).
+   449→            All auto-fixes are logged in the{" "}
+   450→            <button
+   451→              type="button"
+   452→              className="font-medium text-emerald-600 underline-offset-2 hover:underline dark:text-emerald-400"
+   453→              onClick={() => goTo("audit")}
+   454→            >
+   455→              Audit Trail
+   456→            </button>
+   457→            .
+   458→          </span>
+   459→        </div>
+   460→      </GlassCard>
+   461→
+   462→      {/* ─── Completeness section ───────────────────────────────────────── */}
+   463→      <GlassCard className="p-5">
+   464→        <SectionHeader
+   465→          title="Completeness"
+   466→          description="% of records with all required fields filled"
+   467→        />
+   468→        <div className="mt-4 space-y-3">
+   469→          <CompletenessRow
+   470→            label="Clients"
+   471→            requiredHint="name · phone · email · GST · address"
+   472→            bucket={completeness.clients}
+   473→          />
+   474→          <CompletenessRow
+   475→            label="Suppliers"
+   476→            requiredHint="name · phone · GST · commission rate"
+   477→            bucket={completeness.suppliers}
+   478→          />
+   479→          <CompletenessRow
+   480→            label="Purchase Orders"
+   481→            requiredHint="expected dispatch date · ≥1 dispatch · bill"
+   482→            bucket={completeness.pos}
+   483→          />
+   484→          <CompletenessRow
+   485→            label="Bills"
+   486→            requiredHint="≥1 payment · brokerage created"
+   487→            bucket={completeness.bills}
+   488→          />
+   489→        </div>
+   490→      </GlassCard>
+   491→
+   492→      {/* ─── Fix-all confirmation dialog ────────────────────────────────── */}
+   493→      <AlertDialog open={fixAllOpen} onOpenChange={setFixAllOpen}>
+   494→        <AlertDialogContent className="glass-strong">
+   495→          <AlertDialogHeader>
+   496→            <AlertDialogTitle>
+   497→              Fix all {fixableTotalCount} auto-fixable issue{fixableTotalCount === 1 ? "" : "s"}?
+   498→            </AlertDialogTitle>
+   499→            <AlertDialogDescription>
+   500→              This will automatically resolve <span className="font-medium text-foreground">{fixableTotalCount}</span>{" "}
+   501→              issue{fixableTotalCount === 1 ? "" : "s"} across{" "}
+   502→              <span className="font-medium text-foreground">
+   503→                {issues.filter((i) => i.fixable).length}
+   504→              </span>{" "}
+   505→              categories: create missing brokerage, generate thumbnails, dismiss stale
+   506→              notifications, close forgotten visits, and set default commission rates.
+   507→              Every change is logged in the Audit Trail. Continue?
+   508→            </AlertDialogDescription>
+   509→          </AlertDialogHeader>
+   510→          <AlertDialogFooter>
+   511→            <AlertDialogCancel disabled={fixAllBusy}>Cancel</AlertDialogCancel>
+   512→            <AlertDialogAction
+   513→              className="bg-emerald-600 text-white hover:bg-emerald-700"
+   514→              onClick={(e) => {
+   515→                e.preventDefault();
+   516→                void runFixAll();
+   517→              }}
+   518→              disabled={fixAllBusy}
+   519→            >
+   520→              {fixAllBusy ? "Fixing…" : `Fix all ${fixableTotalCount}`}
+   521→            </AlertDialogAction>
+   522→          </AlertDialogFooter>
+   523→        </AlertDialogContent>
+   524→      </AlertDialog>
+   525→    </div>
+   526→  );
+   527→}
+   528→
+   529→// ─────────────────────────────────────────────────────────────────────────────
+   530→// IssueCard — expandable card for one DataHealthIssue.
+   531→//
+   532→// Renders the existing "Fix now" navigation button (jumps to the relevant
+   533→// list view) plus, for `fixable` issues, an emerald "Fix" button that calls
+   534→// the auto-fix API. For non-fixable issues, a muted "Manual" badge replaces
+   535→// the Fix button so the broker knows why there's no quick fix.
+   536→// ─────────────────────────────────────────────────────────────────────────────
+   537→function IssueCard({
+   538→  issue,
+   539→  fixing,
+   540→  onNavigate,
+   541→  onFix,
+   542→}: {
+   543→  issue: DataHealthIssue;
+   544→  fixing: boolean;
+   545→  onNavigate: () => void;
+   546→  onFix: () => void;
+   547→}) {
+   548→  const [open, setOpen] = React.useState(false);
+   549→  // Per-card confirm dialog: only shown when count > 1, so the broker has
+   550→  // to explicitly opt into fixing all N records at once.
+   551→  const [confirmOpen, setConfirmOpen] = React.useState(false);
+   552→  const styles = SEVERITY_STYLES[issue.severity];
+   553→  const Icon = styles.icon;
+   554→  const hasExamples = !!issue.examples && issue.examples.length > 0;
+   555→
+   556→  const handleFixClick = () => {
+   557→    if (issue.count > 1) {
+   558→      setConfirmOpen(true);
+   559→    } else {
+   560→      onFix();
+   561→    }
+   562→  };
+   563→
+   564→  return (
+   565→    <Collapsible open={open} onOpenChange={setOpen}>
+   566→      <div
+   567→        className={cn(
+   568→          "rounded-xl border bg-card/40 transition-colors",
+   569→          issue.severity === "error" && "border-rose-500/20",
+   570→          issue.severity === "warning" && "border-amber-500/20",
+   571→          issue.severity === "info" && "border-teal-500/20",
+   572→        )}
+   573→      >
+   574→        <div className="flex items-start gap-3 p-4">
+   575→          <div className={cn("grid size-9 shrink-0 place-items-center rounded-lg", styles.iconWrap)}>
+   576→            <Icon className="size-5" />
+   577→          </div>
+   578→          <div className="min-w-0 flex-1">
+   579→            <div className="flex flex-wrap items-center gap-2">
+   580→              <Badge variant="outline" className={cn("border-border/60", styles.badge)}>
+   581→                {issue.category}
+   582→              </Badge>
+   583→              <span className="text-sm font-semibold text-foreground">{issue.title}</span>
+   584→            </div>
+   585→            <p className="mt-1 text-xs text-muted-foreground">{issue.description}</p>
+   586→
+   587→            <div className="mt-3 flex flex-wrap items-center gap-2">
+   588→              <Badge
+   589→                variant="outline"
+   590→                className={cn(
+   591→                  "border-border/60",
+   592→                  issue.severity === "error" && "bg-rose-500/10 text-rose-700 dark:text-rose-300",
+   593→                  issue.severity === "warning" && "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+   594→                  issue.severity === "info" && "bg-teal-500/10 text-teal-700 dark:text-teal-300",
+   595→                )}
+   596→              >
+   597→                {issue.count} {issue.entityType.toLowerCase()}
+   598→                {issue.count === 1 ? "" : "s"} affected
+   599→              </Badge>
+   600→
+   601→              {issue.fixable ? (
+   602→                <Button
+   603→                  size="sm"
+   604→                  className="h-7 gap-1.5 bg-emerald-600 px-2.5 text-[11px] text-white hover:bg-emerald-700"
+   605→                  onClick={handleFixClick}
+   606→                  disabled={fixing}
+   607→                >
+   608→                  <Wrench className="size-3" />
+   609→                  {fixing ? "Fixing…" : "Fix"}
+   610→                </Button>
+   611→              ) : (
+   612→                <Badge
+   613→                  variant="outline"
+   614→                  className="border-zinc-500/30 bg-zinc-500/10 px-2 py-0.5 text-[11px] font-medium text-zinc-600 dark:text-zinc-400"
+   615→                >
+   616→                  Manual
+   617→                </Badge>
+   618→              )}
+   619→
+   620→              <Button
+   621→                size="sm"
+   622→                variant="outline"
+   623→                className="h-7 gap-1.5 px-2.5 text-[11px]"
+   624→                onClick={onNavigate}
+   625→              >
+   626→                View
+   627→              </Button>
+   628→
+   629→              {hasExamples && (
+   630→                <CollapsibleTrigger asChild>
+   631→                  <Button
+   632→                    size="sm"
+   633→                    variant="ghost"
+   634→                    className="h-7 gap-1 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+   635→                  >
+   636→                    <span>{open ? "Hide" : "Show"} examples</span>
+   637→                    <ChevronDown
+   638→                      className={cn("size-3 transition-transform", open && "rotate-180")}
+   639→                    />
+   640→                  </Button>
+   641→                </CollapsibleTrigger>
+   642→              )}
+   643→            </div>
+   644→          </div>
+   645→        </div>
+   646→
+   647→        {hasExamples && (
+   648→          <CollapsibleContent>
+   649→            <div className="border-t border-border/50 bg-muted/20 px-4 py-3">
+   650→              <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+   651→                Top affected {issue.entityType.toLowerCase()}s
+   652→              </p>
+   653→              <ul className="space-y-1">
+   654→                {issue.examples!.map((ex) => (
+   655→                  <li key={ex.id} className="flex items-center gap-2 text-xs text-foreground">
+   656→                    <span className={cn("size-1.5 shrink-0 rounded-full", styles.bar)} />
+   657→                    <span className="truncate font-medium">{ex.label}</span>
+   658→                  </li>
+   659→                ))}
+   660→              </ul>
+   661→              {issue.count > issue.examples!.length && (
+   662→                <p className="mt-2 text-[10px] text-muted-foreground">
+   663→                  + {issue.count - issue.examples!.length} more — open the {issue.actionView} view to see all.
+   664→                </p>
+   665→              )}
+   666→            </div>
+   667→          </CollapsibleContent>
+   668→        )}
+   669→      </div>
+   670→
+   671→      {/* Per-issue confirm — only rendered when count > 1 (handleFixClick
+   672→          routes single-count issues straight to onFix). */}
+   673→      {issue.count > 1 && (
+   674→        <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+   675→          <AlertDialogContent className="glass-strong">
+   676→            <AlertDialogHeader>
+   677→              <AlertDialogTitle>
+   678→                Fix all {issue.count} {issue.entityType.toLowerCase()}{issue.count === 1 ? "" : "s"}?
+   679→              </AlertDialogTitle>
+   680→              <AlertDialogDescription>
+   681→                This will automatically resolve{" "}
+   682→                <span className="font-medium text-foreground">{issue.count}</span>{" "}
+   683→                {issue.title.toLowerCase()}. The change is logged in the Audit Trail.
+   684→              </AlertDialogDescription>
+   685→            </AlertDialogHeader>
+   686→            <AlertDialogFooter>
+   687→              <AlertDialogCancel disabled={fixing}>Cancel</AlertDialogCancel>
+   688→              <AlertDialogAction
+   689→                className="bg-emerald-600 text-white hover:bg-emerald-700"
+   690→                onClick={(e) => {
+   691→                  e.preventDefault();
+   692→                  setConfirmOpen(false);
+   693→                  onFix();
+   694→                }}
+   695→                disabled={fixing}
+   696→              >
+   697→                Fix all {issue.count}
+   698→              </AlertDialogAction>
+   699→            </AlertDialogFooter>
+   700→          </AlertDialogContent>
+   701→        </AlertDialog>
+   702→      )}
+   703→    </Collapsible>
+   704→  );
+   705→}
+   706→
+   707→// ─────────────────────────────────────────────────────────────────────────────
+   708→// CompletenessRow — one progress bar with an expandable missing-fields list.
+   709→// ─────────────────────────────────────────────────────────────────────────────
+   710→function CompletenessRow({
+   711→  label,
+   712→  requiredHint,
+   713→  bucket,
+   714→}: {
+   715→  label: string;
+   716→  requiredHint: string;
+   717→  bucket: CompletenessBucket;
+   718→}) {
+   719→  const [open, setOpen] = React.useState(false);
+   720→  const hasMissing = bucket.missing.length > 0;
+   721→  // Indicator colour class (overrides shadcn Progress's default `bg-primary`
+   722→  // via Tailwind v4 arbitrary variant on the indicator data-slot).
+   723→  const indicatorColor =
+   724→    bucket.pct > 85 ? "[&_[data-slot=progress-indicator]]:bg-emerald-500"
+   725→    : bucket.pct >= 60 ? "[&_[data-slot=progress-indicator]]:bg-amber-500"
+   726→    : "[&_[data-slot=progress-indicator]]:bg-rose-500";
+   727→  const textColor =
+   728→    bucket.pct > 85 ? "text-emerald-600 dark:text-emerald-400"
+   729→    : bucket.pct >= 60 ? "text-amber-600 dark:text-amber-400"
+   730→    : "text-rose-600 dark:text-rose-400";
+   731→
+   732→  return (
+   733→    <Collapsible open={open} onOpenChange={setOpen}>
+   734→      <div className="rounded-xl border border-border/60 bg-card/30 p-4">
+   735→        <div className="flex items-center justify-between gap-3">
+   736→          <div className="min-w-0">
+   737→            <p className="text-sm font-semibold text-foreground">{label}</p>
+   738→            <p className="mt-0.5 text-[11px] text-muted-foreground">
+   739→              Required: {requiredHint}
+   740→            </p>
+   741→          </div>
+   742→          <div className="flex shrink-0 items-center gap-3">
+   743→            <div className="text-right">
+   744→              <p className={cn("kpi-num text-sm font-semibold", textColor)}>
+   745→                {bucket.pct}%
+   746→              </p>
+   747→              <p className="text-[10px] text-muted-foreground">
+   748→                {bucket.complete} / {bucket.total} complete
+   749→              </p>
+   750→            </div>
+   751→            {hasMissing && (
+   752→              <CollapsibleTrigger asChild>
+   753→                <Button
+   754→                  size="sm"
+   755→                  variant="ghost"
+   756→                  className="h-7 gap-1 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+   757→                >
+   758→                  <span>{open ? "Hide" : "Details"}</span>
+   759→                  <ChevronDown className={cn("size-3 transition-transform", open && "rotate-180")} />
+   760→                </Button>
+   761→              </CollapsibleTrigger>
+   762→            )}
+   763→          </div>
+   764→        </div>
+   765→
+   766→        <div className="mt-3">
+   767→          <Progress
+   768→            value={bucket.pct}
+   769→            className={cn("h-2 bg-muted", indicatorColor)}
+   770→          />
+   771→        </div>
+   772→
+   773→        {hasMissing && (
+   774→          <CollapsibleContent>
+   775→            <div className="mt-3 space-y-2 border-t border-border/50 pt-3">
+   776→              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+   777→                Records with missing fields ({bucket.missing.length}
+   778→                {bucket.total > 50 && bucket.missing.length === 50 ? "+" : ""})
+   779→              </p>
+   780→              <ul className="max-h-72 space-y-1.5 overflow-y-auto pr-1">
+   781→                {bucket.missing.map((rec) => (
+   782→                  <li
+   783→                    key={rec.id}
+   784→                    className="flex flex-col gap-1 rounded-lg bg-muted/30 px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
+   785→                  >
+   786→                    <span className="truncate text-xs font-medium text-foreground">{rec.label}</span>
+   787→                    <div className="flex flex-wrap gap-1">
+   788→                      {rec.missing.map((m) => (
+   789→                        <span
+   790→                          key={m.field}
+   791→                          className="inline-flex items-center rounded-md border border-rose-500/20 bg-rose-500/10 px-1.5 py-0.5 text-[10px] font-medium text-rose-700 dark:text-rose-300"
+   792→                        >
+   793→                          {m.label}
+   794→                        </span>
+   795→                      ))}
+   796→                    </div>
+   797→                  </li>
+   798→                ))}
+   799→              </ul>
+   800→            </div>
+   801→          </CollapsibleContent>
+   802→        )}
+   803→      </div>
+   804→    </Collapsible>
+   805→  );
+   806→}
+   807→

@@ -1,0 +1,785 @@
+     1→// Seed script — populates realistic demo data for the Broker OS
+     2→// Run with: bun run src/lib/seed.ts
+     3→import { db } from "./db";
+     4→
+     5→async function main() {
+     6→  console.log("Seeding Broker OS database...");
+     7→
+     8→  // Clean slate
+     9→  await db.auditLog.deleteMany();
+    10→  await db.notification.deleteMany();
+    11→  await db.photo.deleteMany();
+    12→  await db.brokerage.deleteMany();
+    13→  await db.brokeragePayout.deleteMany();
+    14→  await db.payment.deleteMany();
+    15→  await db.bill.deleteMany();
+    16→  await db.dispute.deleteMany();
+    17→  await db.dispatchDateLog.deleteMany();
+    18→  await db.dispatch.deleteMany();
+    19→  await db.purchaseOrder.deleteMany();
+    20→  await db.bookingLineItem.deleteMany();
+    21→  await db.booking.deleteMany();
+    22→  await db.visit.deleteMany();
+    23→  await db.client.deleteMany();
+    24→  await db.supplier.deleteMany();
+    25→  await db.systemSetting.deleteMany();
+    26→
+    27→  // ── Suppliers ──────────────────────────────────────────────────────
+    28→  const suppliers = await Promise.all([
+    29→    db.supplier.create({
+    30→      data: {
+    31→        name: "Shree Balaji Textiles",
+    32→        contactPerson: "Ramesh Agarwal",
+    33→        phone: "+91 98200 11223",
+    34→        email: "ramesh@balajitextiles.in",
+    35→        address: "186, Ring Road, Surat, Gujarat",
+    36→        gstNo: "24AAGCB1234M1Z5",
+    37→        defaultCommissionRate: 5,
+    38→        defaultGstRate: 5,
+    39→        notes: "Specialist in cotton kurtis. Reliable dispatch.",
+    40→      },
+    41→    }),
+    42→    db.supplier.create({
+    43→      data: {
+    44→        name: "Mahalaxmi Apparels",
+    45→        contactPerson: "Sunita Joshi",
+    46→        phone: "+91 99300 44556",
+    47→        email: "sunita@mahalaxmi.in",
+    48→        address: "42, Textile Hub, Bhiwandi, Maharashtra",
+    49→        gstNo: "27AAFCM8890P1Z2",
+    50→        defaultCommissionRate: 6,
+    51→        defaultGstRate: 5,
+    52→        notes: "Partywear & festive wear. Slightly delayed dispatches.",
+    53→      },
+    54→    }),
+    55→    db.supplier.create({
+    56→      data: {
+    57→        name: "Krishna Knit Fab",
+    58→        contactPerson: "Gopal Pillai",
+    59→        phone: "+91 90400 77889",
+    60→        email: "gopal@krishnaknit.in",
+    61→        address: "23, Tirupur Knit Park, Tamil Nadu",
+    62→        gstNo: "33AAHCK5567Q1Z8",
+    63→        defaultCommissionRate: 4.5,
+    64→        defaultGstRate: 5,
+    65→        notes: "Knitted tops & tunics. Good value.",
+    66→      },
+    67→    }),
+    68→    db.supplier.create({
+    69→      data: {
+    70→        name: "Ananya Ethnic Wear",
+    71→        contactPerson: "Ananya Desai",
+    72→        phone: "+91 98190 22331",
+    73→        email: "ananya@ananyaethnic.in",
+    74→        address: "77, Lajpat Nagar, New Delhi",
+    75→        gstNo: "07AASCA9012R1Z3",
+    76→        defaultCommissionRate: 7,
+    77→        defaultGstRate: 12,
+    78→        notes: "Premium ethnic sets. Higher commission, premium GST slab.",
+    79→      },
+    80→    }),
+    81→    db.supplier.create({
+    82→      data: {
+    83→        name: "Vastram Creations",
+    84→        contactPerson: "Imran Sheikh",
+    85→        phone: "+91 97200 55661",
+    86→        email: "imran@vastram.in",
+    87→        address: "12, Sasoon Road, Pune, Maharashtra",
+    88→        gstNo: "27AAFCV3344S1Z9",
+    89→        defaultCommissionRate: 5,
+    90→        defaultGstRate: 5,
+    91→        notes: "Daily-wear kurtis. Volume supplier.",
+    92→      },
+    93→    }),
+    94→  ]);
+    95→
+    96→  // ── Clients ────────────────────────────────────────────────────────
+    97→  const clients = await Promise.all([
+    98→    db.client.create({
+    99→      data: {
+   100→        name: "Sharma Garments Hub",
+   101→        contactPerson: "Vikram Sharma",
+   102→        phone: "+91 98811 22003",
+   103→        email: "vikram@sharmagarments.in",
+   104→        address: "Sadar Bazar, Nagpur, Maharashtra",
+   105→        gstNo: "27AAHCS4412Q1Z7",
+   106→        defaultPaymentCycleDays: 120,
+   107→        payoutCadence: "immediate",
+   108→        gstRate: 5,
+   109→        notes: "Loyal buyer. 4-month payment cycle. Brokerage paid immediately.",
+   110→      },
+   111→    }),
+   112→    db.client.create({
+   113→      data: {
+   114→        name: "Meenakshi Saree Emporium",
+   115→        contactPerson: "Meenakshi Iyer",
+   116→        phone: "+91 94400 11234",
+   117→        email: "meenakshi@emporium.in",
+   118→        address: "T Nagar, Chennai, Tamil Nadu",
+   119→        gstNo: "33AAFCM9988P1Z1",
+   120→        defaultPaymentCycleDays: 120,
+   121→        payoutCadence: "4_month_cumulative",
+   122→        gstRate: 5,
+   123→        notes: "Bulk buyer. Quarterly brokerage payouts.",
+   124→      },
+   125→    }),
+   126→    db.client.create({
+   127→      data: {
+   128→        name: "Trendz Boutique",
+   129→        contactPerson: "Priya Kapoor",
+   130→        phone: "+91 98201 44551",
+   131→        email: "priya@trendz.in",
+   132→        address: "Linking Road, Bandra, Mumbai",
+   133→        gstNo: "27AAHCT6677Q1Z4",
+   134→        defaultPaymentCycleDays: 180,
+   135→        payoutCadence: "12_month_cumulative",
+   136→        gstRate: 12,
+   137→        notes: "Premium boutique. Annual brokerage. Higher GST slab.",
+   138→      },
+   139→    }),
+   140→    db.client.create({
+   141→      data: {
+   142→        name: "Royal Wardrobe",
+   143→        contactPerson: "Arjun Mehta",
+   144→        phone: "+91 99100 77882",
+   145→        email: "arjun@royalwardrobe.in",
+   146→        address: "Sector 17, Chandigarh",
+   147→        gstNo: "04AAHCA3322Q1Z9",
+   148→        defaultPaymentCycleDays: 90,
+   149→        payoutCadence: "immediate",
+   150→        gstRate: 5,
+   151→        notes: "Fast-paying client.",
+   152→      },
+   153→    }),
+   154→    db.client.create({
+   155→      data: {
+   156→        name: "Sai Family Store",
+   157→        contactPerson: "Sai Reddy",
+   158→        phone: "+91 90000 11223",
+   159→        email: "sai@saifamily.in",
+   160→        address: "Abids, Hyderabad, Telangana",
+   161→        gstNo: "36AAHCS5544P1Z2",
+   162→        defaultPaymentCycleDays: 150,
+   163→        payoutCadence: "4_month_cumulative",
+   164→        gstRate: 5,
+   165→        notes: "Growing retailer.",
+   166→      },
+   167→    }),
+   168→  ]);
+   169→
+   170→  // ── Visits + Bookings + POs + Dispatch + Bill + Payment + Brokerage ─
+   171→  // Create a realistic chain for the first few clients.
+   172→  const now = new Date();
+   173→
+   174→  // Visit 1 — Sharma Garments → occurred last month, fully paid
+   175→  const visit1 = await db.visit.create({
+   176→    data: {
+   177→      clientId: clients[0].id,
+   178→      plannedDate: new Date(now.getTime() - 30 * 86400000),
+   179→      actualDate: new Date(now.getTime() - 29 * 86400000),
+   180→      status: "occurred",
+   181→      notes: "Client visited Balaji & Krishna. Placed bulk orders.",
+   182→    },
+   183→  });
+   184→
+   185→  // Booking 1 → PO → fully delivered + paid + brokerage eligible & paid
+   186→  const booking1 = await db.booking.create({
+   187→    data: {
+   188→      visitId: visit1.id,
+   189→      clientId: clients[0].id,
+   190→      supplierId: suppliers[0].id,
+   191→      commissionRate: 5,
+   192→      bookingDate: new Date(now.getTime() - 29 * 86400000),
+   193→      notes: "Cotton kurti sets — festive catalogue.",
+   194→      lineItems: {
+   195→        create: [
+   196→          { styleName: "Anarkali Cotton Kurti", color: "Indigo", setQty: 50, unitPrice: 480 },
+   197→          { styleName: "Straight Kurti Set", color: "Mustard", setQty: 40, unitPrice: 520 },
+   198→          { styleName: "A-line Kurti", color: "Olive", setQty: 30, unitPrice: 450 },
+   199→        ],
+   200→      },
+   201→    },
+   202→  });
+   203→
+   204→  const li1 = await db.bookingLineItem.findMany({ where: { bookingId: booking1.id } });
+   205→  const po1Total = li1.reduce((s, i) => s + i.setQty * i.unitPrice, 0); // 24000 + 20800 + 13500 = 58300
+   206→  const po1 = await db.purchaseOrder.create({
+   207→    data: {
+   208→      poNumber: "PO-2024-0001",
+   209→      bookingId: booking1.id,
+   210→      clientId: clients[0].id,
+   211→      supplierId: suppliers[0].id,
+   212→      lineItemsJson: JSON.stringify(
+   213→        li1.map((i) => ({
+   214→          styleName: i.styleName,
+   215→          color: i.color,
+   216→          setQty: i.setQty,
+   217→          unitPrice: i.unitPrice,
+   218→          lineTotal: i.setQty * i.unitPrice,
+   219→        }))
+   220→      ),
+   221→      totalValue: po1Total,
+   222→      commissionRate: 5,
+   223→      gstRate: 5,
+   224→      status: "fully_delivered",
+   225→      expectedDispatchDate: new Date(now.getTime() - 20 * 86400000),
+   226→    },
+   227→  });
+   228→
+   229→  const dispatch1 = await db.dispatch.create({
+   230→    data: {
+   231→      poId: po1.id,
+   232→      supplierId: suppliers[0].id,
+   233→      dispatchDate: new Date(now.getTime() - 18 * 86400000),
+   234→      itemsJson: JSON.stringify(
+   235→        li1.map((i) => ({ styleName: i.styleName, color: i.color, qty: i.setQty }))
+   236→      ),
+   237→      dispatchedQty: li1.reduce((s, i) => s + i.setQty, 0),
+   238→      status: "delivered",
+   239→      notes: "Full shipment received in good condition.",
+   240→    },
+   241→  });
+   242→
+   243→  const bill1Base = po1Total; // no short-ship/returns
+   244→  const bill1Gst = Math.round(bill1Base * 0.05);
+   245→  const bill1 = await db.bill.create({
+   246→    data: {
+   247→      billNumber: "BILL-2024-0001",
+   248→      poId: po1.id,
+   249→      clientId: clients[0].id,
+   250→      supplierId: suppliers[0].id,
+   251→      baseAmount: bill1Base,
+   252→      gstRate: 5,
+   253→      gstAmount: bill1Gst,
+   254→      finalAmount: bill1Base + bill1Gst,
+   255→      paidAmount: bill1Base + bill1Gst,
+   256→      status: "fully_paid",
+   257→    },
+   258→  });
+   259→
+   260→  const pay1 = await db.payment.create({
+   261→    data: {
+   262→      billId: bill1.id,
+   263→      clientId: clients[0].id,
+   264→      amount: Math.round((bill1Base + bill1Gst) * 0.6),
+   265→      date: new Date(now.getTime() - 10 * 86400000),
+   266→      mode: "bank_transfer",
+   267→      reference: "UTR123456789",
+   268→      notes: "Part payment 60%",
+   269→    },
+   270→  });
+   271→  const pay2 = await db.payment.create({
+   272→    data: {
+   273→      billId: bill1.id,
+   274→      clientId: clients[0].id,
+   275→      amount: bill1Base + bill1Gst - Math.round((bill1Base + bill1Gst) * 0.6),
+   276→      date: new Date(now.getTime() - 2 * 86400000),
+   277→      mode: "cheque",
+   278→      reference: "CHQ-556677",
+   279→      notes: "Balance payment. Bill fully paid → brokerage eligible.",
+   280→    },
+   281→  });
+   282→
+   283→  const brokerage1 = await db.brokerage.create({
+   284→    data: {
+   285→      billId: bill1.id,
+   286→      supplierId: suppliers[0].id,
+   287→      clientId: clients[0].id,
+   288→      commissionRate: 5,
+   289→      baseAmount: bill1Base,
+   290→      brokerageAmount: Math.round(bill1Base * 0.05),
+   291→      eligible: true,
+   292→      eligibleAt: pay2.date,
+   293→      payoutStatus: "paid",
+   294→    },
+   295→  });
+   296→
+   297→  const payout1 = await db.brokeragePayout.create({
+   298→    data: {
+   299→      clientId: clients[0].id,
+   300→      cadence: "immediate",
+   301→      periodStart: pay2.date,
+   302→      periodEnd: pay2.date,
+   303→      totalAmount: brokerage1.brokerageAmount,
+   304→      status: "paid",
+   305→      paidAt: pay2.date,
+   306→      notes: "Immediate payout — client's cadence is immediate.",
+   307→      brokerages: { connect: { id: brokerage1.id } },
+   308→    },
+   309→  });
+   310→
+   311→  // ── Visit 2 — Meenakshi → occurred, partial delivery, partial payment
+   312→  const visit2 = await db.visit.create({
+   313→    data: {
+   314→      clientId: clients[1].id,
+   315→      plannedDate: new Date(now.getTime() - 20 * 86400000),
+   316→      actualDate: new Date(now.getTime() - 19 * 86400000),
+   317→      status: "occurred",
+   318→      notes: "Visited Mahalaxmi for festive stock.",
+   319→    },
+   320→  });
+   321→
+   322→  const booking2 = await db.booking.create({
+   323→    data: {
+   324→      visitId: visit2.id,
+   325→      clientId: clients[1].id,
+   326→      supplierId: suppliers[1].id,
+   327→      commissionRate: 6,
+   328→      bookingDate: new Date(now.getTime() - 19 * 86400000),
+   329→      notes: "Partywear anarkali sets.",
+   330→      lineItems: {
+   331→        create: [
+   332→          { styleName: "Embroidered Anarkali", color: "Maroon", setQty: 60, unitPrice: 950 },
+   333→          { styleName: "Sequinned Gown Set", color: "Black", setQty: 35, unitPrice: 1200 },
+   334→        ],
+   335→      },
+   336→    },
+   337→  });
+   338→
+   339→  const li2 = await db.bookingLineItem.findMany({ where: { bookingId: booking2.id } });
+   340→  const po2Total = li2.reduce((s, i) => s + i.setQty * i.unitPrice, 0); // 57000 + 42000 = 99000
+   341→  const po2 = await db.purchaseOrder.create({
+   342→    data: {
+   343→      poNumber: "PO-2024-0002",
+   344→      bookingId: booking2.id,
+   345→      clientId: clients[1].id,
+   346→      supplierId: suppliers[1].id,
+   347→      lineItemsJson: JSON.stringify(
+   348→        li2.map((i) => ({
+   349→          styleName: i.styleName,
+   350→          color: i.color,
+   351→          setQty: i.setQty,
+   352→          unitPrice: i.unitPrice,
+   353→          lineTotal: i.setQty * i.unitPrice,
+   354→        }))
+   355→      ),
+   356→      totalValue: po2Total,
+   357→      commissionRate: 6,
+   358→      gstRate: 5,
+   359→      status: "partially_delivered",
+   360→      expectedDispatchDate: new Date(now.getTime() - 8 * 86400000),
+   361→      revisedDispatchDate: new Date(now.getTime() + 4 * 86400000),
+   362→    },
+   363→  });
+   364→
+   365→  // Partial dispatch — shortfall of 10 anarkali sets
+   366→  const dispatch2 = await db.dispatch.create({
+   367→    data: {
+   368→      poId: po2.id,
+   369→      supplierId: suppliers[1].id,
+   370→      dispatchDate: new Date(now.getTime() - 6 * 86400000),
+   371→      itemsJson: JSON.stringify([
+   372→        { styleName: "Embroidered Anarkali", color: "Maroon", qty: 50 },
+   373→        { styleName: "Sequinned Gown Set", color: "Black", qty: 35 },
+   374→      ]),
+   375→      dispatchedQty: 85,
+   376→      status: "short_shipment",
+   377→      notes: "10 anarkali sets short. Supplier promised to ship balance.",
+   378→    },
+   379→  });
+   380→
+   381→  // Dispute for the short shipment
+   382→  const dispute1 = await db.dispute.create({
+   383→    data: {
+   384→      poId: po2.id,
+   385→      dispatchId: dispatch2.id,
+   386→      type: "short_shipment",
+   387→      description: "10 sets of Embroidered Anarkali (Maroon) not delivered.",
+   388→      quantityAffected: 10,
+   389→      valueAffected: 10 * 950,
+   390→      status: "open",
+   391→    },
+   392→  });
+   393→
+   394→  const bill2Base = po2Total - 10 * 950; // 99000 - 9500 = 89500
+   395→  const bill2Gst = Math.round(bill2Base * 0.05);
+   396→  const bill2 = await db.bill.create({
+   397→    data: {
+   398→      billNumber: "BILL-2024-0002",
+   399→      poId: po2.id,
+   400→      clientId: clients[1].id,
+   401→      supplierId: suppliers[1].id,
+   402→      baseAmount: bill2Base,
+   403→      gstRate: 5,
+   404→      gstAmount: bill2Gst,
+   405→      finalAmount: bill2Base + bill2Gst,
+   406→      paidAmount: Math.round((bill2Base + bill2Gst) * 0.4),
+   407→      status: "partially_paid",
+   408→    },
+   409→  });
+   410→
+   411→  await db.payment.create({
+   412→    data: {
+   413→      billId: bill2.id,
+   414→      clientId: clients[1].id,
+   415→      amount: Math.round((bill2Base + bill2Gst) * 0.4),
+   416→      date: new Date(now.getTime() - 3 * 86400000),
+   417→      mode: "upi",
+   418→      reference: "UPI-9988776655",
+   419→      notes: "Advance 40%. Balance due in payment cycle.",
+   420→    },
+   421→  });
+   422→
+   423→  // Brokerage accrued but not eligible (bill not fully paid)
+   424→  await db.brokerage.create({
+   425→    data: {
+   426→      billId: bill2.id,
+   427→      supplierId: suppliers[1].id,
+   428→      clientId: clients[1].id,
+   429→      commissionRate: 6,
+   430→      baseAmount: bill2Base,
+   431→      brokerageAmount: Math.round(bill2Base * 0.06),
+   432→      eligible: false,
+   433→      payoutStatus: "accrued",
+   434→    },
+   435→  });
+   436→
+   437→  // ── Visit 3 — Trendz → scheduled (upcoming)
+   438→  await db.visit.create({
+   439→    data: {
+   440→      clientId: clients[2].id,
+   441→      plannedDate: new Date(now.getTime() + 3 * 86400000),
+   442→      status: "scheduled",
+   443→      notes: "Trendz wants premium ethnic from Ananya.",
+   444→    },
+   445→  });
+   446→
+   447→  // ── Visit 4 — Royal → followed up (no show, needs followup)
+   448→  await db.visit.create({
+   449→    data: {
+   450→      clientId: clients[3].id,
+   451→      plannedDate: new Date(now.getTime() - 2 * 86400000),
+   452→      status: "followed_up",
+   453→      notes: "Client did not show. Followed up by phone.",
+   454→    },
+   455→  });
+   456→
+   457→  // ── Visit 5 — Sai → occurred, fully delivered, fully paid (Ananya, premium)
+   458→  const visit5 = await db.visit.create({
+   459→    data: {
+   460→      clientId: clients[4].id,
+   461→      plannedDate: new Date(now.getTime() - 45 * 86400000),
+   462→      actualDate: new Date(now.getTime() - 44 * 86400000),
+   463→      status: "occurred",
+   464→      notes: "Premium ethnic catalogue order.",
+   465→    },
+   466→  });
+   467→
+   468→  const booking5 = await db.booking.create({
+   469→    data: {
+   470→      visitId: visit5.id,
+   471→      clientId: clients[4].id,
+   472→      supplierId: suppliers[3].id,
+   473→      commissionRate: 7,
+   474→      bookingDate: new Date(now.getTime() - 44 * 86400000),
+   475→      lineItems: {
+   476→        create: [
+   477→          { styleName: "Silk Embroidered Set", color: "Royal Blue", setQty: 25, unitPrice: 2200 },
+   478→          { styleName: "Banarasi Lehenga Set", color: "Rani Pink", setQty: 15, unitPrice: 3500 },
+   479→        ],
+   480→      },
+   481→    },
+   482→  });
+   483→  const li5 = await db.bookingLineItem.findMany({ where: { bookingId: booking5.id } });
+   484→  const po5Total = li5.reduce((s, i) => s + i.setQty * i.unitPrice, 0); // 55000 + 52500 = 107500
+   485→  const po5 = await db.purchaseOrder.create({
+   486→    data: {
+   487→      poNumber: "PO-2024-0003",
+   488→      bookingId: booking5.id,
+   489→      clientId: clients[4].id,
+   490→      supplierId: suppliers[3].id,
+   491→      lineItemsJson: JSON.stringify(
+   492→        li5.map((i) => ({
+   493→          styleName: i.styleName,
+   494→          color: i.color,
+   495→          setQty: i.setQty,
+   496→          unitPrice: i.unitPrice,
+   497→          lineTotal: i.setQty * i.unitPrice,
+   498→        }))
+   499→      ),
+   500→      totalValue: po5Total,
+   501→      commissionRate: 7,
+   502→      gstRate: 12,
+   503→      status: "fully_delivered",
+   504→      expectedDispatchDate: new Date(now.getTime() - 30 * 86400000),
+   505→    },
+   506→  });
+   507→  await db.dispatch.create({
+   508→    data: {
+   509→      poId: po5.id,
+   510→      supplierId: suppliers[3].id,
+   511→      dispatchDate: new Date(now.getTime() - 25 * 86400000),
+   512→      itemsJson: JSON.stringify(
+   513→        li5.map((i) => ({ styleName: i.styleName, color: i.color, qty: i.setQty }))
+   514→      ),
+   515→      dispatchedQty: li5.reduce((s, i) => s + i.setQty, 0),
+   516→      status: "delivered",
+   517→    },
+   518→  });
+   519→  const bill5Base = po5Total;
+   520→  const bill5Gst = Math.round(bill5Base * 0.12);
+   521→  const bill5 = await db.bill.create({
+   522→    data: {
+   523→      billNumber: "BILL-2024-0003",
+   524→      poId: po5.id,
+   525→      clientId: clients[4].id,
+   526→      supplierId: suppliers[3].id,
+   527→      baseAmount: bill5Base,
+   528→      gstRate: 12,
+   529→      gstAmount: bill5Gst,
+   530→      finalAmount: bill5Base + bill5Gst,
+   531→      paidAmount: bill5Base + bill5Gst,
+   532→      status: "fully_paid",
+   533→    },
+   534→  });
+   535→  await db.payment.create({
+   536→    data: {
+   537→      billId: bill5.id,
+   538→      clientId: clients[4].id,
+   539→      amount: bill5Base + bill5Gst,
+   540→      date: new Date(now.getTime() - 15 * 86400000),
+   541→      mode: "bank_transfer",
+   542→      reference: "UTR-55667788",
+   543→      notes: "Full payment on delivery.",
+   544→    },
+   545→  });
+   546→  // Brokerage eligible but NOT yet paid (4-month cumulative cadence for this client)
+   547→  await db.brokerage.create({
+   548→    data: {
+   549→      billId: bill5.id,
+   550→      supplierId: suppliers[3].id,
+   551→      clientId: clients[4].id,
+   552→      commissionRate: 7,
+   553→      baseAmount: bill5Base,
+   554→      brokerageAmount: Math.round(bill5Base * 0.07),
+   555→      eligible: true,
+   556→      eligibleAt: new Date(now.getTime() - 15 * 86400000),
+   557→      payoutStatus: "scheduled",
+   558→    },
+   559→  });
+   560→
+   561→  // ── Visit 6 — Trendz → occurred with Vastram, fully paid, brokerage paid
+   562→  const visit6 = await db.visit.create({
+   563→    data: {
+   564→      clientId: clients[2].id,
+   565→      plannedDate: new Date(now.getTime() - 60 * 86400000),
+   566→      actualDate: new Date(now.getTime() - 59 * 86400000),
+   567→      status: "occurred",
+   568→    },
+   569→  });
+   570→  const booking6 = await db.booking.create({
+   571→    data: {
+   572→      visitId: visit6.id,
+   573→      clientId: clients[2].id,
+   574→      supplierId: suppliers[4].id,
+   575→      commissionRate: 5,
+   576→      bookingDate: new Date(now.getTime() - 59 * 86400000),
+   577→      lineItems: {
+   578→        create: [
+   579→          { styleName: "Daily Cotton Kurti", color: "Teal", setQty: 80, unitPrice: 320 },
+   580→          { styleName: "Printed Tunic", color: "Coral", setQty: 60, unitPrice: 380 },
+   581→        ],
+   582→      },
+   583→    },
+   584→  });
+   585→  const li6 = await db.bookingLineItem.findMany({ where: { bookingId: booking6.id } });
+   586→  const po6Total = li6.reduce((s, i) => s + i.setQty * i.unitPrice, 0); // 25600 + 22800 = 48400
+   587→  const po6 = await db.purchaseOrder.create({
+   588→    data: {
+   589→      poNumber: "PO-2024-0004",
+   590→      bookingId: booking6.id,
+   591→      clientId: clients[2].id,
+   592→      supplierId: suppliers[4].id,
+   593→      lineItemsJson: JSON.stringify(
+   594→        li6.map((i) => ({ styleName: i.styleName, color: i.color, setQty: i.setQty, unitPrice: i.unitPrice, lineTotal: i.setQty * i.unitPrice }))
+   595→      ),
+   596→      totalValue: po6Total,
+   597→      commissionRate: 5,
+   598→      gstRate: 12,
+   599→      status: "fully_delivered",
+   600→      expectedDispatchDate: new Date(now.getTime() - 45 * 86400000),
+   601→    },
+   602→  });
+   603→  await db.dispatch.create({
+   604→    data: {
+   605→      poId: po6.id,
+   606→      supplierId: suppliers[4].id,
+   607→      dispatchDate: new Date(now.getTime() - 40 * 86400000),
+   608→      itemsJson: JSON.stringify(li6.map((i) => ({ styleName: i.styleName, color: i.color, qty: i.setQty }))),
+   609→      dispatchedQty: li6.reduce((s, i) => s + i.setQty, 0),
+   610→      status: "delivered",
+   611→    },
+   612→  });
+   613→  const bill6Base = po6Total;
+   614→  const bill6Gst = Math.round(bill6Base * 0.12);
+   615→  const bill6 = await db.bill.create({
+   616→    data: {
+   617→      billNumber: "BILL-2024-0004",
+   618→      poId: po6.id,
+   619→      clientId: clients[2].id,
+   620→      supplierId: suppliers[4].id,
+   621→      baseAmount: bill6Base,
+   622→      gstRate: 12,
+   623→      gstAmount: bill6Gst,
+   624→      finalAmount: bill6Base + bill6Gst,
+   625→      paidAmount: bill6Base + bill6Gst,
+   626→      status: "fully_paid",
+   627→    },
+   628→  });
+   629→  const pay6 = await db.payment.create({
+   630→    data: {
+   631→      billId: bill6.id,
+   632→      clientId: clients[2].id,
+   633→      amount: bill6Base + bill6Gst,
+   634→      date: new Date(now.getTime() - 25 * 86400000),
+   635→      mode: "bank_transfer",
+   636→      reference: "UTR-12345678",
+   637→    },
+   638→  });
+   639→  const brokerage6 = await db.brokerage.create({
+   640→    data: {
+   641→      billId: bill6.id,
+   642→      supplierId: suppliers[4].id,
+   643→      clientId: clients[2].id,
+   644→      commissionRate: 5,
+   645→      baseAmount: bill6Base,
+   646→      brokerageAmount: Math.round(bill6Base * 0.05),
+   647→      eligible: true,
+   648→      eligibleAt: pay6.date,
+   649→      payoutStatus: "paid",
+   650→    },
+   651→  });
+   652→  await db.brokeragePayout.create({
+   653→    data: {
+   654→      clientId: clients[2].id,
+   655→      cadence: "12_month_cumulative",
+   656→      periodStart: new Date(now.getTime() - 365 * 86400000),
+   657→      periodEnd: now,
+   658→      totalAmount: brokerage6.brokerageAmount,
+   659→      status: "paid",
+   660→      paidAt: new Date(now.getTime() - 20 * 86400000),
+   661→      brokerages: { connect: { id: brokerage6.id } },
+   662→    },
+   663→  });
+   664→
+   665→  // ── Notifications ──────────────────────────────────────────────────
+   666→  await db.notification.createMany({
+   667→    data: [
+   668→      {
+   669→        type: "visit_followup",
+   670→        title: "Follow up with Royal Wardrobe",
+   671→        message: "Client did not show for visit 2 days ago. Call to reschedule.",
+   672→        dueDate: new Date(now.getTime() - 1 * 86400000),
+   673→        entityType: "Visit",
+   674→        status: "pending",
+   675→      },
+   676→      {
+   677→        type: "dispatch_due",
+   678→        title: "Dispatch due — PO-2024-0002",
+   679→        message: "Mahalaxmi Apparels revised dispatch date approaching.",
+   680→        dueDate: new Date(now.getTime() + 4 * 86400000),
+   681→        entityType: "PurchaseOrder",
+   682→        status: "pending",
+   683→      },
+   684→      {
+   685→        type: "payment_due",
+   686→        title: "Payment due — BILL-2024-0002",
+   687→        message: "Meenakshi Saree Emporium balance payment approaching cycle end.",
+   688→        dueDate: new Date(now.getTime() + 10 * 86400000),
+   689→        entityType: "Bill",
+   690→        status: "pending",
+   691→      },
+   692→      {
+   693→        type: "brokerage_due",
+   694→        title: "Brokerage payout due — Sai Family Store",
+   695→        message: "Eligible brokerage pending 4-month cumulative payout.",
+   696→        dueDate: new Date(now.getTime() + 5 * 86400000),
+   697→        entityType: "Brokerage",
+   698→        status: "pending",
+   699→      },
+   700→      {
+   701→        type: "visit_followup",
+   702→        title: "Upcoming visit — Trendz Boutique",
+   703→        message: "Scheduled visit in 3 days for Ananya ethnic catalogue.",
+   704→        dueDate: new Date(now.getTime() + 3 * 86400000),
+   705→        entityType: "Visit",
+   706→        status: "pending",
+   707→      },
+   708→    ],
+   709→  });
+   710→
+   711→  // ── System settings ───────────────────────────────────────────────
+   712→  await db.systemSetting.createMany({
+   713→    data: [
+   714→      { key: "default_gst_rate", value: "5", notes: "Default GST % applied to bills." },
+   715→      { key: "default_commission_rate", value: "5", notes: "Default broker commission %." },
+   716→      { key: "brokerage_on_gst", value: "false", notes: "Brokerage is computed on base amount, excluding GST." },
+   717→    ],
+   718→  });
+   719→
+   720→  // ── Audit logs ────────────────────────────────────────────────────
+   721→  await db.auditLog.createMany({
+   722→    data: [
+   723→      {
+   724→        entityType: "Bill",
+   725→        entityId: bill1.id,
+   726→        action: "create",
+   727→        after: JSON.stringify({ status: "fully_paid", finalAmount: bill1.finalAmount }),
+   728→        userName: "Broker",
+   729→        createdAt: bill1.createdAt,
+   730→      },
+   731→      {
+   732→        entityType: "Payment",
+   733→        entityId: pay2.id,
+   734→        action: "create",
+   735→        after: JSON.stringify({ amount: pay2.amount, mode: pay2.mode }),
+   736→        userName: "Broker",
+   737→        createdAt: pay2.date,
+   738→        reason: "Final payment — triggered brokerage eligibility.",
+   739→      },
+   740→      {
+   741→        entityType: "Brokerage",
+   742→        entityId: brokerage1.id,
+   743→        action: "force_eligible",
+   744→        after: JSON.stringify({ eligible: true, eligibleAt: pay2.date }),
+   745→        userName: "System",
+   746→        createdAt: pay2.date,
+   747→        reason: "Auto-eligible: Bill status became fully_paid.",
+   748→      },
+   749→      {
+   750→        entityType: "BrokeragePayout",
+   751→        entityId: payout1.id,
+   752→        action: "create",
+   753→        after: JSON.stringify({ status: "paid", totalAmount: payout1.totalAmount }),
+   754→        userName: "Broker",
+   755→        createdAt: payout1.paidAt!,
+   756→      },
+   757→    ],
+   758→  });
+   759→
+   760→  console.log("✅ Seed complete.");
+   761→  console.log(`   Suppliers: ${suppliers.length}, Clients: ${clients.length}`);
+   762→  const counts = {
+   763→    visits: await db.visit.count(),
+   764→    bookings: await db.booking.count(),
+   765→    pos: await db.purchaseOrder.count(),
+   766→    dispatches: await db.dispatch.count(),
+   767→    bills: await db.bill.count(),
+   768→    payments: await db.payment.count(),
+   769→    brokerages: await db.brokerage.count(),
+   770→    payouts: await db.brokeragePayout.count(),
+   771→    disputes: await db.dispute.count(),
+   772→    notifications: await db.notification.count(),
+   773→  };
+   774→  console.log("   ", JSON.stringify(counts, null, 2));
+   775→}
+   776→
+   777→main()
+   778→  .catch((e) => {
+   779→    console.error(e);
+   780→    process.exit(1);
+   781→  })
+   782→  .finally(async () => {
+   783→    await db.$disconnect();
+   784→  });
+   785→

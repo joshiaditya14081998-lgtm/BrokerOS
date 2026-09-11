@@ -1,0 +1,842 @@
+     1→     1→"use client";
+     2→     2→
+     3→     3→import * as React from "react";
+     4→     4→import {
+     5→     5→  AlertTriangle, Plus, Package, RotateCcw, MoreHorizontal, Trash2, Check, X,
+     6→     6→  ChevronDown, ImageIcon, Filter, CheckSquare, CheckCheck, Ban,
+     7→     7→} from "lucide-react";
+     8→     8→import { useApi, api } from "@/lib/api";
+     9→     9→import { formatCurrency, formatDate, titleCase } from "@/lib/format";
+    10→    10→import { GlassCard, SectionHeader, StatusChip, EmptyState } from "@/components/shared";
+    11→    11→import { BulkActionBar } from "@/components/bulk-action-bar";
+    12→    12→import { Button } from "@/components/ui/button";
+    13→    13→import { Checkbox } from "@/components/ui/checkbox";
+    14→    14→import { Input } from "@/components/ui/input";
+    15→    15→import { Label } from "@/components/ui/label";
+    16→    16→import { Skeleton } from "@/components/ui/skeleton";
+    17→    17→import { Badge } from "@/components/ui/badge";
+    18→    18→import { Textarea } from "@/components/ui/textarea";
+    19→    19→import {
+    20→    20→  Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter, DialogTrigger,
+    21→    21→} from "@/components/ui/dialog";
+    22→    22→import {
+    23→    23→  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+    24→    24→} from "@/components/ui/select";
+    25→    25→import {
+    26→    26→  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+    27→    27→  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+    28→    28→} from "@/components/ui/alert-dialog";
+    29→    29→import {
+    30→    30→  Collapsible, CollapsibleTrigger, CollapsibleContent,
+    31→    31→} from "@/components/ui/collapsible";
+    32→    32→import { PhotoUpload } from "@/components/photo-upload";
+    33→    33→import { useUI } from "@/lib/ui-store";
+    34→    34→import { cn } from "@/lib/utils";
+    35→    35→import { toast } from "sonner";
+    36→    36→import { SavedViewsBar } from "@/components/saved-views-bar";
+    37→    37→import { isFilterActive } from "@/lib/saved-views";
+    38→    38→
+    39→    39→type Dispute = {
+    40→    40→  id: string;
+    41→    41→  poId: string;
+    42→    42→  dispatchId: string | null;
+    43→    43→  type: "short_shipment" | "defective_return" | "other";
+    44→    44→  description: string | null;
+    45→    45→  quantityAffected: number;
+    46→    46→  valueAffected: number;
+    47→    47→  status: "open" | "resolved" | "rejected";
+    48→    48→  resolution: string | null;
+    49→    49→  createdAt: string;
+    50→    50→  po: { poNumber: string; client: { name: string }; supplier: { name: string } };
+    51→    51→  dispatch: { id: string; dispatchDate: string } | null;
+    52→    52→  photos: unknown[];
+    53→    53→};
+    54→    54→
+    55→    55→type PO = { id: string; poNumber: string; client: { name: string }; supplier: { name: string } };
+    56→    56→type Dispatch = { id: string; poId: string; po: { poNumber: string }; dispatchDate: string };
+    57→    57→
+    58→    58→const TYPE_TONE: Record<Dispute["type"], string> = {
+    59→    59→  short_shipment: "border-rose-500/30 bg-rose-500/15 text-rose-700 dark:text-rose-300",
+    60→    60→  defective_return: "border-amber-500/30 bg-amber-500/15 text-amber-700 dark:text-amber-300",
+    61→    61→  other: "border-teal-500/30 bg-teal-500/15 text-teal-700 dark:text-teal-300",
+    62→    62→};
+    63→    63→
+    64→    64→const TYPE_ICON: Record<Dispute["type"], React.ComponentType<{ className?: string }>> = {
+    65→    65→  short_shipment: Package,
+    66→    66→  defective_return: RotateCcw,
+    67→    67→  other: MoreHorizontal,
+    68→    68→};
+    69→    69→
+    70→    70→const TYPE_LABEL: Record<Dispute["type"], string> = {
+    71→    71→  short_shipment: "Short shipment",
+    72→    72→  defective_return: "Defective return",
+    73→    73→  other: "Other",
+    74→    74→};
+    75→    75→
+    76→    76→type FilterKey = "all" | "open" | "resolved" | "rejected";
+    77→    77→
+    78→    78→const FILTERS: { key: FilterKey; label: string }[] = [
+    79→    79→  { key: "all", label: "All" },
+    80→    80→  { key: "open", label: "Open" },
+    81→    81→  { key: "resolved", label: "Resolved" },
+    82→    82→  { key: "rejected", label: "Rejected" },
+    83→    83→];
+    84→    84→
+    85→    85→export function DisputesView() {
+    86→    86→  const { data, loading, refresh } = useApi<{ disputes: Dispute[] }>("/api/disputes");
+    87→    87→  const [filter, setFilter] = React.useState<FilterKey>("all");
+    88→    88→  const [q, setQ] = React.useState("");
+    89→    89→  const [open, setOpen] = React.useState(false);
+    90→    90→  const { drillFilter, clearDrill } = useUI();
+    91→    91→
+    92→    92→  // Bulk-select state
+    93→    93→  const [selectMode, setSelectMode] = React.useState(false);
+    94→    94→  const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set());
+    95→    95→  const [bulkBusy, setBulkBusy] = React.useState(false);
+    96→    96→  const [resolveAllOpen, setResolveAllOpen] = React.useState(false);
+    97→    97→  const [rejectAllOpen, setRejectAllOpen] = React.useState(false);
+    98→    98→  const [bulkResolution, setBulkResolution] = React.useState("");
+    99→    99→
+   100→   100→  // Consume drill-down preset from the dashboard "Active POs / Disputes" KPI —
+   101→   101→  // preset "open" selects the existing Open filter chip. The chip highlight +
+   102→   102→  // the Filtered badge below both surface the active filter to the user.
+   103→   103→  const consumedDrill = React.useRef<string | null>(null);
+   104→   104→  React.useEffect(() => {
+   105→   105→    if (!drillFilter) return;
+   106→   106→    const key = `${drillFilter.view}:${drillFilter.preset}`;
+   107→   107→    if (consumedDrill.current === key) return;
+   108→   108→    if (drillFilter.view === "disputes" && drillFilter.preset === "open") {
+   109→   109→      setFilter("open");
+   110→   110→      consumedDrill.current = key;
+   111→   111→      clearDrill();
+   112→   112→    }
+   113→   113→  }, [drillFilter, clearDrill]);
+   114→   114→
+   115→   115→  const disputes = data?.disputes ?? [];
+   116→   116→
+   117→   117→  const filtered = disputes.filter((d) => {
+   118→   118→    if (filter !== "all" && d.status !== filter) return false;
+   119→   119→    const term = q.toLowerCase().trim();
+   120→   120→    if (!term) return true;
+   121→   121→    return (
+   122→   122→      d.po.poNumber.toLowerCase().includes(term) ||
+   123→   123→      d.po.client.name.toLowerCase().includes(term) ||
+   124→   124→      d.po.supplier.name.toLowerCase().includes(term) ||
+   125→   125→      (d.description ?? "").toLowerCase().includes(term) ||
+   126→   126→      TYPE_LABEL[d.type].toLowerCase().includes(term)
+   127→   127→    );
+   128→   128→  });
+   129→   129→
+   130→   130→  // Select-all operates over the currently-filtered OPEN disputes (the only
+   131→   131→  // status where bulk resolve/reject meaningfully applies).
+   132→   132→  const openFilteredIds = React.useMemo(
+   133→   133→    () => filtered.filter((d) => d.status === "open").map((d) => d.id),
+   134→   134→    [filtered],
+   135→   135→  );
+   136→   136→  const allOpenSelected =
+   137→   137→    openFilteredIds.length > 0 &&
+   138→   138→    openFilteredIds.every((id) => selectedIds.has(id));
+   139→   139→
+   140→   140→  // --- Bulk helpers -------------------------------------------------------
+   141→   141→  const toggleSelect = (id: string) => {
+   142→   142→    setSelectedIds((prev) => {
+   143→   143→      const next = new Set(prev);
+   144→   144→      if (next.has(id)) next.delete(id);
+   145→   145→      else next.add(id);
+   146→   146→      return next;
+   147→   147→    });
+   148→   148→  };
+   149→   149→
+   150→   150→  const toggleSelectAll = () => {
+   151→   151→    if (allOpenSelected) {
+   152→   152→      setSelectedIds((prev) => {
+   153→   153→        const next = new Set(prev);
+   154→   154→        for (const id of openFilteredIds) next.delete(id);
+   155→   155→        return next;
+   156→   156→      });
+   157→   157→    } else {
+   158→   158→      setSelectedIds((prev) => {
+   159→   159→        const next = new Set(prev);
+   160→   160→        for (const id of openFilteredIds) next.add(id);
+   161→   161→        return next;
+   162→   162→      });
+   163→   163→    }
+   164→   164→  };
+   165→   165→
+   166→   166→  const clearSelection = () => setSelectedIds(new Set());
+   167→   167→
+   168→   168→  const exitSelectMode = () => {
+   169→   169→    setSelectMode(false);
+   170→   170→    clearSelection();
+   171→   171→  };
+   172→   172→
+   173→   173→  const runBulkResolve = async () => {
+   174→   174→    const ids = Array.from(selectedIds);
+   175→   175→    if (ids.length === 0) return;
+   176→   176→    setBulkBusy(true);
+   177→   177→    try {
+   178→   178→      const res = await api<{ updated: number }>("/api/disputes/bulk", {
+   179→   179→        method: "PATCH",
+   180→   180→        body: JSON.stringify({
+   181→   181→          ids,
+   182→   182→          action: "resolve",
+   183→   183→          resolution: bulkResolution.trim() || "Bulk resolved.",
+   184→   184→        }),
+   185→   185→      });
+   186→   186→      toast.success(
+   187→   187→        `${res.updated} dispute${res.updated === 1 ? "" : "s"} resolved`,
+   188→   188→        { description: bulkResolution.trim() || undefined },
+   189→   189→      );
+   190→   190→      setBulkResolution("");
+   191→   191→      setResolveAllOpen(false);
+   192→   192→      clearSelection();
+   193→   193→      refresh();
+   194→   194→    } catch (e) {
+   195→   195→      toast.error(e instanceof Error ? e.message : "Bulk resolve failed");
+   196→   196→    } finally {
+   197→   197→      setBulkBusy(false);
+   198→   198→    }
+   199→   199→  };
+   200→   200→
+   201→   201→  const runBulkReject = async () => {
+   202→   202→    const ids = Array.from(selectedIds);
+   203→   203→    if (ids.length === 0) return;
+   204→   204→    setBulkBusy(true);
+   205→   205→    try {
+   206→   206→      const res = await api<{ updated: number }>("/api/disputes/bulk", {
+   207→   207→        method: "PATCH",
+   208→   208→        body: JSON.stringify({ ids, action: "reject" }),
+   209→   209→      });
+   210→   210→      toast.success(
+   211→   211→        `${res.updated} dispute${res.updated === 1 ? "" : "s"} rejected`,
+   212→   212→      );
+   213→   213→      setRejectAllOpen(false);
+   214→   214→      clearSelection();
+   215→   215→      refresh();
+   216→   216→    } catch (e) {
+   217→   217→      toast.error(e instanceof Error ? e.message : "Bulk reject failed");
+   218→   218→    } finally {
+   219→   219→      setBulkBusy(false);
+   220→   220→    }
+   221→   221→  };
+   222→   222→
+   223→   223→  return (
+   224→   224→    <div className="space-y-5">
+   225→   225→      <SectionHeader
+   226→   226→        title="Disputes & Returns"
+   227→   227→        description="Short-shipments & defects"
+   228→   228→        action={
+   229→   229→          <div className="flex flex-wrap items-center gap-2">
+   230→   230→            <Button
+   231→   231→              size="sm"
+   232→   232→              variant={selectMode ? "default" : "outline"}
+   233→   233→              onClick={() => (selectMode ? exitSelectMode() : setSelectMode(true))}
+   234→   234→              aria-pressed={selectMode}
+   235→   235→              className={cn(
+   236→   236→                !selectMode &&
+   237→   237→                  "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 hover:text-emerald-600 dark:text-emerald-400",
+   238→   238→              )}
+   239→   239→            >
+   240→   240→              <CheckSquare className="mr-1.5 size-4" />
+   241→   241→              {selectMode ? "Exit select" : "Select"}
+   242→   242→            </Button>
+   243→   243→            <Dialog open={open} onOpenChange={setOpen}>
+   244→   244→              <DialogTrigger asChild>
+   245→   245→                <Button size="sm"><Plus className="mr-1.5 size-4" />Log dispute</Button>
+   246→   246→              </DialogTrigger>
+   247→   247→              <LogDisputeDialog onDone={() => { setOpen(false); refresh(); }} />
+   248→   248→            </Dialog>
+   249→   249→          </div>
+   250→   250→        }
+   251→   251→      />
+   252→   252→
+   253→   253→      <SavedViewsBar
+   254→   254→        view="disputes"
+   255→   255→        currentFilter={{ q, filter }}
+   256→   256→        isFilterActive={isFilterActive({ q, filter })}
+   257→   257→        onApply={(f) => {
+   258→   258→          setQ(typeof f.q === "string" ? f.q : "");
+   259→   259→          if (typeof f.filter === "string") setFilter(f.filter as FilterKey);
+   260→   260→        }}
+   261→   261→      />
+   262→   262→
+   263→   263→      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+   264→   264→        <div className="inline-flex rounded-xl border border-border/60 bg-card/30 p-1">
+   265→   265→          {FILTERS.map((f) => (
+   266→   266→            <button
+   267→   267→              key={f.key}
+   268→   268→              onClick={() => setFilter(f.key)}
+   269→   269→              className={cn(
+   270→   270→                "rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
+   271→   271→                filter === f.key
+   272→   272→                  ? "bg-primary text-primary-foreground shadow-sm"
+   273→   273→                  : "text-muted-foreground hover:text-foreground"
+   274→   274→              )}
+   275→   275→            >
+   276→   276→              {f.label}
+   277→   277→              <span className="ml-1.5 text-[10px] opacity-70">
+   278→   278→                {f.key === "all" ? disputes.length : disputes.filter((d) => d.status === f.key).length}
+   279→   279→              </span>
+   280→   280→            </button>
+   281→   281→          ))}
+   282→   282→        </div>
+   283→   283→        <Input
+   284→   284→          placeholder="Search PO, party, type…"
+   285→   285→          value={q}
+   286→   286→          onChange={(e) => setQ(e.target.value)}
+   287→   287→          className="h-9 sm:w-64"
+   288→   288→        />
+   289→   289→      </div>
+   290→   290→
+   291→   291→      {filter !== "all" && (
+   292→   292→        <div className="-mt-1">
+   293→   293→          <Badge
+   294→   294→            variant="outline"
+   295→   295→            className="border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+   296→   296→          >
+   297→   297→            <Filter className="mr-1 size-3" />
+   298→   298→            Filtered: {FILTERS.find((f) => f.key === filter)?.label.toLowerCase()} only
+   299→   299→            <button
+   300→   300→              type="button"
+   301→   301→              onClick={() => setFilter("all")}
+   302→   302→              aria-label="Clear dispute filter"
+   303→   303→              className="ml-1 inline-flex size-3.5 items-center justify-center rounded-full hover:bg-emerald-500/20"
+   304→   304→            >
+   305→   305→              <X className="size-3" />
+   306→   306→            </button>
+   307→   307→          </Badge>
+   308→   308→        </div>
+   309→   309→      )}
+   310→   310→
+   311→   311→      {selectMode && (
+   312→   312→        <div className="flex items-center justify-between rounded-xl border border-border/60 bg-card/30 px-3 py-2">
+   313→   313→          <label
+   314→   314→            htmlFor="dispute-select-all"
+   315→   315→            className="inline-flex cursor-pointer items-center gap-2 text-xs font-medium text-foreground"
+   316→   316→          >
+   317→   317→            <Checkbox
+   318→   318→              id="dispute-select-all"
+   319→   319→              checked={allOpenSelected}
+   320→   320→              onCheckedChange={toggleSelectAll}
+   321→   321→              disabled={openFilteredIds.length === 0}
+   322→   322→              className="data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600 text-white"
+   323→   323→            />
+   324→   324→            Select all open
+   325→   325→            <span className="rounded-full bg-card/80 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+   326→   326→              {openFilteredIds.length}
+   327→   327→            </span>
+   328→   328→          </label>
+   329→   329→          <span className="text-[11px] text-muted-foreground">
+   330→   330→            {selectedIds.size === 0
+   331→   331→              ? "Tap a card to select"
+   332→   332→              : `${selectedIds.size} selected`}
+   333→   333→          </span>
+   334→   334→        </div>
+   335→   335→      )}
+   336→   336→
+   337→   337→      {loading ? (
+   338→   338→        <div className="space-y-2">{Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-2xl" />)}</div>
+   339→   339→      ) : filtered.length === 0 ? (
+   340→   340→        <GlassCard className="p-8">
+   341→   341→          <EmptyState
+   342→   342→            title="No disputes to show"
+   343→   343→            hint="Log a short-shipment or defective return to start tracking. Resolved defective returns auto-recompute the bill."
+   344→   344→            icon={<AlertTriangle className="size-5" />}
+   345→   345→          />
+   346→   346→        </GlassCard>
+   347→   347→      ) : (
+   348→   348→        <div className="grid gap-3 lg:grid-cols-2">
+   349→   349→          {filtered.map((d) => (
+   350→   350→            <DisputeCard
+   351→   351→              key={d.id}
+   352→   352→              dispute={d}
+   353→   353→              onDone={refresh}
+   354→   354→              selectMode={selectMode}
+   355→   355→              selected={selectedIds.has(d.id)}
+   356→   356→              onToggleSelect={toggleSelect}
+   357→   357→            />
+   358→   358→          ))}
+   359→   359→        </div>
+   360→   360→      )}
+   361→   361→
+   362→   362→      {/* Bulk action bar — fixed at the bottom of the viewport */}
+   363→   363→      <BulkActionBar selectedCount={selectedIds.size} onClear={clearSelection}>
+   364→   364→        <Button
+   365→   365→          size="sm"
+   366→   366→          onClick={() => { setBulkResolution(""); setResolveAllOpen(true); }}
+   367→   367→          disabled={bulkBusy}
+   368→   368→          className="h-8 bg-emerald-600 text-white hover:bg-emerald-700"
+   369→   369→        >
+   370→   370→          <CheckCheck className="mr-1.5 size-3.5" />
+   371→   371→          Resolve all
+   372→   372→        </Button>
+   373→   373→        <Button
+   374→   374→          size="sm"
+   375→   375→          variant="outline"
+   376→   376→          onClick={() => setRejectAllOpen(true)}
+   377→   377→          disabled={bulkBusy}
+   378→   378→          className="h-8 border-rose-500/40 bg-rose-500/10 text-rose-700 hover:bg-rose-500/20 hover:text-rose-700 dark:text-rose-300"
+   379→   379→        >
+   380→   380→          <Ban className="mr-1.5 size-3.5" />
+   381→   381→          Reject all
+   382→   382→        </Button>
+   383→   383→      </BulkActionBar>
+   384→   384→
+   385→   385→      {/* Bulk resolve dialog — shared resolution note for all selected */}
+   386→   386→      <Dialog open={resolveAllOpen} onOpenChange={(o) => { setResolveAllOpen(o); if (!o) setBulkResolution(""); }}>
+   387→   387→        <DialogContent className="glass-strong max-w-md">
+   388→   388→          <DialogHeader>
+   389→   389→            <DialogTitle>Resolve {selectedIds.size} dispute{selectedIds.size === 1 ? "" : "s"}</DialogTitle>
+   390→   390→            <DialogDescription className="sr-only">
+   391→   391→              Apply one resolution note to every selected dispute. Resolved defective-return disputes will trigger an automatic bill recompute per linked PO.
+   392→   392→            </DialogDescription>
+   393→   393→          </DialogHeader>
+   394→   394→          <div className="space-y-2 py-2">
+   395→   395→            <Label className="text-xs font-medium text-muted-foreground">Shared resolution note</Label>
+   396→   396→            <Textarea
+   397→   397→              placeholder="e.g. Verified with supplier — credit note issued for the affected quantity."
+   398→   398→              value={bulkResolution}
+   399→   399→              onChange={(e) => setBulkResolution(e.target.value)}
+   400→   400→              rows={4}
+   401→   401→            />
+   402→   402→            <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300">
+   403→   403→              Any defective-return dispute in the selection will automatically recompute its linked bill (base − short-shipment − returns).
+   404→   404→            </p>
+   405→   405→          </div>
+   406→   406→          <DialogFooter>
+   407→   407→            <Button variant="outline" onClick={() => setResolveAllOpen(false)} disabled={bulkBusy}>Cancel</Button>
+   408→   408→            <Button onClick={runBulkResolve} disabled={bulkBusy} className="bg-emerald-600 text-white hover:bg-emerald-700">
+   409→   409→              {bulkBusy ? "Resolving…" : `Resolve ${selectedIds.size}`}
+   410→   410→            </Button>
+   411→   411→          </DialogFooter>
+   412→   412→        </DialogContent>
+   413→   413→      </Dialog>
+   414→   414→
+   415→   415→      {/* Bulk reject confirmation */}
+   416→   416→      <AlertDialog open={rejectAllOpen} onOpenChange={setRejectAllOpen}>
+   417→   417→        <AlertDialogContent className="glass-strong">
+   418→   418→          <AlertDialogHeader>
+   419→   419→            <AlertDialogTitle>Reject {selectedIds.size} dispute{selectedIds.size === 1 ? "" : "s"}?</AlertDialogTitle>
+   420→   420→            <AlertDialogDescription>
+   421→   421→              All selected disputes will be marked <span className="font-medium text-foreground">rejected</span>. Linked bills are not affected. This action is recorded in the audit log.
+   422→   422→            </AlertDialogDescription>
+   423→   423→          </AlertDialogHeader>
+   424→   424→          <AlertDialogFooter>
+   425→   425→            <AlertDialogCancel disabled={bulkBusy}>Cancel</AlertDialogCancel>
+   426→   426→            <AlertDialogAction
+   427→   427→              className="bg-rose-600 text-white hover:bg-rose-700"
+   428→   428→              onClick={runBulkReject}
+   429→   429→              disabled={bulkBusy}
+   430→   430→            >
+   431→   431→              {bulkBusy ? "Rejecting…" : `Reject ${selectedIds.size}`}
+   432→   432→            </AlertDialogAction>
+   433→   433→          </AlertDialogFooter>
+   434→   434→        </AlertDialogContent>
+   435→   435→      </AlertDialog>
+   436→   436→    </div>
+   437→   437→  );
+   438→   438→}
+   439→   439→
+   440→   440→function DisputeCard({
+   441→   441→  dispute,
+   442→   442→  onDone,
+   443→   443→  selectMode,
+   444→   444→  selected,
+   445→   445→  onToggleSelect,
+   446→   446→}: {
+   447→   447→  dispute: Dispute;
+   448→   448→  onDone: () => void;
+   449→   449→  selectMode: boolean;
+   450→   450→  selected: boolean;
+   451→   451→  onToggleSelect: (id: string) => void;
+   452→   452→}) {
+   453→   453→  const Icon = TYPE_ICON[dispute.type];
+   454→   454→  const [resolveOpen, setResolveOpen] = React.useState(false);
+   455→   455→  const [rejectOpen, setRejectOpen] = React.useState(false);
+   456→   456→  const [deleteOpen, setDeleteOpen] = React.useState(false);
+   457→   457→  const [resolution, setResolution] = React.useState("");
+   458→   458→  const [busy, setBusy] = React.useState(false);
+   459→   459→  const [photosOpen, setPhotosOpen] = React.useState(false);
+   460→   460→  // Track photo count locally so the trigger label reflects new uploads
+   461→   461→  // without forcing a full dispute list refresh.
+   462→   462→  const [photoCount, setPhotoCount] = React.useState<number>(
+   463→   463→    Array.isArray(dispute.photos) ? dispute.photos.length : 0,
+   464→   464→  );
+   465→   465→
+   466→   466→  const patch = async (status: "resolved" | "rejected", reason: string) => {
+   467→   467→    setBusy(true);
+   468→   468→    try {
+   469→   469→      await api(`/api/disputes/${dispute.id}`, {
+   470→   470→        method: "PATCH",
+   471→   471→        body: JSON.stringify({ status, resolution: reason }),
+   472→   472→      });
+   473→   473→      toast.success(`Dispute ${status}`);
+   474→   474→      setResolveOpen(false);
+   475→   475→      setRejectOpen(false);
+   476→   476→      onDone();
+   477→   477→    } catch (e) {
+   478→   478→      toast.error(e instanceof Error ? e.message : "Failed");
+   479→   479→    } finally {
+   480→   480→      setBusy(false);
+   481→   481→    }
+   482→   482→  };
+   483→   483→
+   484→   484→  const remove = async () => {
+   485→   485→    setBusy(true);
+   486→   486→    try {
+   487→   487→      await api(`/api/disputes/${dispute.id}`, { method: "DELETE" });
+   488→   488→      toast.success("Dispute deleted");
+   489→   489→      setDeleteOpen(false);
+   490→   490→      onDone();
+   491→   491→    } catch (e) {
+   492→   492→      toast.error(e instanceof Error ? e.message : "Failed");
+   493→   493→    } finally {
+   494→   494→      setBusy(false);
+   495→   495→    }
+   496→   496→  };
+   497→   497→
+   498→   498→  return (
+   499→   499→    <GlassCard className={cn("p-5 hover-lift", selectMode && selected && "ring-2 ring-emerald-500/40")}>
+   500→   500→      <div className="flex items-start justify-between gap-2">
+   501→   501→        <div className="flex items-start gap-2.5 min-w-0">
+   502→   502→          {selectMode && (
+   503→   503→            <div
+   504→   504→              className="flex shrink-0 items-center pt-1"
+   505→   505→              onClick={(e) => e.stopPropagation()}
+   506→   506→              onPointerDown={(e) => e.stopPropagation()}
+   507→   507→            >
+   508→   508→              <Checkbox
+   509→   509→                checked={selected}
+   510→   510→                onCheckedChange={() => onToggleSelect(dispute.id)}
+   511→   511→                aria-label={`Select dispute ${dispute.po.poNumber}`}
+   512→   512→                className="data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600 text-white"
+   513→   513→              />
+   514→   514→            </div>
+   515→   515→          )}
+   516→   516→          <div className="grid size-9 shrink-0 place-items-center rounded-xl border border-border/60 bg-card/40 text-muted-foreground">
+   517→   517→            <Icon className="size-4" />
+   518→   518→          </div>
+   519→   519→          <div className="min-w-0">
+   520→   520→            <p className="truncate text-sm font-semibold text-foreground">
+   521→   521→              {dispute.po.poNumber} <span className="text-muted-foreground">— {dispute.po.client.name}</span>
+   522→   522→            </p>
+   523→   523→            <p className="text-[11px] text-muted-foreground">{dispute.po.supplier.name}</p>
+   524→   524→          </div>
+   525→   525→        </div>
+   526→   526→        <div className="flex items-center gap-1.5">
+   527→   527→          <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium", TYPE_TONE[dispute.type])}>
+   528→   528→            {TYPE_LABEL[dispute.type]}
+   529→   529→          </span>
+   530→   530→          <StatusChip status={dispute.status} />
+   531→   531→        </div>
+   532→   532→      </div>
+   533→   533→
+   534→   534→      {dispute.description ? (
+   535→   535→        <p className="mt-3 text-sm text-foreground/80">{dispute.description}</p>
+   536→   536→      ) : (
+   537→   537→        <p className="mt-3 text-xs italic text-muted-foreground">No description provided.</p>
+   538→   538→      )}
+   539→   539→
+   540→   540→      <div className="mt-3 grid grid-cols-3 gap-3 border-t border-border/50 pt-3">
+   541→   541→        <Metric label="Qty affected" value={`${dispute.quantityAffected}`} />
+   542→   542→        <Metric label="Value affected" value={formatCurrency(dispute.valueAffected)} tone="rose" />
+   543→   543→        <Metric label="Logged" value={formatDate(dispute.createdAt)} />
+   544→   544→      </div>
+   545→   545→
+   546→   546→      {dispute.dispatch && (
+   547→   547→        <p className="mt-2 text-[11px] text-muted-foreground">
+   548→   548→          Dispatch: {formatDate(dispute.dispatch.dispatchDate)}
+   549→   549→        </p>
+   550→   550→      )}
+   551→   551→
+   552→   552→      {dispute.status === "open" && !selectMode ? (
+   553→   553→        <div className="mt-4 flex items-center justify-end gap-2">
+   554→   554→          <Button size="sm" variant="outline" className="h-8 border-rose-500/30 text-rose-600 hover:text-rose-500 dark:text-rose-400" onClick={() => { setResolution(""); setRejectOpen(true); }}>
+   555→   555→            <X className="mr-1 size-3.5" />Reject
+   556→   556→          </Button>
+   557→   557→          <Button size="sm" className="h-8 bg-emerald-600 hover:bg-emerald-700" onClick={() => { setResolution(""); setResolveOpen(true); }}>
+   558→   558→            <Check className="mr-1 size-3.5" />Resolve
+   559→   559→          </Button>
+   560→   560→        </div>
+   561→   561→      ) : (
+   562→   562→        dispute.resolution && (
+   563→   563→          <div className="mt-3 rounded-lg border border-border/50 bg-card/30 p-2.5">
+   564→   564→            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Resolution</p>
+   565→   565→            <p className="mt-0.5 text-xs text-foreground/80">{dispute.resolution}</p>
+   566→   566→          </div>
+   567→   567→        )
+   568→   568→      )}
+   569→   569→
+   570→   570→      <div className="mt-3">
+   571→   571→        <Collapsible open={photosOpen} onOpenChange={setPhotosOpen}>
+   572→   572→          <CollapsibleTrigger asChild>
+   573→   573→            <button
+   574→   574→              type="button"
+   575→   575→              className="flex w-full items-center justify-between rounded-lg border border-border/50 bg-card/30 px-3 py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-card/50 hover:text-foreground"
+   576→   576→            >
+   577→   577→              <span className="inline-flex items-center gap-1.5">
+   578→   578→                <ImageIcon className="size-3.5" />
+   579→   579→                Evidence photos
+   580→   580→                <span className="rounded-full bg-card/80 px-1.5 py-0.5 text-[10px]">{photoCount}</span>
+   581→   581→              </span>
+   582→   582→              <ChevronDown
+   583→   583→                className={cn(
+   584→   584→                  "size-3.5 transition-transform duration-200",
+   585→   585→                  photosOpen && "rotate-180",
+   586→   586→                )}
+   587→   587→              />
+   588→   588→            </button>
+   589→   589→          </CollapsibleTrigger>
+   590→   590→          <CollapsibleContent className="mt-2">
+   591→   591→            <PhotoUpload
+   592→   592→              entityType="Dispute"
+   593→   593→              entityId={dispute.id}
+   594→   594→              stage="dispute"
+   595→   595→              label="Dispute evidence"
+   596→   596→              hint="Defect close-ups, shortage photos, return acknowledgement, debit note."
+   597→   597→              onUploaded={() => {
+   598→   598→                // Optimistically bump the count; the PhotoUpload widget
+   599→   599→                // manages its own list, but the trigger label needs to know
+   600→   600→                // there's at least one photo now.
+   601→   601→                setPhotoCount((c) => Math.max(c, 1));
+   602→   602→                onDone();
+   603→   603→              }}
+   604→   604→            />
+   605→   605→          </CollapsibleContent>
+   606→   606→        </Collapsible>
+   607→   607→      </div>
+   608→   608→
+   609→   609→      {!selectMode && (
+   610→   610→        <div className="mt-2 flex justify-end">
+   611→   611→          <Button size="sm" variant="ghost" className="h-7 text-[11px] text-muted-foreground hover:text-rose-500" onClick={() => setDeleteOpen(true)}>
+   612→   612→            <Trash2 className="mr-1 size-3" />Delete
+   613→   613→          </Button>
+   614→   614→        </div>
+   615→   615→      )}
+   616→   616→
+   617→   617→      {/* Resolve dialog */}
+   618→   618→      <Dialog open={resolveOpen} onOpenChange={setResolveOpen}>
+   619→   619→        <DialogContent className="glass-strong max-w-md">
+   620→   620→          <DialogHeader>
+   621→   621→            <DialogTitle>Resolve dispute</DialogTitle>
+   622→   622→            <DialogDescription className="sr-only">Mark this dispute as resolved with a note. Resolving a defective return recomputes the linked bill automatically.</DialogDescription>
+   623→   623→          </DialogHeader>
+   624→   624→          <div className="space-y-2 py-2">
+   625→   625→            <Label className="text-xs font-medium text-muted-foreground">Resolution note</Label>
+   626→   626→            <Textarea
+   627→   627→              placeholder="e.g. Verified goods returned to supplier, debit note issued."
+   628→   628→              value={resolution}
+   629→   629→              onChange={(e) => setResolution(e.target.value)}
+   630→   630→              rows={3}
+   631→   631→            />
+   632→   632→            {dispute.type === "defective_return" && (
+   633→   633→              <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300">
+   634→   634→                Resolving a defective return will automatically recompute the linked bill (base amount − returns value).
+   635→   635→              </p>
+   636→   636→            )}
+   637→   637→          </div>
+   638→   638→          <DialogFooter>
+   639→   639→            <Button variant="outline" onClick={() => setResolveOpen(false)}>Cancel</Button>
+   640→   640→            <Button onClick={() => patch("resolved", resolution)} disabled={busy}>
+   641→   641→              {busy ? "Resolving…" : "Confirm resolve"}
+   642→   642→            </Button>
+   643→   643→          </DialogFooter>
+   644→   644→        </DialogContent>
+   645→   645→      </Dialog>
+   646→   646→
+   647→   647→      {/* Reject dialog */}
+   648→   648→      <Dialog open={rejectOpen} onOpenChange={setRejectOpen}>
+   649→   649→        <DialogContent className="glass-strong max-w-md">
+   650→   650→          <DialogHeader>
+   651→   651→            <DialogTitle>Reject dispute</DialogTitle>
+   652→   652→            <DialogDescription className="sr-only">Reject this dispute with an optional reason. The linked bill is not affected.</DialogDescription>
+   653→   653→          </DialogHeader>
+   654→   654→          <div className="space-y-2 py-2">
+   655→   655→            <Label className="text-xs font-medium text-muted-foreground">Reason (optional)</Label>
+   656→   656→            <Textarea
+   657→   657→              placeholder="e.g. Could not substantiate claim — no evidence of shortage."
+   658→   658→              value={resolution}
+   659→   659→              onChange={(e) => setResolution(e.target.value)}
+   660→   660→              rows={3}
+   661→   661→            />
+   662→   662→          </div>
+   663→   663→          <DialogFooter>
+   664→   664→            <Button variant="outline" onClick={() => setRejectOpen(false)}>Cancel</Button>
+   665→   665→            <Button variant="destructive" onClick={() => patch("rejected", resolution)} disabled={busy}>
+   666→   666→              {busy ? "Rejecting…" : "Confirm reject"}
+   667→   667→            </Button>
+   668→   668→          </DialogFooter>
+   669→   669→        </DialogContent>
+   670→   670→      </Dialog>
+   671→   671→
+   672→   672→      {/* Delete confirmation */}
+   673→   673→      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+   674→   674→        <AlertDialogContent className="glass-strong">
+   675→   675→          <AlertDialogHeader>
+   676→   676→            <AlertDialogTitle>Delete dispute?</AlertDialogTitle>
+   677→   677→            <AlertDialogDescription>
+   678→   678→              This permanently removes the dispute record. The linked bill will not be recomputed.
+   679→   679→            </AlertDialogDescription>
+   680→   680→          </AlertDialogHeader>
+   681→   681→          <AlertDialogFooter>
+   682→   682→            <AlertDialogCancel>Cancel</AlertDialogCancel>
+   683→   683→            <AlertDialogAction
+   684→   684→              className="bg-rose-600 text-white hover:bg-rose-700"
+   685→   685→              onClick={remove}
+   686→   686→              disabled={busy}
+   687→   687→            >
+   688→   688→              {busy ? "Deleting…" : "Delete"}
+   689→   689→            </AlertDialogAction>
+   690→   690→          </AlertDialogFooter>
+   691→   691→        </AlertDialogContent>
+   692→   692→      </AlertDialog>
+   693→   693→    </GlassCard>
+   694→   694→  );
+   695→   695→}
+   696→   696→
+   697→   697→function Metric({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "rose" }) {
+   698→   698→  return (
+   699→   699→    <div>
+   700→   700→      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p>
+   701→   701→      <p className={cn(
+   702→   702→        "kpi-num text-sm font-semibold",
+   703→   703→        tone === "rose" ? "text-rose-600 dark:text-rose-400" : "text-foreground"
+   704→   704→      )}>{value}</p>
+   705→   705→    </div>
+   706→   706→  );
+   707→   707→}
+   708→   708→
+   709→   709→function LogDisputeDialog({ onDone }: { onDone: () => void }) {
+   710→   710→  const { data: poData, loading: poLoading } = useApi<{ purchaseOrders: PO[] }>("/api/purchase-orders");
+   711→   711→  const { data: dispData } = useApi<{ dispatches: Dispatch[] }>("/api/dispatches");
+   712→   712→  const [poId, setPoId] = React.useState<string>("");
+   713→   713→  const [dispatchId, setDispatchId] = React.useState<string>("");
+   714→   714→  const [type, setType] = React.useState<Dispute["type"]>("short_shipment");
+   715→   715→  const [description, setDescription] = React.useState("");
+   716→   716→  const [quantity, setQuantity] = React.useState(0);
+   717→   717→  const [value, setValue] = React.useState(0);
+   718→   718→  const [saving, setSaving] = React.useState(false);
+   719→   719→
+   720→   720→  const dispatchesForPo = (dispData?.dispatches ?? []).filter((d) => d.poId === poId);
+   721→   721→
+   722→   722→  const submit = async () => {
+   723→   723→    if (!poId) { toast.error("Select a PO"); return; }
+   724→   724→    setSaving(true);
+   725→   725→    try {
+   726→   726→      await api("/api/disputes", {
+   727→   727→        method: "POST",
+   728→   728→        body: JSON.stringify({
+   729→   729→          poId,
+   730→   730→          dispatchId: dispatchId || undefined,
+   731→   731→          type,
+   732→   732→          description: description || undefined,
+   733→   733→          quantityAffected: Number(quantity),
+   734→   734→          valueAffected: Number(value),
+   735→   735→        }),
+   736→   736→      });
+   737→   737→      toast.success("Dispute logged");
+   738→   738→      onDone();
+   739→   739→    } catch (e) {
+   740→   740→      toast.error(e instanceof Error ? e.message : "Failed");
+   741→   741→    } finally {
+   742→   742→      setSaving(false);
+   743→   743→    }
+   744→   744→  };
+   745→   745→
+   746→   746→  return (
+   747→   747→    <DialogContent className="glass-strong max-h-[90vh] max-w-lg overflow-y-auto">
+   748→   748→      <DialogHeader>
+   749→   749→        <DialogTitle>Log dispute</DialogTitle>
+   750→   750→        <DialogDescription className="sr-only">Record a short-shipment, defective return, or other dispute against a purchase order with affected quantity and value.</DialogDescription>
+   751→   751→      </DialogHeader>
+   752→   752→      <div className="grid gap-4 py-2">
+   753→   753→        <Field label="Purchase order *">
+   754→   754→          <Select value={poId} onValueChange={(v) => { setPoId(v); setDispatchId(""); }}>
+   755→   755→            <SelectTrigger className="w-full"><SelectValue placeholder={poLoading ? "Loading…" : "Select PO"} /></SelectTrigger>
+   756→   756→            <SelectContent>
+   757→   757→              {(poData?.purchaseOrders ?? []).map((po) => (
+   758→   758→                <SelectItem key={po.id} value={po.id}>
+   759→   759→                  {po.poNumber} — {po.client.name}
+   760→   760→                </SelectItem>
+   761→   761→              ))}
+   762→   762→            </SelectContent>
+   763→   763→          </Select>
+   764→   764→        </Field>
+   765→   765→
+   766→   766→        {poId && dispatchesForPo.length > 0 && (
+   767→   767→          <Field label="Dispatch (optional)">
+   768→   768→            <Select value={dispatchId} onValueChange={setDispatchId}>
+   769→   769→              <SelectTrigger className="w-full"><SelectValue placeholder="No specific dispatch" /></SelectTrigger>
+   770→   770→              <SelectContent>
+   771→   771→                {dispatchesForPo.map((d) => (
+   772→   772→                  <SelectItem key={d.id} value={d.id}>
+   773→   773→                    {formatDate(d.dispatchDate)}
+   774→   774→                  </SelectItem>
+   775→   775→                ))}
+   776→   776→              </SelectContent>
+   777→   777→            </Select>
+   778→   778→          </Field>
+   779→   779→        )}
+   780→   780→
+   781→   781→        <Field label="Type *">
+   782→   782→          <Select value={type} onValueChange={(v) => setType(v as Dispute["type"])}>
+   783→   783→            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+   784→   784→            <SelectContent>
+   785→   785→              <SelectItem value="short_shipment">Short shipment</SelectItem>
+   786→   786→              <SelectItem value="defective_return">Defective return</SelectItem>
+   787→   787→              <SelectItem value="other">Other</SelectItem>
+   788→   788→            </SelectContent>
+   789→   789→          </Select>
+   790→   790→        </Field>
+   791→   791→
+   792→   792→        <Field label="Description">
+   793→   793→          <Textarea
+   794→   794→            placeholder="What happened, evidence, etc."
+   795→   795→            value={description}
+   796→   796→            onChange={(e) => setDescription(e.target.value)}
+   797→   797→            rows={3}
+   798→   798→          />
+   799→   799→        </Field>
+   800→   800→
+   801→   801→        <div className="grid grid-cols-2 gap-3">
+   802→   802→          <Field label="Quantity affected">
+   803→   803→            <Input
+   804→   804→              type="number"
+   805→   805→              min={0}
+   806→   806→              value={quantity}
+   807→   807→              onChange={(e) => setQuantity(Number(e.target.value))}
+   808→   808→            />
+   809→   809→          </Field>
+   810→   810→          <Field label="Value affected (₹)">
+   811→   811→            <Input
+   812→   812→              type="number"
+   813→   813→              min={0}
+   814→   814→              value={value}
+   815→   815→              onChange={(e) => setValue(Number(e.target.value))}
+   816→   816→            />
+   817→   817→          </Field>
+   818→   818→        </div>
+   819→   819→        {value > 0 && (
+   820→   820→          <p className="text-xs text-muted-foreground">
+   821→   821→            Value preview: <span className="font-semibold text-rose-600 dark:text-rose-400">{formatCurrency(value)}</span>
+   822→   822→          </p>
+   823→   823→        )}
+   824→   824→      </div>
+   825→   825→      <DialogFooter>
+   826→   826→        <Button onClick={submit} disabled={saving}>
+   827→   827→          {saving ? "Logging…" : "Log dispute"}
+   828→   828→        </Button>
+   829→   829→      </DialogFooter>
+   830→   830→    </DialogContent>
+   831→   831→  );
+   832→   832→}
+   833→   833→
+   834→   834→function Field({ label, children }: { label: string; children: React.ReactNode }) {
+   835→   835→  return (
+   836→   836→    <div className="space-y-1.5">
+   837→   837→      <Label className="text-xs font-medium text-muted-foreground">{label}</Label>
+   838→   838→      {children}
+   839→   839→    </div>
+   840→   840→  );
+   841→   841→}
+   842→   842→

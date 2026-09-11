@@ -1,0 +1,873 @@
+     1→import { NextRequest, NextResponse } from "next/server";
+     2→import { db } from "@/lib/db";
+     3→import ZAI from "z-ai-web-dev-sdk";
+     4→import { getCurrentBroker } from "@/lib/auth";
+     5→
+     6→export const dynamic = "force-dynamic";
+     7→export const maxDuration = 60; // LLM call can take several seconds
+     8→
+     9→// ─────────────────────────────────────────────────────────────────────────────
+    10→// Daily Broker Digest — a consolidated snapshot of what needs the broker's
+    11→// attention today, served in three formats:
+    12→//   • text  → plain-text summary (also feeds the KPI strip in the UI)
+    13→//   • html  → standalone HTML email body (inline CSS, emerald accent, tables)
+    14→//             that the broker can copy/paste into Gmail/Outlook or send later
+    15→//   • email → AI-generated "morning brief" via z-ai-web-dev-sdk LLM
+    16→//             (returns { subject, body }) — friendly 3-4 paragraph summary
+    17→//
+    18→// All three formats share the same underlying data, gathered once via Prisma.
+    19→// ─────────────────────────────────────────────────────────────────────────────
+    20→
+    21→const DAY_MS = 24 * 60 * 60 * 1000;
+    22→
+    23→type Priority = "urgent" | "high" | "normal";
+    24→
+    25→type ActionItem = {
+    26→  type: string;
+    27→  title: string;
+    28→  description: string;
+    29→  priority: Priority;
+    30→  dueDate: string;
+    31→};
+    32→
+    33→type DigestData = {
+    34→  generatedAt: string; // ISO
+    35→  generatedAtDisplay: string; // "12 Aug 2026, 09:30 AM"
+    36→  dateLabel: string; // "12 Aug 2026"
+    37→  actionItems: ActionItem[];
+    38→  outstandingReceivable: {
+    39→    total: number;
+    40→    topClients: { name: string; due: number }[];
+    41→  };
+    42→  overdueDispatches: {
+    43→    poNumber: string;
+    44→    supplierName: string;
+    45→    dueDate: string;
+    46→    daysOverdue: number;
+    47→  }[];
+    48→  paymentsDueNext7Days: {
+    49→    billNumber: string;
+    50→    clientName: string;
+    51→    amount: number;
+    52→    dueDate: string;
+    53→  }[];
+    54→  brokeragePendingPayout: {
+    55→    accrued: number; // eligible, awaiting payout
+    56→    scheduled: number; // already in a payout batch
+    57→    total: number;
+    58→  };
+    59→  openDisputesCount: number;
+    60→  pendingNotificationsCount: number;
+    61→  summary: {
+    62→    pendingActions: number;
+    63→    outstandingTotal: number;
+    64→    duePaymentsCount: number; // bills due within next 7 days (or already overdue)
+    65→    openDisputes: number;
+    66→  };
+    67→};
+    68→
+    69→function fmtINR(n: number): string {
+    70→  return `₹${Math.round(n).toLocaleString("en-IN")}`;
+    71→}
+    72→
+    73→function fmtINRCompact(n: number): string {
+    74→  const v = Number.isFinite(n) ? n : 0;
+    75→  if (Math.abs(v) >= 10000000) return `₹${(v / 10000000).toFixed(2)}Cr`;
+    76→  if (Math.abs(v) >= 100000) return `₹${(v / 100000).toFixed(2)}L`;
+    77→  if (Math.abs(v) >= 1000) return `₹${(v / 1000).toFixed(1)}K`;
+    78→  return fmtINR(v);
+    79→}
+    80→
+    81→function fmtDate(d: Date | string): string {
+    82→  const dt = typeof d === "string" ? new Date(d) : d;
+    83→  return dt.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+    84→}
+    85→
+    86→function fmtDateTime(d: Date): string {
+    87→  return d.toLocaleString("en-IN", {
+    88→    day: "2-digit",
+    89→    month: "short",
+    90→    year: "numeric",
+    91→    hour: "2-digit",
+    92→    minute: "2-digit",
+    93→  });
+    94→}
+    95→
+    96→function pluralDays(n: number): string {
+    97→  const abs = Math.max(1, Math.abs(n));
+    98→  return `${abs} day${abs === 1 ? "" : "s"}`;
+    99→}
+   100→
+   101→const PRIORITY_RANK: Record<Priority, number> = { urgent: 0, high: 1, normal: 2 };
+   102→
+   103→// ─────────────────────────────────────────────────────────────────────────────
+   104→// gatherDigestData — single pass over Prisma, mirrors the action-center logic
+   105→// (simplified) plus the digest-specific aggregations (top clients, payments
+   106→// due next 7d, brokerage pending payout).
+   107→// ─────────────────────────────────────────────────────────────────────────────
+   108→async function gatherDigestData(brokerId: string): Promise<DigestData> {
+   109→  const now = new Date();
+   110→  const in7d = new Date(now.getTime() + 7 * DAY_MS);
+   111→
+   112→  const [
+   113→    visits,
+   114→    overduePOs,
+   115→    openBills,
+   116→    eligibleBrokerages,
+   117→    openDisputes,
+   118→    pendingNotifications,
+   119→  ] = await Promise.all([
+   120→    db.visit.findMany({
+   121→      where: {
+   122→        brokerId,
+   123→        status: { in: ["scheduled", "followed_up"] },
+   124→        plannedDate: { lte: new Date(now.getTime() + 3 * DAY_MS) },
+   125→      },
+   126→      include: { client: { select: { name: true } } },
+   127→      orderBy: { plannedDate: "asc" },
+   128→    }),
+   129→    db.purchaseOrder.findMany({
+   130→      where: { brokerId, status: "open", expectedDispatchDate: { not: null, lt: now } },
+   131→      include: { supplier: { select: { name: true } } },
+   132→      orderBy: { expectedDispatchDate: "asc" },
+   133→    }),
+   134→    db.bill.findMany({
+   135→      where: { brokerId, status: { not: "fully_paid" } },
+   136→      include: { client: { select: { name: true, defaultPaymentCycleDays: true } } },
+   137→      orderBy: { createdAt: "asc" },
+   138→    }),
+   139→    db.brokerage.findMany({
+   140→      where: { brokerId, eligible: true, payoutStatus: { in: ["accrued", "scheduled"] } },
+   141→      include: { client: { select: { name: true } } },
+   142→    }),
+   143→    db.dispute.findMany({
+   144→      where: { brokerId, status: "open" },
+   145→      include: { po: { select: { poNumber: true } } },
+   146→      orderBy: { createdAt: "asc" },
+   147→    }),
+   148→    db.notification.count({ where: { brokerId, status: "pending" } }),
+   149→  ]);
+   150→
+   151→  // ── Action items (simplified from /api/action-center) ────────────────────
+   152→  const actionItems: ActionItem[] = [];
+   153→
+   154→  for (const v of visits) {
+   155→    const daysOverdue = Math.floor((now.getTime() - v.plannedDate.getTime()) / DAY_MS);
+   156→    const isPast = v.plannedDate < now;
+   157→    if (v.status === "scheduled" && isPast) {
+   158→      actionItems.push({
+   159→        type: "visit_followup",
+   160→        title: `Follow up with ${v.client.name}`,
+   161→        description: `Visit was ${pluralDays(daysOverdue)} ago. Call to reschedule.`,
+   162→        priority: daysOverdue > 2 ? "urgent" : "high",
+   163→        dueDate: v.plannedDate.toISOString(),
+   164→      });
+   165→    } else if (
+   166→      v.status === "followed_up" &&
+   167→      v.plannedDate < new Date(now.getTime() - 3 * DAY_MS)
+   168→    ) {
+   169→      actionItems.push({
+   170→        type: "visit_followup",
+   171→        title: `Re-follow-up: ${v.client.name}`,
+   172→        description: `Original visit was ${pluralDays(daysOverdue)} ago and still pending closure.`,
+   173→        priority: "high",
+   174→        dueDate: v.plannedDate.toISOString(),
+   175→      });
+   176→    } else if (v.status === "scheduled" && !isPast) {
+   177→      const daysAhead = Math.max(
+   178→        0,
+   179→        Math.floor((v.plannedDate.getTime() - now.getTime()) / DAY_MS),
+   180→      );
+   181→      actionItems.push({
+   182→        type: "visit_followup",
+   183→        title: `Upcoming visit: ${v.client.name}`,
+   184→        description:
+   185→          daysAhead === 0
+   186→            ? "Visit scheduled for today."
+   187→            : `Visit scheduled in ${pluralDays(daysAhead)}.`,
+   188→        priority: "normal",
+   189→        dueDate: v.plannedDate.toISOString(),
+   190→      });
+   191→    }
+   192→  }
+   193→
+   194→  // Overdue dispatches → also feed the dispatches list separately
+   195→  const overdueDispatchList: DigestData["overdueDispatches"] = [];
+   196→  for (const po of overduePOs) {
+   197→    const effective = po.revisedDispatchDate ?? po.expectedDispatchDate;
+   198→    if (!effective) continue;
+   199→    const daysOverdue = Math.max(
+   200→      1,
+   201→      Math.floor((now.getTime() - effective.getTime()) / DAY_MS),
+   202→    );
+   203→    actionItems.push({
+   204→      type: "dispatch_due",
+   205→      title: `Record dispatch: ${po.poNumber}`,
+   206→      description: `Supplier ${po.supplier.name} dispatch is overdue.`,
+   207→      priority: "high",
+   208→      dueDate: effective.toISOString(),
+   209→    });
+   210→    overdueDispatchList.push({
+   211→      poNumber: po.poNumber,
+   212→      supplierName: po.supplier.name,
+   213→      dueDate: effective.toISOString(),
+   214→      daysOverdue,
+   215→    });
+   216→  }
+   217→
+   218→  // Payments due — collect bills whose computed due date is within 7 days OR
+   219→  // already past due.
+   220→  const paymentsDueNext7Days: DigestData["paymentsDueNext7Days"] = [];
+   221→  for (const bill of openBills) {
+   222→    const remaining = Math.max(0, bill.finalAmount - bill.paidAmount);
+   223→    if (remaining <= 0) continue;
+   224→    const dueDate = new Date(
+   225→      bill.createdAt.getTime() + bill.client.defaultPaymentCycleDays * DAY_MS,
+   226→    );
+   227→    const diffDays = Math.floor((now.getTime() - dueDate.getTime()) / DAY_MS);
+   228→    const isPast = dueDate < now;
+   229→    if (isPast) {
+   230→      const priority: Priority = diffDays > 14 ? "urgent" : "high";
+   231→      actionItems.push({
+   232→        type: "payment_due",
+   233→        title: `Collect payment: ${bill.billNumber}`,
+   234→        description: `${bill.client.name} owes ${fmtINR(remaining)}. ${pluralDays(diffDays)} overdue.`,
+   235→        priority,
+   236→        dueDate: dueDate.toISOString(),
+   237→      });
+   238→      paymentsDueNext7Days.push({
+   239→        billNumber: bill.billNumber,
+   240→        clientName: bill.client.name,
+   241→        amount: remaining,
+   242→        dueDate: dueDate.toISOString(),
+   243→      });
+   244→    } else if (dueDate <= in7d) {
+   245→      const daysAhead = Math.max(
+   246→        0,
+   247→        Math.floor((dueDate.getTime() - now.getTime()) / DAY_MS),
+   248→      );
+   249→      actionItems.push({
+   250→        type: "payment_due",
+   251→        title: `Collect payment: ${bill.billNumber}`,
+   252→        description:
+   253→          daysAhead === 0
+   254→            ? `${bill.client.name} owes ${fmtINR(remaining)}. Due today.`
+   255→            : `${bill.client.name} owes ${fmtINR(remaining)}. Due in ${pluralDays(daysAhead)}.`,
+   256→        priority: "normal",
+   257→        dueDate: dueDate.toISOString(),
+   258→      });
+   259→      paymentsDueNext7Days.push({
+   260→        billNumber: bill.billNumber,
+   261→        clientName: bill.client.name,
+   262→        amount: remaining,
+   263→        dueDate: dueDate.toISOString(),
+   264→      });
+   265→    }
+   266→  }
+   267→
+   268→  // Brokerage pending payout — aggregate per client, one action per client
+   269→  const brokerageByClient = new Map<string, { total: number; name: string; earliest: Date }>();
+   270→  let accruedTotal = 0;
+   271→  let scheduledTotal = 0;
+   272→  for (const b of eligibleBrokerages) {
+   273→    if (b.payoutStatus === "accrued") accruedTotal += b.brokerageAmount;
+   274→    if (b.payoutStatus === "scheduled") scheduledTotal += b.brokerageAmount;
+   275→    const eligibleAt = b.eligibleAt ?? b.createdAt;
+   276→    const prev = brokerageByClient.get(b.clientId);
+   277→    if (prev) {
+   278→      prev.total += b.brokerageAmount;
+   279→      if (eligibleAt < prev.earliest) prev.earliest = eligibleAt;
+   280→    } else {
+   281→      brokerageByClient.set(b.clientId, {
+   282→        total: b.brokerageAmount,
+   283→        name: b.client.name,
+   284→        earliest: eligibleAt,
+   285→      });
+   286→    }
+   287→  }
+   288→  for (const [, agg] of brokerageByClient) {
+   289→    actionItems.push({
+   290→      type: "brokerage_payout",
+   291→      title: `Pay out brokerage: ${agg.name}`,
+   292→      description: `${fmtINR(agg.total)} eligible for payout.`,
+   293→      priority: "high",
+   294→      dueDate: agg.earliest.toISOString(),
+   295→    });
+   296→  }
+   297→
+   298→  // Open disputes
+   299→  for (const d of openDisputes) {
+   300→    const daysOpen = Math.max(
+   301→      1,
+   302→      Math.floor((now.getTime() - d.createdAt.getTime()) / DAY_MS),
+   303→    );
+   304→    actionItems.push({
+   305→      type: "dispute_resolve",
+   306→      title: `Resolve dispute: ${d.po.poNumber}`,
+   307→      description: `${d.type.replace(/_/g, " ")} — open for ${pluralDays(daysOpen)}.`,
+   308→      priority: daysOpen > 7 ? "urgent" : "high",
+   309→      dueDate: d.createdAt.toISOString(),
+   310→    });
+   311→  }
+   312→
+   313→  // Sort actions: priority asc, then dueDate asc — cap at 12 for the digest
+   314→  actionItems.sort((a, b) => {
+   315→    const pr = PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority];
+   316→    if (pr !== 0) return pr;
+   317→    return new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime();
+   318→  });
+   319→
+   320→  // Outstanding receivable — top 3 clients by due amount
+   321→  const byClient = new Map<string, { name: string; due: number }>();
+   322→  for (const bill of openBills) {
+   323→    const remaining = Math.max(0, bill.finalAmount - bill.paidAmount);
+   324→    if (remaining <= 0) continue;
+   325→    const prev = byClient.get(bill.clientId);
+   326→    if (prev) {
+   327→      prev.due += remaining;
+   328→    } else {
+   329→      byClient.set(bill.clientId, { name: bill.client.name, due: remaining });
+   330→    }
+   331→  }
+   332→  const topClients = Array.from(byClient.values())
+   333→    .sort((a, b) => b.due - a.due)
+   334→    .slice(0, 3);
+   335→  const outstandingTotal = Array.from(byClient.values()).reduce((s, c) => s + c.due, 0);
+   336→
+   337→  return {
+   338→    generatedAt: now.toISOString(),
+   339→    generatedAtDisplay: fmtDateTime(now),
+   340→    dateLabel: fmtDate(now),
+   341→    actionItems: actionItems.slice(0, 12),
+   342→    outstandingReceivable: {
+   343→      total: outstandingTotal,
+   344→      topClients,
+   345→    },
+   346→    overdueDispatches: overdueDispatchList.slice(0, 6),
+   347→    paymentsDueNext7Days: paymentsDueNext7Days
+   348→      .sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime())
+   349→      .slice(0, 6),
+   350→    brokeragePendingPayout: {
+   351→      accrued: accruedTotal,
+   352→      scheduled: scheduledTotal,
+   353→      total: accruedTotal + scheduledTotal,
+   354→    },
+   355→    openDisputesCount: openDisputes.length,
+   356→    pendingNotificationsCount: pendingNotifications,
+   357→    summary: {
+   358→      pendingActions: actionItems.length,
+   359→      outstandingTotal,
+   360→      duePaymentsCount: paymentsDueNext7Days.length,
+   361→      openDisputes: openDisputes.length,
+   362→    },
+   363→  };
+   364→}
+   365→
+   366→// ─────────────────────────────────────────────────────────────────────────────
+   367→// Format builders
+   368→// ─────────────────────────────────────────────────────────────────────────────
+   369→
+   370→function buildTextDigest(d: DigestData): string {
+   371→  const lines: string[] = [];
+   372→  lines.push(`BROKER OS — DAILY DIGEST`);
+   373→  lines.push(`${d.generatedAtDisplay}`);
+   374→  lines.push("=".repeat(48));
+   375→  lines.push("");
+   376→  lines.push(`Pending actions: ${d.summary.pendingActions}`);
+   377→  lines.push(`Outstanding receivable: ${fmtINR(d.summary.outstandingTotal)}`);
+   378→  lines.push(`Payments due (next 7 days): ${d.summary.duePaymentsCount}`);
+   379→  lines.push(`Open disputes: ${d.summary.openDisputes}`);
+   380→  lines.push(`Pending notifications: ${d.pendingNotificationsCount}`);
+   381→  lines.push("");
+   382→
+   383→  lines.push("─ TODAY'S PRIORITISED ACTIONS ─");
+   384→  if (d.actionItems.length === 0) {
+   385→    lines.push("All caught up — no pending actions.");
+   386→  } else {
+   387→    d.actionItems.forEach((a, i) => {
+   388→      const prio = a.priority.toUpperCase();
+   389→      lines.push(`${i + 1}. [${prio}] ${a.title}`);
+   390→      lines.push(`   ${a.description}`);
+   391→      lines.push(`   Due: ${fmtDate(a.dueDate)}`);
+   392→    });
+   393→  }
+   394→  lines.push("");
+   395→
+   396→  lines.push("─ OUTSTANDING RECEIVABLES ─");
+   397→  lines.push(`Total: ${fmtINR(d.outstandingReceivable.total)}`);
+   398→  if (d.outstandingReceivable.topClients.length > 0) {
+   399→    lines.push("Top clients with due:");
+   400→    d.outstandingReceivable.topClients.forEach((c) => {
+   401→      lines.push(`   • ${c.name}: ${fmtINR(c.due)}`);
+   402→    });
+   403→  }
+   404→  lines.push("");
+   405→
+   406→  lines.push("─ OVERDUE DISPATCHES ─");
+   407→  if (d.overdueDispatches.length === 0) {
+   408→    lines.push("No overdue dispatches.");
+   409→  } else {
+   410→    d.overdueDispatches.forEach((x) => {
+   411→      lines.push(`   • ${x.poNumber} — ${x.supplierName} — ${pluralDays(x.daysOverdue)} overdue (was ${fmtDate(x.dueDate)})`);
+   412→    });
+   413→  }
+   414→  lines.push("");
+   415→
+   416→  lines.push("─ PAYMENTS DUE (NEXT 7 DAYS) ─");
+   417→  if (d.paymentsDueNext7Days.length === 0) {
+   418→    lines.push("No payments due in the next 7 days.");
+   419→  } else {
+   420→    d.paymentsDueNext7Days.forEach((p) => {
+   421→      lines.push(`   • ${p.billNumber} — ${p.clientName} — ${fmtINR(p.amount)} — due ${fmtDate(p.dueDate)}`);
+   422→    });
+   423→  }
+   424→  lines.push("");
+   425→
+   426→  lines.push("─ BROKERAGE PENDING PAYOUT ─");
+   427→  lines.push(`   Accrued (eligible, awaiting payout): ${fmtINR(d.brokeragePendingPayout.accrued)}`);
+   428→  lines.push(`   Scheduled (in a payout batch):       ${fmtINR(d.brokeragePendingPayout.scheduled)}`);
+   429→  lines.push(`   Total pending:                       ${fmtINR(d.brokeragePendingPayout.total)}`);
+   430→  lines.push("");
+   431→
+   432→  lines.push("─ OPEN DISPUTES ─");
+   433→  lines.push(`${d.openDisputesCount} open dispute${d.openDisputesCount === 1 ? "" : "s"}.`);
+   434→  lines.push("");
+   435→
+   436→  lines.push("=".repeat(48));
+   437→  lines.push("Generated by Garment Broker OS");
+   438→  return lines.join("\n");
+   439→}
+   440→
+   441→function escapeHtml(s: string): string {
+   442→  return s
+   443→    .replace(/&/g, "&amp;")
+   444→    .replace(/</g, "&lt;")
+   445→    .replace(/>/g, "&gt;")
+   446→    .replace(/"/g, "&quot;")
+   447→    .replace(/'/g, "&#39;");
+   448→}
+   449→
+   450→function priorityBadge(p: Priority): string {
+   451→  const map: Record<Priority, { bg: string; fg: string; label: string }> = {
+   452→    urgent: { bg: "#fee2e2", fg: "#991b1b", label: "URGENT" },
+   453→    high: { bg: "#fef3c7", fg: "#92400e", label: "HIGH" },
+   454→    normal: { bg: "#d1fae5", fg: "#065f46", label: "NORMAL" },
+   455→  };
+   456→  const v = map[p];
+   457→  return `<span style="display:inline-block;padding:2px 8px;border-radius:9999px;font-size:10px;font-weight:700;letter-spacing:0.04em;background:${v.bg};color:${v.fg};">${v.label}</span>`;
+   458→}
+   459→
+   460→function buildHtmlDigest(d: DigestData): string {
+   461→  const accent = "#059669"; // emerald-600
+   462→  const accentDark = "#047857";
+   463→  const subtle = "#f1f5f9";
+   464→  const border = "#e2e8f0";
+   465→  const muted = "#64748b";
+   466→  const text = "#0f172a";
+   467→
+   468→  // Action items rows
+   469→  const actionRows = d.actionItems.length
+   470→    ? d.actionItems
+   471→        .map(
+   472→          (a, i) => `
+   473→        <tr>
+   474→          <td style="padding:10px 12px;border-bottom:1px solid ${border};vertical-align:top;width:32px;color:${muted};font-weight:600;">${i + 1}</td>
+   475→          <td style="padding:10px 12px;border-bottom:1px solid ${border};vertical-align:top;">
+   476→            <div style="font-weight:600;color:${text};font-size:14px;">${escapeHtml(a.title)}</div>
+   477→            <div style="color:${muted};font-size:12px;margin-top:2px;">${escapeHtml(a.description)}</div>
+   478→          </td>
+   479→          <td style="padding:10px 12px;border-bottom:1px solid ${border};vertical-align:top;white-space:nowrap;">${priorityBadge(a.priority)}</td>
+   480→          <td style="padding:10px 12px;border-bottom:1px solid ${border};vertical-align:top;white-space:nowrap;color:${muted};font-size:12px;">${escapeHtml(fmtDate(a.dueDate))}</td>
+   481→        </tr>`,
+   482→        )
+   483→        .join("")
+   484→    : `<tr><td colspan="4" style="padding:20px 12px;text-align:center;color:${muted};font-size:13px;">All caught up — no pending actions today.</td></tr>`;
+   485→
+   486→  // Top clients rows
+   487→  const clientRows = d.outstandingReceivable.topClients.length
+   488→    ? d.outstandingReceivable.topClients
+   489→        .map(
+   490→          (c) => `
+   491→        <tr>
+   492→          <td style="padding:8px 12px;border-bottom:1px solid ${border};color:${text};font-size:13px;">${escapeHtml(c.name)}</td>
+   493→          <td style="padding:8px 12px;border-bottom:1px solid ${border};color:${text};font-size:13px;text-align:right;font-weight:600;white-space:nowrap;">${escapeHtml(fmtINR(c.due))}</td>
+   494→        </tr>`,
+   495→        )
+   496→        .join("")
+   497→    : `<tr><td colspan="2" style="padding:14px 12px;text-align:center;color:${muted};font-size:13px;">No outstanding receivables.</td></tr>`;
+   498→
+   499→  // Dispatch rows
+   500→  const dispatchRows = d.overdueDispatches.length
+   501→    ? d.overdueDispatches
+   502→        .map(
+   503→          (x) => `
+   504→        <tr>
+   505→          <td style="padding:8px 12px;border-bottom:1px solid ${border};color:${text};font-size:13px;font-weight:600;">${escapeHtml(x.poNumber)}</td>
+   506→          <td style="padding:8px 12px;border-bottom:1px solid ${border};color:${text};font-size:13px;">${escapeHtml(x.supplierName)}</td>
+   507→          <td style="padding:8px 12px;border-bottom:1px solid ${border};color:${muted};font-size:12px;white-space:nowrap;">${escapeHtml(fmtDate(x.dueDate))}</td>
+   508→          <td style="padding:8px 12px;border-bottom:1px solid ${border};color:#b91c1c;font-size:12px;font-weight:600;white-space:nowrap;">${escapeHtml(pluralDays(x.daysOverdue))} overdue</td>
+   509→        </tr>`,
+   510→        )
+   511→        .join("")
+   512→    : `<tr><td colspan="4" style="padding:14px 12px;text-align:center;color:${muted};font-size:13px;">No overdue dispatches.</td></tr>`;
+   513→
+   514→  // Payments due rows
+   515→  const paymentRows = d.paymentsDueNext7Days.length
+   516→    ? d.paymentsDueNext7Days
+   517→        .map(
+   518→          (p) => `
+   519→        <tr>
+   520→          <td style="padding:8px 12px;border-bottom:1px solid ${border};color:${text};font-size:13px;font-weight:600;">${escapeHtml(p.billNumber)}</td>
+   521→          <td style="padding:8px 12px;border-bottom:1px solid ${border};color:${text};font-size:13px;">${escapeHtml(p.clientName)}</td>
+   522→          <td style="padding:8px 12px;border-bottom:1px solid ${border};color:${text};font-size:13px;text-align:right;font-weight:600;white-space:nowrap;">${escapeHtml(fmtINR(p.amount))}</td>
+   523→          <td style="padding:8px 12px;border-bottom:1px solid ${border};color:${muted};font-size:12px;white-space:nowrap;">${escapeHtml(fmtDate(p.dueDate))}</td>
+   524→        </tr>`,
+   525→        )
+   526→        .join("")
+   527→    : `<tr><td colspan="4" style="padding:14px 12px;text-align:center;color:${muted};font-size:13px;">No payments due in the next 7 days.</td></tr>`;
+   528→
+   529→  return `<!DOCTYPE html>
+   530→<html lang="en">
+   531→<head>
+   532→<meta charset="utf-8">
+   533→<meta name="viewport" content="width=device-width,initial-scale=1">
+   534→<title>Broker OS Daily Digest — ${escapeHtml(d.dateLabel)}</title>
+   535→</head>
+   536→<body style="margin:0;padding:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;color:${text};">
+   537→  <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background:#f8fafc;">
+   538→    <tr>
+   539→      <td align="center" style="padding:24px 12px;">
+   540→        <table role="presentation" cellpadding="0" cellspacing="0" width="640" style="max-width:640px;width:100%;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid ${border};box-shadow:0 1px 3px rgba(15,23,42,0.06);">
+   541→
+   542→          <!-- Header -->
+   543→          <tr>
+   544→            <td style="background:linear-gradient(135deg,${accent} 0%,${accentDark} 100%);padding:24px 28px;">
+   545→              <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
+   546→                <tr>
+   547→                  <td>
+   548→                    <div style="font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#a7f3d0;">Garment Broker OS</div>
+   549→                    <div style="font-size:22px;font-weight:700;color:#ffffff;margin-top:4px;">Daily Digest</div>
+   550→                    <div style="font-size:13px;color:#d1fae5;margin-top:4px;">${escapeHtml(d.generatedAtDisplay)}</div>
+   551→                  </td>
+   552→                  <td align="right" valign="top" style="font-size:42px;line-height:1;">🧥</td>
+   553→                </tr>
+   554→              </table>
+   555→            </td>
+   556→          </tr>
+   557→
+   558→          <!-- KPI strip -->
+   559→          <tr>
+   560→            <td style="padding:18px 28px 4px 28px;">
+   561→              <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
+   562→                <tr>
+   563→                  <td width="25%" style="padding:6px;">
+   564→                    <div style="background:${subtle};border-radius:10px;padding:12px;text-align:center;">
+   565→                      <div style="font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${muted};">Pending</div>
+   566→                      <div style="font-size:22px;font-weight:700;color:${accent};margin-top:2px;">${d.summary.pendingActions}</div>
+   567→                      <div style="font-size:11px;color:${muted};">actions</div>
+   568→                    </div>
+   569→                  </td>
+   570→                  <td width="25%" style="padding:6px;">
+   571→                    <div style="background:${subtle};border-radius:10px;padding:12px;text-align:center;">
+   572→                      <div style="font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${muted};">Outstanding</div>
+   573→                      <div style="font-size:18px;font-weight:700;color:#b45309;margin-top:2px;">${escapeHtml(fmtINRCompact(d.summary.outstandingTotal))}</div>
+   574→                      <div style="font-size:11px;color:${muted};">receivable</div>
+   575→                    </div>
+   576→                  </td>
+   577→                  <td width="25%" style="padding:6px;">
+   578→                    <div style="background:${subtle};border-radius:10px;padding:12px;text-align:center;">
+   579→                      <div style="font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${muted};">Due 7d</div>
+   580→                      <div style="font-size:22px;font-weight:700;color:#b45309;margin-top:2px;">${d.summary.duePaymentsCount}</div>
+   581→                      <div style="font-size:11px;color:${muted};">payments</div>
+   582→                    </div>
+   583→                  </td>
+   584→                  <td width="25%" style="padding:6px;">
+   585→                    <div style="background:${subtle};border-radius:10px;padding:12px;text-align:center;">
+   586→                      <div style="font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${muted};">Open</div>
+   587→                      <div style="font-size:22px;font-weight:700;color:#b91c1c;margin-top:2px;">${d.summary.openDisputes}</div>
+   588→                      <div style="font-size:11px;color:${muted};">disputes</div>
+   589→                    </div>
+   590→                  </td>
+   591→                </tr>
+   592→              </table>
+   593→            </td>
+   594→          </tr>
+   595→
+   596→          <!-- Prioritised actions -->
+   597→          <tr>
+   598→            <td style="padding:18px 28px 6px 28px;">
+   599→              <div style="font-size:14px;font-weight:700;color:${text};border-left:3px solid ${accent};padding-left:10px;">Today's prioritised actions</div>
+   600→            </td>
+   601→          </tr>
+   602→          <tr>
+   603→            <td style="padding:6px 28px 18px 28px;">
+   604→              <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border:1px solid ${border};border-radius:10px;overflow:hidden;">
+   605→                <thead>
+   606→                  <tr style="background:${subtle};">
+   607→                    <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${muted};">#</th>
+   608→                    <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${muted};">Action</th>
+   609→                    <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${muted};">Priority</th>
+   610→                    <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${muted};">Due</th>
+   611→                  </tr>
+   612→                </thead>
+   613→                <tbody>${actionRows}</tbody>
+   614→              </table>
+   615→            </td>
+   616→          </tr>
+   617→
+   618→          <!-- Outstanding receivables + Overdue dispatches -->
+   619→          <tr>
+   620→            <td style="padding:6px 28px 18px 28px;">
+   621→              <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
+   622→                <tr>
+   623→                  <td width="50%" style="padding-right:8px;vertical-align:top;">
+   624→                    <div style="font-size:14px;font-weight:700;color:${text};border-left:3px solid #b45309;padding-left:10px;margin-bottom:8px;">Outstanding receivables</div>
+   625→                    <div style="background:${subtle};border-radius:10px;padding:12px;">
+   626→                      <div style="font-size:11px;color:${muted};">Total outstanding</div>
+   627→                      <div style="font-size:20px;font-weight:700;color:#b45309;margin-top:2px;">${escapeHtml(fmtINR(d.outstandingReceivable.total))}</div>
+   628→                    </div>
+   629→                    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin-top:8px;border:1px solid ${border};border-radius:10px;overflow:hidden;">
+   630→                      <thead>
+   631→                        <tr style="background:${subtle};">
+   632→                          <th style="padding:6px 12px;text-align:left;font-size:11px;font-weight:700;color:${muted};">Top clients</th>
+   633→                          <th style="padding:6px 12px;text-align:right;font-size:11px;font-weight:700;color:${muted};">Due</th>
+   634→                        </tr>
+   635→                      </thead>
+   636→                      <tbody>${clientRows}</tbody>
+   637→                    </table>
+   638→                  </td>
+   639→                  <td width="50%" style="padding-left:8px;vertical-align:top;">
+   640→                    <div style="font-size:14px;font-weight:700;color:${text};border-left:3px solid #b91c1c;padding-left:10px;margin-bottom:8px;">Overdue dispatches</div>
+   641→                    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border:1px solid ${border};border-radius:10px;overflow:hidden;">
+   642→                      <thead>
+   643→                        <tr style="background:${subtle};">
+   644→                          <th style="padding:6px 12px;text-align:left;font-size:11px;font-weight:700;color:${muted};">PO</th>
+   645→                          <th style="padding:6px 12px;text-align:left;font-size:11px;font-weight:700;color:${muted};">Supplier</th>
+   646→                          <th style="padding:6px 12px;text-align:left;font-size:11px;font-weight:700;color:${muted};">Due</th>
+   647→                          <th style="padding:6px 12px;text-align:left;font-size:11px;font-weight:700;color:${muted};">Late</th>
+   648→                        </tr>
+   649→                      </thead>
+   650→                      <tbody>${dispatchRows}</tbody>
+   651→                    </table>
+   652→                  </td>
+   653→                </tr>
+   654→              </table>
+   655→            </td>
+   656→          </tr>
+   657→
+   658→          <!-- Payments due + brokerage -->
+   659→          <tr>
+   660→            <td style="padding:6px 28px 18px 28px;">
+   661→              <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
+   662→                <tr>
+   663→                  <td width="50%" style="padding-right:8px;vertical-align:top;">
+   664→                    <div style="font-size:14px;font-weight:700;color:${text};border-left:3px solid #b45309;padding-left:10px;margin-bottom:8px;">Payments due (next 7 days)</div>
+   665→                    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border:1px solid ${border};border-radius:10px;overflow:hidden;">
+   666→                      <thead>
+   667→                        <tr style="background:${subtle};">
+   668→                          <th style="padding:6px 12px;text-align:left;font-size:11px;font-weight:700;color:${muted};">Bill</th>
+   669→                          <th style="padding:6px 12px;text-align:left;font-size:11px;font-weight:700;color:${muted};">Client</th>
+   670→                          <th style="padding:6px 12px;text-align:right;font-size:11px;font-weight:700;color:${muted};">Amount</th>
+   671→                          <th style="padding:6px 12px;text-align:left;font-size:11px;font-weight:700;color:${muted};">Due</th>
+   672→                        </tr>
+   673→                      </thead>
+   674→                      <tbody>${paymentRows}</tbody>
+   675→                    </table>
+   676→                  </td>
+   677→                  <td width="50%" style="padding-left:8px;vertical-align:top;">
+   678→                    <div style="font-size:14px;font-weight:700;color:${text};border-left:3px solid ${accent};padding-left:10px;margin-bottom:8px;">Brokerage pending payout</div>
+   679→                    <div style="background:${subtle};border-radius:10px;padding:14px;">
+   680→                      <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
+   681→                        <tr>
+   682→                          <td style="font-size:12px;color:${muted};padding-bottom:6px;">Accrued (eligible)</td>
+   683→                          <td style="font-size:13px;font-weight:600;color:${text};text-align:right;padding-bottom:6px;white-space:nowrap;">${escapeHtml(fmtINR(d.brokeragePendingPayout.accrued))}</td>
+   684→                        </tr>
+   685→                        <tr>
+   686→                          <td style="font-size:12px;color:${muted};padding-bottom:6px;">Scheduled (in batch)</td>
+   687→                          <td style="font-size:13px;font-weight:600;color:${text};text-align:right;padding-bottom:6px;white-space:nowrap;">${escapeHtml(fmtINR(d.brokeragePendingPayout.scheduled))}</td>
+   688→                        </tr>
+   689→                        <tr>
+   690→                          <td style="font-size:13px;font-weight:700;color:${text};border-top:1px solid ${border};padding-top:8px;">Total pending</td>
+   691→                          <td style="font-size:16px;font-weight:700;color:${accent};text-align:right;padding-top:8px;white-space:nowrap;">${escapeHtml(fmtINR(d.brokeragePendingPayout.total))}</td>
+   692→                        </tr>
+   693→                      </table>
+   694→                    </div>
+   695→                    <div style="margin-top:10px;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:10px 12px;">
+   696→                      <div style="font-size:12px;color:#b91c1c;font-weight:600;">⚠ ${d.openDisputesCount} open dispute${d.openDisputesCount === 1 ? "" : "s"} · ${d.pendingNotificationsCount} pending notification${d.pendingNotificationsCount === 1 ? "" : "s"}</div>
+   697→                    </div>
+   698→                  </td>
+   699→                </tr>
+   700→              </table>
+   701→            </td>
+   702→          </tr>
+   703→
+   704→          <!-- Footer -->
+   705→          <tr>
+   706→            <td style="padding:14px 28px;background:${subtle};border-top:1px solid ${border};">
+   707→              <div style="font-size:11px;color:${muted};text-align:center;">
+   708→                Generated by Garment Broker OS · Brokerage excl. GST, paid on full bill settlement
+   709→              </div>
+   710→            </td>
+   711→          </tr>
+   712→        </table>
+   713→      </td>
+   714→    </tr>
+   715→  </table>
+   716→</body>
+   717→</html>`;
+   718→}
+   719→
+   720→// ─────────────────────────────────────────────────────────────────────────────
+   721→// AI brief via z-ai-web-dev-sdk
+   722→// Builds a concise data summary → LLM → returns { subject, body }.
+   723→// Falls back to a templated brief if the LLM call fails (so the UI always
+   724→// gets a usable response).
+   725→// ─────────────────────────────────────────────────────────────────────────────
+   726→async function buildEmailBrief(d: DigestData): Promise<{ subject: string; body: string; aiGenerated: boolean }> {
+   727→  const subject = `Broker OS Daily Digest — ${d.dateLabel}`;
+   728→
+   729→  // Build a compact data summary for the LLM to write from.
+   730→  const dataSummary = {
+   731→    date: d.dateLabel,
+   732→    generatedAt: d.generatedAtDisplay,
+   733→    pendingActions: d.summary.pendingActions,
+   734→    outstandingReceivableINR: fmtINR(d.outstandingReceivable.total),
+   735→    paymentsDueNext7Days: d.summary.duePaymentsCount,
+   736→    openDisputes: d.summary.openDisputes,
+   737→    pendingNotifications: d.pendingNotificationsCount,
+   738→    topActions: d.actionItems.slice(0, 6).map((a) => ({
+   739→      priority: a.priority,
+   740→      title: a.title,
+   741→      description: a.description,
+   742→    })),
+   743→    topClientsWithDue: d.outstandingReceivable.topClients.map((c) => ({
+   744→      name: c.name,
+   745→      dueINR: fmtINR(c.due),
+   746→    })),
+   747→    overdueDispatches: d.overdueDispatches.slice(0, 4).map((x) => ({
+   748→      poNumber: x.poNumber,
+   749→      supplier: x.supplierName,
+   750→      daysOverdue: x.daysOverdue,
+   751→    })),
+   752→    paymentsDue: d.paymentsDueNext7Days.slice(0, 4).map((p) => ({
+   753→      billNumber: p.billNumber,
+   754→      client: p.clientName,
+   755→      amountINR: fmtINR(p.amount),
+   756→      dueDate: fmtDate(p.dueDate),
+   757→    })),
+   758→    brokeragePendingPayoutINR: fmtINR(d.brokeragePendingPayout.total),
+   759→    brokerageAccruedINR: fmtINR(d.brokeragePendingPayout.accrued),
+   760→    brokerageScheduledINR: fmtINR(d.brokeragePendingPayout.scheduled),
+   761→  };
+   762→
+   763→  const systemPrompt =
+   764→    "You are a concise, professional assistant briefing a garment broker on their day. " +
+   765→    "Summarize the key actions needed today based on the data. Be specific with names and amounts. " +
+   766→    "Keep it under 200 words. Use Indian Rupee formatting (e.g. ₹1,25,000). " +
+   767→    "Write 3-4 short paragraphs in a friendly but professional tone, as if briefing the broker over morning coffee. " +
+   768→    "Do not use markdown headings or bullet points — just plain paragraphs. " +
+   769→    "Start with a one-line greeting that includes the date.";
+   770→
+   771→  const userPrompt =
+   772→    "Here is today's broker digest data (JSON):\n\n" +
+   773→    JSON.stringify(dataSummary, null, 2) +
+   774→    "\n\nWrite the morning brief now.";
+   775→
+   776→  try {
+   777→    const zai = await ZAI.create();
+   778→    const completion = await zai.chat.completions.create({
+   779→      messages: [
+   780→        { role: "assistant", content: systemPrompt },
+   781→        { role: "user", content: userPrompt },
+   782→      ],
+   783→      thinking: { type: "disabled" },
+   784→    });
+   785→    const body =
+   786→      completion?.choices?.[0]?.message?.content?.trim() ||
+   787→      buildFallbackBrief(d);
+   788→    return { subject, body, aiGenerated: !!completion?.choices?.[0]?.message?.content };
+   789→  } catch {
+   790→    return { subject, body: buildFallbackBrief(d), aiGenerated: false };
+   791→  }
+   792→}
+   793→
+   794→// Templated fallback brief — used if the LLM is unavailable or returns empty.
+   795→function buildFallbackBrief(d: DigestData): string {
+   796→  const parts: string[] = [];
+   797→  parts.push(
+   798→    `Good morning. Here's your broker brief for ${d.dateLabel}. ` +
+   799→      `You have ${d.summary.pendingActions} pending action${d.summary.pendingActions === 1 ? "" : "s"} to address today, ` +
+   800→      `with ${d.summary.outstandingTotal > 0 ? fmtINR(d.summary.outstandingTotal) + " outstanding across receivables" : "no outstanding receivables"}.`,
+   801→  );
+   802→  if (d.outstandingReceivable.topClients.length > 0) {
+   803→    const top = d.outstandingReceivable.topClients[0];
+   804→    parts.push(
+   805→      `Your top due is from ${top.name} at ${fmtINR(top.due)}. ` +
+   806→        `${d.summary.duePaymentsCount} payment${d.summary.duePaymentsCount === 1 ? "" : "s"} fall due in the next 7 days — follow up promptly to keep cashflow healthy.`,
+   807→    );
+   808→  }
+   809→  if (d.overdueDispatches.length > 0) {
+   810→    const first = d.overdueDispatches[0];
+   811→    parts.push(
+   812→      `${d.overdueDispatches.length} dispatch${d.overdueDispatches.length === 1 ? "" : "es"} ${d.overdueDispatches.length === 1 ? "is" : "are"} overdue, the most overdue being ${first.poNumber} from ${first.supplierName} (${pluralDays(first.daysOverdue)} late). Chase the supplier and record the dispatch as soon as it ships.`,
+   813→    );
+   814→  }
+   815→  parts.push(
+   816→    `${fmtINR(d.brokeragePendingPayout.total)} in brokerage is awaiting payout ` +
+   817→      `(${fmtINR(d.brokeragePendingPayout.accrued)} accrued + ${fmtINR(d.brokeragePendingPayout.scheduled)} scheduled). ` +
+   818→      `${d.openDisputesCount} open dispute${d.openDisputesCount === 1 ? "" : "s"} ${d.openDisputesCount === 1 ? "needs" : "need"} resolution. ` +
+   819→      `Have a productive day.`,
+   820→  );
+   821→  return parts.join("\n\n");
+   822→}
+   823→
+   824→// ─────────────────────────────────────────────────────────────────────────────
+   825→// Route handler
+   826→// ─────────────────────────────────────────────────────────────────────────────
+   827→export async function GET(req: NextRequest) {
+   828→  const broker = await getCurrentBroker();
+   829→  if (!broker) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+   830→
+   831→  const url = new URL(req.url);
+   832→  const format = (url.searchParams.get("format") ?? "text").toLowerCase();
+   833→  const validFormats = ["text", "html", "email"];
+   834→  if (!validFormats.includes(format)) {
+   835→    return NextResponse.json(
+   836→      { error: `Invalid format. Use one of: ${validFormats.join(", ")}.` },
+   837→      { status: 400 },
+   838→    );
+   839→  }
+   840→
+   841→  const data = await gatherDigestData(broker.id);
+   842→
+   843→  const noStore = { "Cache-Control": "no-store, no-cache, must-revalidate" };
+   844→
+   845→  if (format === "text") {
+   846→    return NextResponse.json(
+   847→      { format: "text", text: buildTextDigest(data), stats: data.summary, generatedAt: data.generatedAt },
+   848→      { headers: noStore },
+   849→    );
+   850→  }
+   851→
+   852→  if (format === "html") {
+   853→    return NextResponse.json(
+   854→      { format: "html", html: buildHtmlDigest(data), stats: data.summary, generatedAt: data.generatedAt },
+   855→      { headers: noStore },
+   856→    );
+   857→  }
+   858→
+   859→  // format === "email" — AI brief via LLM
+   860→  const brief = await buildEmailBrief(data);
+   861→  return NextResponse.json(
+   862→    {
+   863→      format: "email",
+   864→      subject: brief.subject,
+   865→      body: brief.body,
+   866→      aiGenerated: brief.aiGenerated,
+   867→      stats: data.summary,
+   868→      generatedAt: data.generatedAt,
+   869→    },
+   870→    { headers: noStore },
+   871→  );
+   872→}
+   873→

@@ -1,0 +1,1007 @@
+     1→"use client";
+     2→
+     3→import * as React from "react";
+     4→import {
+     5→  LayoutTemplate, Plus, Trash2, Eye, Download, Save, Loader2, FileText,
+     6→  ChevronUp, ChevronDown, X, Database, Receipt, Wallet, BadgePercent,
+     7→  Truck, AlertTriangle, Users, Factory, Filter, BarChart3,
+     8→} from "lucide-react";
+     9→import { GlassCard, SectionHeader, EmptyState } from "@/components/shared";
+    10→import { Button } from "@/components/ui/button";
+    11→import { Input } from "@/components/ui/input";
+    12→import { Textarea } from "@/components/ui/textarea";
+    13→import { Label } from "@/components/ui/label";
+    14→import { Switch } from "@/components/ui/switch";
+    15→import { Checkbox } from "@/components/ui/checkbox";
+    16→import { Badge } from "@/components/ui/badge";
+    17→import { Skeleton } from "@/components/ui/skeleton";
+    18→import {
+    19→  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+    20→} from "@/components/ui/select";
+    21→import {
+    22→  Dialog, DialogContent, DialogTitle, DialogDescription, DialogHeader,
+    23→} from "@/components/ui/dialog";
+    24→import {
+    25→  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+    26→  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+    27→} from "@/components/ui/alert-dialog";
+    28→import { useApi, api } from "@/lib/api";
+    29→import { toast } from "sonner";
+    30→import { cn } from "@/lib/utils";
+    31→import {
+    32→  REPORT_COLUMNS, ENTITY_TYPES, ENTITY_LABELS, GROUP_BY_OPTIONS,
+    33→  STATUS_FILTER_OPTIONS, DATE_RANGE_OPTIONS, TEMPLATE_TYPES, parseConfig,
+    34→  type EntityType, type ReportColumn, type ReportTemplateDTO,
+    35→  type ReportTemplateConfig, type TemplateType,
+    36→} from "@/lib/report-columns";
+    37→
+    38→// ── Tag row (lightweight shape, only id + name + color needed for the
+    39→//    tag-filter dropdown). ────────────────────────────────────────────────────
+    40→type TagRow = { id: string; name: string; color: string };
+    41→
+    42→// ── Editor state — wraps the user-facing metadata (name/description/type)
+    43→//    plus the structured config that gets JSON-stringified into `configJson`.
+    44→type EditorState = {
+    45→  name: string;
+    46→  description: string;
+    47→  type: TemplateType;
+    48→  config: ReportTemplateConfig;
+    49→};
+    50→
+    51→function defaultConfig(): ReportTemplateConfig {
+    52→  return {
+    53→    entityType: "client",
+    54→    columns: ["name", "totalBusiness", "outstanding", "brokerageEarned"],
+    55→    filters: { dateRange: "all" },
+    56→    groupBy: null,
+    57→    sortBy: { field: "totalBusiness", direction: "desc" },
+    58→    title: "Custom Report",
+    59→    includeCharts: false,
+    60→    includeSummary: true,
+    61→  };
+    62→}
+    63→
+    64→function emptyEditor(): EditorState {
+    65→  return {
+    66→    name: "",
+    67→    description: "",
+    68→    type: "custom",
+    69→    config: defaultConfig(),
+    70→  };
+    71→}
+    72→
+    73→// Load a saved template DTO into the editor state. The configJson is parsed
+    74→// via `parseConfig` (defensive — older templates may have missing fields).
+    75→function editorFromTemplate(t: ReportTemplateDTO): EditorState {
+    76→  const cfg = parseConfig(t.configJson);
+    77→  return {
+    78→    name: t.name,
+    79→    description: t.description ?? "",
+    80→    type: (["summary", "comparison", "ledger", "custom"] as const).includes(t.type as TemplateType)
+    81→      ? (t.type as TemplateType)
+    82→      : "custom",
+    83→    config: cfg,
+    84→  };
+    85→}
+    86→
+    87→// Entity-type → icon (used in the template list cards).
+    88→const ENTITY_ICON: Record<EntityType, React.ComponentType<{ className?: string }>> = {
+    89→  client: Users,
+    90→  supplier: Factory,
+    91→  bill: Receipt,
+    92→  payment: Wallet,
+    93→  brokerage: BadgePercent,
+    94→  dispatch: Truck,
+    95→  dispute: AlertTriangle,
+    96→};
+    97→
+    98→// ── Component ──────────────────────────────────────────────────────────────────
+    99→
+   100→export function ReportBuilderView() {
+   101→  const { data, loading, refresh } = useApi<{ templates: ReportTemplateDTO[] }>(
+   102→    "/api/report-templates",
+   103→  );
+   104→  const { data: tagsData } = useApi<{ tags: TagRow[] }>("/api/tags");
+   105→
+   106→  const [editor, setEditor] = React.useState<EditorState>(emptyEditor);
+   107→  const [editingId, setEditingId] = React.useState<string | null>(null);
+   108→  const [saving, setSaving] = React.useState(false);
+   109→  const [previewOpen, setPreviewOpen] = React.useState(false);
+   110→  const [previewUrl, setPreviewUrl] = React.useState<string>("");
+   111→  const [deleteTarget, setDeleteTarget] = React.useState<ReportTemplateDTO | null>(null);
+   112→
+   113→  const templates = data?.templates ?? [];
+   114→  const tags = tagsData?.tags ?? [];
+   115→
+   116→  // ── Dirty-state tracking: compare current editor against the loaded
+   117→  //    template (or empty). Used to show the "unsaved changes" indicator
+   118→  //    and to disable Save when nothing has changed.
+   119→  const isDirty = React.useMemo(() => {
+   120→    if (!editingId) {
+   121→      return editor.name.trim() !== "" || JSON.stringify(editor.config) !== JSON.stringify(defaultConfig());
+   122→    }
+   123→    const original = templates.find((t) => t.id === editingId);
+   124→    if (!original) return false;
+   125→    const origEditor = editorFromTemplate(original);
+   126→    return (
+   127→      origEditor.name !== editor.name ||
+   128→      origEditor.description !== editor.description ||
+   129→      origEditor.type !== editor.type ||
+   130→      JSON.stringify(origEditor.config) !== JSON.stringify(editor.config)
+   131→    );
+   132→  }, [editor, editingId, templates]);
+   133→
+   134→  // ── Handlers ──────────────────────────────────────────────────────────────
+   135→  const handleNew = () => {
+   136→    setEditor(emptyEditor());
+   137→    setEditingId(null);
+   138→  };
+   139→
+   140→  const handleLoad = (t: ReportTemplateDTO) => {
+   141→    setEditor(editorFromTemplate(t));
+   142→    setEditingId(t.id);
+   143→  };
+   144→
+   145→  // Persist the current editor state. If editingId is set → PATCH, else POST.
+   146→  // On success: refresh the list + keep the editor pointed at the saved id.
+   147→  const handleSave = async (opts?: { silent?: boolean }): Promise<string | null> => {
+   148→    const name = editor.name.trim();
+   149→    if (!name) {
+   150→      toast.error("Report name is required");
+   151→      return null;
+   152→    }
+   153→    if (editor.config.columns.length === 0) {
+   154→      toast.error("Pick at least one column");
+   155→      return null;
+   156→    }
+   157→    setSaving(true);
+   158→    try {
+   159→      const configJson = JSON.stringify(editor.config);
+   160→      if (editingId) {
+   161→        const data = await api<{ template: ReportTemplateDTO }>(
+   162→          `/api/report-templates/${editingId}`,
+   163→          {
+   164→            method: "PATCH",
+   165→            body: JSON.stringify({
+   166→              name,
+   167→              description: editor.description.trim() || undefined,
+   168→              type: editor.type,
+   169→              configJson,
+   170→            }),
+   171→          },
+   172→        );
+   173→        if (!opts?.silent) toast.success(`Saved "${data.template.name}"`);
+   174→        await refresh();
+   175→        return data.template.id;
+   176→      } else {
+   177→        const data = await api<{ template: ReportTemplateDTO }>(
+   178→          "/api/report-templates",
+   179→          {
+   180→            method: "POST",
+   181→            body: JSON.stringify({
+   182→              name,
+   183→              description: editor.description.trim() || undefined,
+   184→              type: editor.type,
+   185→              configJson,
+   186→            }),
+   187→          },
+   188→        );
+   189→        if (!opts?.silent) toast.success(`Created "${data.template.name}"`);
+   190→        setEditingId(data.template.id);
+   191→        await refresh();
+   192→        return data.template.id;
+   193→      }
+   194→    } catch (e) {
+   195→      toast.error(e instanceof Error ? e.message : "Failed to save template");
+   196→      return null;
+   197→    } finally {
+   198→      setSaving(false);
+   199→    }
+   200→  };
+   201→
+   202→  // Preview: save first (so the URL is valid), then open the inline iframe.
+   203→  const handlePreview = async () => {
+   204→    const id = await handleSave({ silent: true });
+   205→    if (!id) return;
+   206→    setPreviewUrl(`/api/reports/custom?templateId=${id}`);
+   207→    setPreviewOpen(true);
+   208→  };
+   209→
+   210→  // Generate PDF: save first (so the URL is valid), then open in a new tab.
+   211→  // The report's auto-print script triggers the browser's print dialog where
+   212→  // the user picks "Save as PDF".
+   213→  const handleGeneratePdf = async () => {
+   214→    const id = await handleSave({ silent: true });
+   215→    if (!id) return;
+   216→    window.open(`/api/reports/custom?templateId=${id}`, "_blank");
+   217→    toast.success("Opening print-ready report…");
+   218→  };
+   219→
+   220→  const handleDelete = async () => {
+   221→    if (!deleteTarget) return;
+   222→    const target = deleteTarget;
+   223→    setDeleteTarget(null);
+   224→    try {
+   225→      await api(`/api/report-templates/${target.id}`, { method: "DELETE" });
+   226→      toast.success(`Deleted "${target.name}"`);
+   227→      if (editingId === target.id) {
+   228→        setEditor(emptyEditor());
+   229→        setEditingId(null);
+   230→      }
+   231→      refresh();
+   232→    } catch (e) {
+   233→      toast.error(e instanceof Error ? e.message : "Failed to delete");
+   234→    }
+   235→  };
+   236→
+   237→  // ── Editor sub-state setters (memoized to keep render identity stable) ───
+   238→  const updateConfig = React.useCallback(
+   239→    (patch: Partial<ReportTemplateConfig>) => {
+   240→      setEditor((prev) => ({ ...prev, config: { ...prev.config, ...patch } }));
+   241→    },
+   242→    [],
+   243→  );
+   244→
+   245→  // When the entity type changes, the selected columns / groupBy / sortBy
+   246→  // may no longer be valid — reset them to safe defaults for the new type.
+   247→  const handleEntityTypeChange = (next: EntityType) => {
+   248→    const cols = REPORT_COLUMNS[next];
+   249→    const defaultCols = cols.slice(0, 4).map((c) => c.key);
+   250→    const firstSortable = cols.find((c) => c.sortable);
+   251→    setEditor((prev) => ({
+   252→      ...prev,
+   253→      config: {
+   254→        ...prev.config,
+   255→        entityType: next,
+   256→        columns: defaultCols,
+   257→        groupBy: null,
+   258→        sortBy: firstSortable
+   259→          ? { field: firstSortable.key, direction: "desc" }
+   260→          : undefined,
+   261→        filters: { ...prev.config.filters, status: undefined },
+   262→      },
+   263→    }));
+   264→  };
+   265→
+   266→  const toggleColumn = (key: string) => {
+   267→    setEditor((prev) => {
+   268→      const cols = prev.config.columns;
+   269→      const idx = cols.indexOf(key);
+   270→      const next = idx === -1 ? [...cols, key] : cols.filter((c) => c !== key);
+   271→      return { ...prev, config: { ...prev.config, columns: next } };
+   272→    });
+   273→  };
+   274→
+   275→  const moveColumn = (key: string, dir: -1 | 1) => {
+   276→    setEditor((prev) => {
+   277→      const cols = [...prev.config.columns];
+   278→      const idx = cols.indexOf(key);
+   279→      if (idx === -1) return prev;
+   280→      const target = idx + dir;
+   281→      if (target < 0 || target >= cols.length) return prev;
+   282→      [cols[idx], cols[target]] = [cols[target], cols[idx]];
+   283→      return { ...prev, config: { ...prev.config, columns: cols } };
+   284→    });
+   285→  };
+   286→
+   287→  return (
+   288→    <div className="space-y-5">
+   289→      <SectionHeader
+   290→        title="Report Builder"
+   291→        description="Design custom reports — pick columns, filters, grouping & generate print-ready PDFs"
+   292→        action={
+   293→          <div className="flex items-center gap-2">
+   294→            <Badge
+   295→              variant="outline"
+   296→              className="border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+   297→            >
+   298→              <LayoutTemplate className="mr-1 size-3" />
+   299→              {templates.length} template{templates.length === 1 ? "" : "s"}
+   300→            </Badge>
+   301→            <Button
+   302→              size="sm"
+   303→              variant="outline"
+   304→              onClick={handleNew}
+   305→              className="h-8 gap-1.5"
+   306→            >
+   307→              <Plus className="size-3.5" />
+   308→              New
+   309→            </Button>
+   310→          </div>
+   311→        }
+   312→      />
+   313→
+   314→      <div className="grid gap-5 lg:grid-cols-[280px_1fr]">
+   315→        {/* ── Left: saved templates list ─────────────────────────────────────── */}
+   316→        <GlassCard className="flex max-h-[calc(100vh-12rem)] flex-col p-3">
+   317→          <div className="mb-2 flex items-center justify-between px-1">
+   318→            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+   319→              Saved templates
+   320→            </p>
+   321→            <span className="text-[10px] text-muted-foreground">
+   322→              {templates.length} saved
+   323→            </span>
+   324→          </div>
+   325→          {loading ? (
+   326→            <div className="space-y-2">
+   327→              {Array.from({ length: 4 }).map((_, i) => (
+   328→                <Skeleton key={i} className="h-16 rounded-xl" />
+   329→              ))}
+   330→            </div>
+   331→          ) : templates.length === 0 ? (
+   332→            <div className="px-2 py-6">
+   333→              <EmptyState
+   334→                title="No saved templates"
+   335→                hint="Click “New” to design your first custom report — or use one of the 3 default templates seeded into the system."
+   336→                icon={<LayoutTemplate className="size-4" />}
+   337→              />
+   338→            </div>
+   339→          ) : (
+   340→            <div className="flex-1 space-y-1.5 overflow-y-auto pr-1">
+   341→              {templates.map((t) => {
+   342→                const cfg = parseConfig(t.configJson);
+   343→                const Icon = ENTITY_ICON[cfg.entityType] ?? FileText;
+   344→                const active = editingId === t.id;
+   345→                return (
+   346→                  <button
+   347→                    key={t.id}
+   348→                    type="button"
+   349→                    onClick={() => handleLoad(t)}
+   350→                    className={cn(
+   351→                      "group flex w-full items-start gap-2.5 rounded-xl border p-2.5 text-left transition-all",
+   352→                      active
+   353→                        ? "border-emerald-500/40 bg-emerald-500/10 ring-1 ring-emerald-500/20"
+   354→                        : "border-border/50 bg-card/30 hover:border-emerald-500/30 hover:bg-emerald-500/5",
+   355→                    )}
+   356→                  >
+   357→                    <div
+   358→                      className={cn(
+   359→                        "grid size-8 shrink-0 place-items-center rounded-lg",
+   360→                        active
+   361→                          ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300"
+   362→                          : "bg-muted text-muted-foreground group-hover:bg-emerald-500/10 group-hover:text-emerald-600 dark:group-hover:text-emerald-400",
+   363→                      )}
+   364→                    >
+   365→                      <Icon className="size-4" />
+   366→                    </div>
+   367→                    <div className="min-w-0 flex-1">
+   368→                      <p className="truncate text-sm font-medium text-foreground">{t.name}</p>
+   369→                      <p className="mt-0.5 truncate text-[10px] uppercase tracking-wider text-muted-foreground">
+   370→                        {ENTITY_LABELS[cfg.entityType]} · {t.type}
+   371→                      </p>
+   372→                      {t.description ? (
+   373→                        <p className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">
+   374→                          {t.description}
+   375→                        </p>
+   376→                      ) : null}
+   377→                    </div>
+   378→                  </button>
+   379→                );
+   380→              })}
+   381→            </div>
+   382→          )}
+   383→        </GlassCard>
+   384→
+   385→        {/* ── Right: editor ─────────────────────────────────────────────────── */}
+   386→        <GlassCard className="space-y-5 p-5">
+   387→          {/* Action bar */}
+   388→          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-3">
+   389→            <div className="flex items-center gap-2">
+   390→              <h3 className="text-sm font-semibold text-foreground">
+   391→                {editingId ? "Edit template" : "New template"}
+   392→              </h3>
+   393→              {isDirty ? (
+   394→                <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
+   395→                  <span className="size-1.5 rounded-full bg-amber-500" />
+   396→                  Unsaved
+   397→                </span>
+   398→              ) : null}
+   399→            </div>
+   400→            <div className="flex flex-wrap items-center gap-2">
+   401→              <Button
+   402→                size="sm"
+   403→                variant="outline"
+   404→                onClick={handlePreview}
+   405→                disabled={saving || !editor.name.trim()}
+   406→                className="h-8 gap-1.5"
+   407→              >
+   408→                {saving ? <Loader2 className="size-3.5 animate-spin" /> : <Eye className="size-3.5" />}
+   409→                Preview
+   410→              </Button>
+   411→              <Button
+   412→                size="sm"
+   413→                variant="outline"
+   414→                onClick={handleGeneratePdf}
+   415→                disabled={saving || !editor.name.trim()}
+   416→                className="h-8 gap-1.5"
+   417→              >
+   418→                <Download className="size-3.5" />
+   419→                Generate PDF
+   420→              </Button>
+   421→              <Button
+   422→                size="sm"
+   423→                onClick={() => void handleSave()}
+   424→                disabled={saving || !isDirty || !editor.name.trim()}
+   425→                className="h-8 gap-1.5 bg-emerald-600 text-white hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+   426→              >
+   427→                {saving ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}
+   428→                {editingId ? "Save" : "Create"}
+   429→              </Button>
+   430→              {editingId ? (
+   431→                <Button
+   432→                  size="sm"
+   433→                  variant="ghost"
+   434→                  onClick={() => setDeleteTarget(templates.find((t) => t.id === editingId) ?? null)}
+   435→                  className="h-8 gap-1.5 text-muted-foreground hover:bg-rose-500/15 hover:text-rose-600 dark:hover:text-rose-400"
+   436→                  aria-label="Delete template"
+   437→                >
+   438→                  <Trash2 className="size-3.5" />
+   439→                </Button>
+   440→              ) : null}
+   441→            </div>
+   442→          </div>
+   443→
+   444→          {/* Basics section */}
+   445→          <Section title="Basics" icon={<FileText className="size-3.5" />}>
+   446→            <div className="grid gap-3 sm:grid-cols-2">
+   447→              <div className="space-y-1.5">
+   448→                <Label htmlFor="rb-name" className="text-xs text-muted-foreground">
+   449→                  Report name
+   450→                </Label>
+   451→                <Input
+   452→                  id="rb-name"
+   453→                  value={editor.name}
+   454→                  onChange={(e) => setEditor((p) => ({ ...p, name: e.target.value }))}
+   455→                  placeholder="e.g. Weekly Client Performance"
+   456→                  className="h-9"
+   457→                />
+   458→              </div>
+   459→              <div className="space-y-1.5">
+   460→                <Label htmlFor="rb-type" className="text-xs text-muted-foreground">
+   461→                  Report type
+   462→                </Label>
+   463→                <Select
+   464→                  value={editor.type}
+   465→                  onValueChange={(v) => setEditor((p) => ({ ...p, type: v as TemplateType }))}
+   466→                >
+   467→                  <SelectTrigger id="rb-type" className="h-9 w-full">
+   468→                    <SelectValue placeholder="Pick a type" />
+   469→                  </SelectTrigger>
+   470→                  <SelectContent>
+   471→                    {TEMPLATE_TYPES.map((t) => (
+   472→                      <SelectItem key={t.key} value={t.key}>
+   473→                        {t.label}
+   474→                      </SelectItem>
+   475→                    ))}
+   476→                  </SelectContent>
+   477→                </Select>
+   478→              </div>
+   479→              <div className="space-y-1.5 sm:col-span-2">
+   480→                <Label htmlFor="rb-desc" className="text-xs text-muted-foreground">
+   481→                  Description (optional)
+   482→                </Label>
+   483→                <Textarea
+   484→                  id="rb-desc"
+   485→                  value={editor.description}
+   486→                  onChange={(e) => setEditor((p) => ({ ...p, description: e.target.value }))}
+   487→                  placeholder="What this report shows, who it's for, when to use it…"
+   488→                  className="min-h-12 text-sm"
+   489→                />
+   490→              </div>
+   491→            </div>
+   492→          </Section>
+   493→
+   494→          {/* Data source section */}
+   495→          <Section title="Data source" icon={<Database className="size-3.5" />}>
+   496→            <div className="grid gap-3 sm:grid-cols-2">
+   497→              <div className="space-y-1.5">
+   498→                <Label className="text-xs text-muted-foreground">Entity type</Label>
+   499→                <Select
+   500→                  value={editor.config.entityType}
+   501→                  onValueChange={(v) => handleEntityTypeChange(v as EntityType)}
+   502→                >
+   503→                  <SelectTrigger className="h-9 w-full">
+   504→                    <SelectValue />
+   505→                  </SelectTrigger>
+   506→                  <SelectContent>
+   507→                    {ENTITY_TYPES.map((e) => {
+   508→                      const Icon = ENTITY_ICON[e];
+   509→                      return (
+   510→                        <SelectItem key={e} value={e}>
+   511→                          <span className="inline-flex items-center gap-2">
+   512→                            <Icon className="size-3.5" />
+   513→                            {ENTITY_LABELS[e]}
+   514→                          </span>
+   515→                        </SelectItem>
+   516→                      );
+   517→                    })}
+   518→                  </SelectContent>
+   519→                </Select>
+   520→              </div>
+   521→              <div className="space-y-1.5">
+   522→                <Label className="text-xs text-muted-foreground">Report title (printed)</Label>
+   523→                <Input
+   524→                  value={editor.config.title}
+   525→                  onChange={(e) => updateConfig({ title: e.target.value })}
+   526→                  placeholder="Heading shown on the PDF"
+   527→                  className="h-9"
+   528→                />
+   529→              </div>
+   530→            </div>
+   531→          </Section>
+   532→
+   533→          {/* Columns section */}
+   534→          <Section
+   535→            title="Columns"
+   536→            icon={<BarChart3 className="size-3.5" />}
+   537→            subtitle={`${editor.config.columns.length} of ${REPORT_COLUMNS[editor.config.entityType].length} selected`}
+   538→          >
+   539→            <ColumnsEditor
+   540→              entityType={editor.config.entityType}
+   541→              selected={editor.config.columns}
+   542→              onToggle={toggleColumn}
+   543→              onMove={moveColumn}
+   544→            />
+   545→          </Section>
+   546→
+   547→          {/* Filters section */}
+   548→          <Section title="Filters" icon={<Filter className="size-3.5" />}>
+   549→            <FiltersEditor
+   550→              config={editor.config}
+   551→              tags={tags}
+   552→              onUpdate={(patch) => updateConfig({ filters: { ...editor.config.filters, ...patch } })}
+   553→            />
+   554→          </Section>
+   555→
+   556→          {/* Grouping + Sorting */}
+   557→          <div className="grid gap-5 md:grid-cols-2">
+   558→            <Section title="Grouping" icon={<LayoutTemplate className="size-3.5" />}>
+   559→              <div className="space-y-1.5">
+   560→                <Label className="text-xs text-muted-foreground">Group by</Label>
+   561→                <Select
+   562→                  value={editor.config.groupBy ?? "none"}
+   563→                  onValueChange={(v) => updateConfig({ groupBy: v === "none" ? null : v })}
+   564→                >
+   565→                  <SelectTrigger className="h-9 w-full">
+   566→                    <SelectValue />
+   567→                  </SelectTrigger>
+   568→                  <SelectContent>
+   569→                    {GROUP_BY_OPTIONS[editor.config.entityType].map((g) => (
+   570→                      <SelectItem key={g.key} value={g.key}>
+   571→                        {g.label}
+   572→                      </SelectItem>
+   573→                    ))}
+   574→                  </SelectContent>
+   575→                </Select>
+   576→                <p className="text-[10px] text-muted-foreground">
+   577→                  Groups rows under a header + shows a sub-total row per group.
+   578→                </p>
+   579→              </div>
+   580→            </Section>
+   581→
+   582→            <Section title="Sorting" icon={<BarChart3 className="size-3.5" />}>
+   583→              <div className="grid grid-cols-[1fr_auto] gap-2">
+   584→                <div className="space-y-1.5">
+   585→                  <Label className="text-xs text-muted-foreground">Sort by</Label>
+   586→                  <Select
+   587→                    value={editor.config.sortBy?.field ?? ""}
+   588→                    onValueChange={(v) =>
+   589→                      updateConfig({
+   590→                        sortBy: { field: v, direction: editor.config.sortBy?.direction ?? "desc" },
+   591→                      })
+   592→                    }
+   593→                  >
+   594→                    <SelectTrigger className="h-9 w-full">
+   595→                      <SelectValue placeholder="Pick a column" />
+   596→                    </SelectTrigger>
+   597→                    <SelectContent>
+   598→                      {REPORT_COLUMNS[editor.config.entityType]
+   599→                        .filter((c) => c.sortable)
+   600→                        .map((c) => (
+   601→                          <SelectItem key={c.key} value={c.key}>
+   602→                            {c.label}
+   603→                          </SelectItem>
+   604→                        ))}
+   605→                    </SelectContent>
+   606→                  </Select>
+   607→                </div>
+   608→                <div className="space-y-1.5">
+   609→                  <Label className="text-xs text-muted-foreground">Dir.</Label>
+   610→                  <Button
+   611→                    type="button"
+   612→                    variant="outline"
+   613→                    size="sm"
+   614→                    onClick={() =>
+   615→                      updateConfig({
+   616→                        sortBy: {
+   617→                          field: editor.config.sortBy?.field ?? "name",
+   618→                          direction: editor.config.sortBy?.direction === "asc" ? "desc" : "asc",
+   619→                        },
+   620→                      })
+   621→                    }
+   622→                    className="h-9 w-16 gap-1"
+   623→                  >
+   624→                    {editor.config.sortBy?.direction === "asc" ? (
+   625→                      <>
+   626→                        <ChevronUp className="size-3.5" /> Asc
+   627→                      </>
+   628→                    ) : (
+   629→                      <>
+   630→                        <ChevronDown className="size-3.5" /> Desc
+   631→                      </>
+   632→                    )}
+   633→                  </Button>
+   634→                </div>
+   635→              </div>
+   636→            </Section>
+   637→          </div>
+   638→
+   639→          {/* Options section */}
+   640→          <Section title="Options" icon={<Eye className="size-3.5" />}>
+   641→            <div className="grid gap-3 sm:grid-cols-2">
+   642→              <div className="flex items-center justify-between rounded-lg border border-border/50 bg-card/30 p-3">
+   643→                <div className="pr-3">
+   644→                  <p className="text-sm font-medium text-foreground">Include charts</p>
+   645→                  <p className="mt-0.5 text-[10px] text-muted-foreground">
+   646→                    Embed an inline SVG bar chart at the top of the PDF.
+   647→                  </p>
+   648→                </div>
+   649→                <Switch
+   650→                  checked={editor.config.includeCharts}
+   651→                  onCheckedChange={(v) => updateConfig({ includeCharts: v })}
+   652→                  aria-label="Toggle chart inclusion"
+   653→                />
+   654→              </div>
+   655→              <div className="flex items-center justify-between rounded-lg border border-border/50 bg-card/30 p-3">
+   656→                <div className="pr-3">
+   657→                  <p className="text-sm font-medium text-foreground">Include summary</p>
+   658→                  <p className="mt-0.5 text-[10px] text-muted-foreground">
+   659→                    Show a KPI summary header (record count + totals).
+   660→                  </p>
+   661→                </div>
+   662→                <Switch
+   663→                  checked={editor.config.includeSummary ?? true}
+   664→                  onCheckedChange={(v) => updateConfig({ includeSummary: v })}
+   665→                  aria-label="Toggle summary inclusion"
+   666→                />
+   667→              </div>
+   668→            </div>
+   669→          </Section>
+   670→        </GlassCard>
+   671→      </div>
+   672→
+   673→      {/* ── Inline preview dialog (iframe to the print-optimized HTML) ──────── */}
+   674→      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+   675→        <DialogContent className="glass-strong h-[90vh] max-w-6xl gap-0 overflow-hidden p-0">
+   676→          <DialogHeader className="flex flex-row items-center justify-between border-b border-border/60 px-4 py-3">
+   677→            <div>
+   678→              <DialogTitle className="text-sm">Report preview</DialogTitle>
+   679→              <DialogDescription className="text-[10px]">
+   680→                Print-optimized HTML — use the Print button in the preview to save as PDF.
+   681→              </DialogDescription>
+   682→            </div>
+   683→            <div className="flex items-center gap-2">
+   684→              <Button
+   685→                size="sm"
+   686→                variant="outline"
+   687→                onClick={() => window.open(previewUrl, "_blank")}
+   688→                className="h-8 gap-1.5"
+   689→              >
+   690→                <Download className="size-3.5" />
+   691→                Open in new tab
+   692→              </Button>
+   693→              <Button
+   694→                size="sm"
+   695→                variant="ghost"
+   696→                onClick={() => setPreviewOpen(false)}
+   697→                className="h-8 gap-1.5"
+   698→              >
+   699→                <X className="size-3.5" />
+   700→                Close
+   701→              </Button>
+   702→            </div>
+   703→          </DialogHeader>
+   704→          <iframe
+   705→            src={previewUrl}
+   706→            title="Report preview"
+   707→            className="h-full w-full border-0 bg-white"
+   708→          />
+   709→        </DialogContent>
+   710→      </Dialog>
+   711→
+   712→      {/* ── Delete confirmation ────────────────────────────────────────────── */}
+   713→      <AlertDialog open={deleteTarget !== null} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+   714→        <AlertDialogContent className="glass-strong">
+   715→          <AlertDialogHeader>
+   716→            <AlertDialogTitle>Delete report template?</AlertDialogTitle>
+   717→            <AlertDialogDescription>
+   718→              {deleteTarget
+   719→                ? `This permanently removes "${deleteTarget.name}". The PDF generator will no longer accept this template id. You can re-create it from the Report Builder if needed.`
+   720→                : "This permanently removes the report template."}
+   721→            </AlertDialogDescription>
+   722→          </AlertDialogHeader>
+   723→          <AlertDialogFooter>
+   724→            <AlertDialogCancel>Cancel</AlertDialogCancel>
+   725→            <AlertDialogAction
+   726→              onClick={() => void handleDelete()}
+   727→              className="bg-rose-600 text-white hover:bg-rose-700 dark:bg-rose-500 dark:hover:bg-rose-600"
+   728→            >
+   729→              <Trash2 className="mr-1.5 size-3.5" />
+   730→              Delete
+   731→            </AlertDialogAction>
+   732→          </AlertDialogFooter>
+   733→        </AlertDialogContent>
+   734→      </AlertDialog>
+   735→    </div>
+   736→  );
+   737→}
+   738→
+   739→// ── Section wrapper ──────────────────────────────────────────────────────────
+   740→
+   741→function Section({
+   742→  title, subtitle, icon, children,
+   743→}: {
+   744→  title: string;
+   745→  subtitle?: string;
+   746→  icon?: React.ReactNode;
+   747→  children: React.ReactNode;
+   748→}) {
+   749→  return (
+   750→    <section className="space-y-2">
+   751→      <div className="flex items-center gap-2">
+   752→        {icon ? (
+   753→          <span className="grid size-6 place-items-center rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+   754→            {icon}
+   755→          </span>
+   756→        ) : null}
+   757→        <h4 className="text-xs font-semibold uppercase tracking-wider text-foreground">{title}</h4>
+   758→        {subtitle ? (
+   759→          <span className="text-[10px] text-muted-foreground">· {subtitle}</span>
+   760→        ) : null}
+   761→      </div>
+   762→      <div>{children}</div>
+   763→    </section>
+   764→  );
+   765→}
+   766→
+   767→// ── Columns editor — checkbox list (left) + ordered selected list (right) ────
+   768→
+   769→function ColumnsEditor({
+   770→  entityType, selected, onToggle, onMove,
+   771→}: {
+   772→  entityType: EntityType;
+   773→  selected: string[];
+   774→  onToggle: (key: string) => void;
+   775→  onMove: (key: string, dir: -1 | 1) => void;
+   776→}) {
+   777→  const all = REPORT_COLUMNS[entityType];
+   778→  const selectedSet = new Set(selected);
+   779→  return (
+   780→    <div className="grid gap-3 sm:grid-cols-2">
+   781→      {/* Available columns */}
+   782→      <div className="rounded-lg border border-border/50 bg-card/30 p-2.5">
+   783→        <p className="mb-1.5 px-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+   784→          Available ({all.length})
+   785→        </p>
+   786→        <div className="max-h-56 space-y-0.5 overflow-y-auto pr-1">
+   787→          {all.map((col) => {
+   788→            const isSelected = selectedSet.has(col.key);
+   789→            return (
+   790→              <label
+   791→                key={col.key}
+   792→                className={cn(
+   793→                  "flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors",
+   794→                  isSelected
+   795→                    ? "bg-emerald-500/10 text-foreground"
+   796→                    : "hover:bg-muted/60 text-foreground/90",
+   797→                )}
+   798→              >
+   799→                <Checkbox
+   800→                  checked={isSelected}
+   801→                  onCheckedChange={() => onToggle(col.key)}
+   802→                  className="data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600"
+   803→                />
+   804→                <span className="flex-1 truncate">{col.label}</span>
+   805→                <ColumnBadge col={col} />
+   806→              </label>
+   807→            );
+   808→          })}
+   809→        </div>
+   810→      </div>
+   811→
+   812→      {/* Selected columns (ordered) */}
+   813→      <div className="rounded-lg border border-border/50 bg-card/30 p-2.5">
+   814→        <p className="mb-1.5 px-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+   815→          Selected ({selected.length}) — drag with arrows
+   816→        </p>
+   817→        {selected.length === 0 ? (
+   818→          <p className="px-2 py-4 text-center text-[11px] text-muted-foreground">
+   819→            Pick at least one column from the left.
+   820→          </p>
+   821→        ) : (
+   822→          <div className="max-h-56 space-y-0.5 overflow-y-auto pr-1">
+   823→            {selected.map((key, idx) => {
+   824→              const col = all.find((c) => c.key === key);
+   825→              if (!col) return null;
+   826→              return (
+   827→                <div
+   828→                  key={key}
+   829→                  className="flex items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-2 py-1.5"
+   830→                >
+   831→                  <div className="flex flex-col">
+   832→                    <button
+   833→                      type="button"
+   834→                      onClick={() => onMove(key, -1)}
+   835→                      disabled={idx === 0}
+   836→                      className="text-muted-foreground hover:text-emerald-600 disabled:opacity-30"
+   837→                      aria-label={`Move ${col.label} up`}
+   838→                    >
+   839→                      <ChevronUp className="size-3" />
+   840→                    </button>
+   841→                    <button
+   842→                      type="button"
+   843→                      onClick={() => onMove(key, 1)}
+   844→                      disabled={idx === selected.length - 1}
+   845→                      className="text-muted-foreground hover:text-emerald-600 disabled:opacity-30"
+   846→                      aria-label={`Move ${col.label} down`}
+   847→                    >
+   848→                      <ChevronDown className="size-3" />
+   849→                    </button>
+   850→                  </div>
+   851→                  <span className="flex-1 truncate text-xs text-foreground">{col.label}</span>
+   852→                  <ColumnBadge col={col} />
+   853→                  <button
+   854→                    type="button"
+   855→                    onClick={() => onToggle(key)}
+   856→                    className="text-muted-foreground hover:text-rose-600"
+   857→                    aria-label={`Remove ${col.label}`}
+   858→                  >
+   859→                    <X className="size-3" />
+   860→                  </button>
+   861→                </div>
+   862→              );
+   863→            })}
+   864→          </div>
+   865→        )}
+   866→      </div>
+   867→    </div>
+   868→  );
+   869→}
+   870→
+   871→function ColumnBadge({ col }: { col: ReportColumn }) {
+   872→  const colors: Record<string, string> = {
+   873→    text:     "bg-zinc-500/10 text-zinc-600 dark:text-zinc-300",
+   874→    number:   "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+   875→    currency: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+   876→    date:     "bg-teal-500/10 text-teal-700 dark:text-teal-300",
+   877→    status:   "bg-rose-500/10 text-rose-700 dark:text-rose-300",
+   878→  };
+   879→  return (
+   880→    <span
+   881→      className={cn(
+   882→        "rounded px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide",
+   883→        colors[col.type],
+   884→      )}
+   885→    >
+   886→      {col.type}
+   887→    </span>
+   888→  );
+   889→}
+   890→
+   891→// ── Filters editor — date range + status + tag ───────────────────────────────
+   892→
+   893→function FiltersEditor({
+   894→  config, tags, onUpdate,
+   895→}: {
+   896→  config: ReportTemplateConfig;
+   897→  tags: TagRow[];
+   898→  onUpdate: (patch: Partial<ReportTemplateConfig["filters"]>) => void;
+   899→}) {
+   900→  const statusOptions = STATUS_FILTER_OPTIONS[config.entityType];
+   901→  const showCustomDates = config.filters.dateRange === "custom";
+   902→
+   903→  return (
+   904→    <div className="space-y-3">
+   905→      {/* Date range */}
+   906→      <div className="grid gap-3 sm:grid-cols-2">
+   907→        <div className="space-y-1.5">
+   908→          <Label className="text-xs text-muted-foreground">Date range</Label>
+   909→          <Select
+   910→            value={config.filters.dateRange ?? "all"}
+   911→            onValueChange={(v) => onUpdate({ dateRange: v as ReportTemplateConfig["filters"]["dateRange"] })}
+   912→          >
+   913→            <SelectTrigger className="h-9 w-full">
+   914→              <SelectValue />
+   915→            </SelectTrigger>
+   916→            <SelectContent>
+   917→              {DATE_RANGE_OPTIONS.map((d) => (
+   918→                <SelectItem key={d.key} value={d.key}>
+   919→                  {d.label}
+   920→                </SelectItem>
+   921→              ))}
+   922→            </SelectContent>
+   923→          </Select>
+   924→        </div>
+   925→        {statusOptions.length > 0 ? (
+   926→          <div className="space-y-1.5">
+   927→            <Label className="text-xs text-muted-foreground">Status filter</Label>
+   928→            <Select
+   929→              value={config.filters.status ?? "all"}
+   930→              onValueChange={(v) => onUpdate({ status: v === "all" ? undefined : v })}
+   931→            >
+   932→              <SelectTrigger className="h-9 w-full">
+   933→                <SelectValue />
+   934→              </SelectTrigger>
+   935→              <SelectContent>
+   936→                <SelectItem value="all">All statuses</SelectItem>
+   937→                {statusOptions.map((s) => (
+   938→                  <SelectItem key={s.key} value={s.key}>
+   939→                    {s.label}
+   940→                  </SelectItem>
+   941→                ))}
+   942→              </SelectContent>
+   943→            </Select>
+   944→          </div>
+   945→        ) : (
+   946→          <div className="space-y-1.5">
+   947→            <Label className="text-xs text-muted-foreground">Status filter</Label>
+   948→            <div className="flex h-9 items-center rounded-md border border-dashed border-border/60 px-3 text-[11px] text-muted-foreground">
+   949→              No status column for {ENTITY_LABELS[config.entityType].toLowerCase()}.
+   950→            </div>
+   951→          </div>
+   952→        )}
+   953→      </div>
+   954→
+   955→      {/* Custom date range inputs (shown only when dateRange === "custom") */}
+   956→      {showCustomDates ? (
+   957→        <div className="grid gap-3 sm:grid-cols-2">
+   958→          <div className="space-y-1.5">
+   959→            <Label htmlFor="rb-from" className="text-xs text-muted-foreground">From date</Label>
+   960→            <Input
+   961→              id="rb-from"
+   962→              type="date"
+   963→              value={config.filters.fromDate ?? ""}
+   964→              onChange={(e) => onUpdate({ fromDate: e.target.value })}
+   965→              className="h-9"
+   966→            />
+   967→          </div>
+   968→          <div className="space-y-1.5">
+   969→            <Label htmlFor="rb-to" className="text-xs text-muted-foreground">To date</Label>
+   970→            <Input
+   971→              id="rb-to"
+   972→              type="date"
+   973→              value={config.filters.toDate ?? ""}
+   974→              onChange={(e) => onUpdate({ toDate: e.target.value })}
+   975→              className="h-9"
+   976→            />
+   977→          </div>
+   978→        </div>
+   979→      ) : null}
+   980→
+   981→      {/* Tag filter */}
+   982→      <div className="space-y-1.5">
+   983→        <Label className="text-xs text-muted-foreground">Tag filter (optional)</Label>
+   984→        <Select
+   985→          value={config.filters.tagId ?? "none"}
+   986→          onValueChange={(v) => onUpdate({ tagId: v === "none" ? undefined : v })}
+   987→        >
+   988→          <SelectTrigger className="h-9 w-full">
+   989→            <SelectValue />
+   990→          </SelectTrigger>
+   991→          <SelectContent>
+   992→            <SelectItem value="none">No tag filter</SelectItem>
+   993→            {tags.map((t) => (
+   994→              <SelectItem key={t.id} value={t.id}>
+   995→                {t.name}
+   996→              </SelectItem>
+   997→            ))}
+   998→          </SelectContent>
+   999→        </Select>
+  1000→        <p className="text-[10px] text-muted-foreground">
+  1001→          Restricts the report to entities tagged with the selected label.
+  1002→        </p>
+  1003→      </div>
+  1004→    </div>
+  1005→  );
+  1006→}
+  1007→
