@@ -85,8 +85,8 @@ export function useApi<T>(path: string | null, opts?: { refreshKey?: string | nu
 
   const refresh = React.useCallback(async () => {
     if (!path) { setLoading(false); return; }
-    // Only flip loading=true on the very first load when there's no data yet.
-    if (dataRef.current === null) setLoading(true);
+    // Always re-fetch — even on refresh (not just initial load).
+    // This ensures the list updates after a create/update/delete operation.
     setError(null);
     try {
       const d = await api<T>(path);
