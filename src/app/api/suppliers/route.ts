@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { z } from "zod";
 import { getCurrentBroker } from "@/lib/auth";
 import { checkLimit } from "@/lib/usage-limits";
+import { withRateLimit } from "@/lib/api-middleware";
 
 const SupplierSchema = z.object({
   name: z.string().min(1),
@@ -69,29 +70,34 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ suppliers });
 }
 
-export async function POST(req: NextRequest) {
-  const broker = await getCurrentBroker();
-  if (!broker) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+// POST /api/suppliers — create a supplier (rate-limited at 30 creates/min per IP).
+export const POST = withRateLimit(
+  async (req: NextRequest) => {
+    const broker = await getCurrentBroker();
+    if (!broker) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const body = await req.json();
-  const parsed = SupplierSchema.safeParse(body);
-  if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+    const body = await req.json();
+    const parsed = SupplierSchema.safeParse(body);
+    if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
 
-  // Usage-limit check — 402 if at capacity.
-  const limit = await checkLimit(broker.id, "suppliers");
-  if (!limit.allowed) {
-    return NextResponse.json(
-      {
-        error: "Supplier limit reached. Upgrade to add more suppliers.",
-        current: limit.current,
-        limit: limit.limit,
-        planName: limit.planName,
-      },
-      { status: 402 },
-    );
-  }
+    // Usage-limit check — 402 if at capacity.
+    const limit = await checkLimit(broker.id, "suppliers");
+    if (!limit.allowed) {
+      return NextResponse.json(
+        {
+          error: "Supplier limit reached. Upgrade to add more suppliers.",
+          current: limit.current,
+          limit: limit.limit,
+          planName: limit.planName,
+        },
+        { status: 402 },
+      );
+    }
 
-  const supplier = await db.supplier.create({ data: { ...parsed.data, brokerId: broker.id } });
-  await db.auditLog.create({ data: { brokerId: broker.id, entityType: "Supplier", entityId: supplier.id, action: "create", after: JSON.stringify(supplier), userName: broker.fullName } });
-  return NextResponse.json({ supplier });
-}
+    const supplier = await db.supplier.create({ data: { ...parsed.data, brokerId: broker.id } });
+    await db.auditLog.create({ data: { brokerId: broker.id, entityType: "Supplier", entityId: supplier.id, action: "create", after: JSON.stringify(supplier), userName: broker.fullName } });
+    return NextResponse.json({ supplier });
+  },
+  30,
+  60_000,
+);

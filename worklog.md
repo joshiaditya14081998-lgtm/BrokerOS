@@ -4910,3 +4910,140 @@ Task: Deploy to Vercel + test full SaaS flow with a new broker account.
 ## GitHub
 - Clean push (orphan branch — no secrets in history)
 - Repo: https://github.com/joshiaditya14081998-lgtm/BrokerOS
+
+---
+Task ID: SEC2
+Agent: Legal Pages (Terms of Service + Privacy Policy)
+Task: Create Terms of Service and Privacy Policy pages with glassmorphic styling for Broker OS (India-based garment broker SaaS); wire footer + signup links and middleware public routes.
+
+Work Log:
+- Read existing project state: `src/app/landing/page.tsx`, `src/app/signup/page.tsx`, `src/middleware.ts`, `src/app/globals.css` (glass utilities), `tailwind.config.ts` (no `@tailwindcss/typography` plugin → built readable typography manually with `text-sm leading-relaxed text-foreground/80` + emerald section numbers).
+- Created `src/app/terms/page.tsx` — `"use client"` component, 14 sections per spec:
+  1. Acceptance of Terms · 2. Description of Service · 3. Account Registration · 4. Subscription & Billing (₹999 / ₹2,999 / ₹9,999, 14-day trial, Stripe, auto-renew, refund policy) · 5. Acceptable Use (no scraping / reverse engineering / account sharing) · 6. Data Ownership (export/delete) · 7. Privacy (Supabase + Stripe + Vercel) · 8. Intellectual Property · 9. Termination (30-day data deletion) · 10. Disclaimers (no warranty on financial calculations) · 11. Limitation of Liability (capped at 12-month subscription fees) · 12. Governing Law (India, Surat Gujarat jurisdiction) · 13. Changes to Terms (30-day notice) · 14. Contact (support@broker-os.com).
+  - Header: `glass-strong` card with `FileText` icon, "Last updated: 1 November 2025" emerald pill.
+  - Body: each section in its own `glass` card, emerald mono numbering, `whileInView` framer-motion stagger.
+  - Footer: contact mailto + "Back to home" Button (Link → `/landing`).
+- Created `src/app/privacy/page.tsx` — `"use client"` component, 12 sections per spec, Indian IT Act / SPDI Rules + GDPR-aligned:
+  1. Information We Collect (account / business / usage / billing data; Supabase-hashed passwords) · 2. How We Use Your Information · 3. Data Storage (Supabase Tokyo, Vercel, local uploads, HTTPS + AES-256) · 4. Third-Party Services (with privacy-policy links) · 5. Data Sharing (never sold; only service providers + legal compliance) · 6. Data Retention (30-day deletion on account close, 1-year audit log, 7-year billing/GST) · 7. User Rights (access / export / correct / delete / object / withdraw consent) · 8. Cookies (auth + preference only, no tracking) · 9. Security (RLS, rate limiting, audit logging, 72-hr breach notice) · 10. Children's Privacy (18+) · 11. Changes (30-day notice) · 12. Contact (DPO, postal address in Surat).
+  - Same `glass-strong` header + `glass` body cards pattern, `Shield` icon, "Last updated" + "Indian IT Act · GDPR-aligned" pills.
+- Edited `src/app/landing/page.tsx` footer — replaced `<a href="/privacy">` and `<a href="/terms">` with Next.js `<Link href=...>` (imported `Link from "next/link"`), renamed link labels to "Privacy Policy" / "Terms of Service" for clarity, changed contact `mailto:hello@broker-os.app` → `mailto:support@broker-os.com` (kept mailto as plain `<a>` since Next Link doesn't handle mailto).
+- Edited `src/app/signup/page.tsx` — added `Link from "next/link"` import; inserted a centered "By signing up, you agree to our Terms of Service and Privacy Policy." paragraph immediately below the submit button, with emerald links to `/terms` and `/privacy`.
+- Edited `src/middleware.ts` — added `/terms` and `/privacy` to the `isPublicRoute` matcher (so unauthenticated visitors can read legal pages without bouncing to `/login`), and documented them in the middleware doc-comment header.
+- Lint: `bun run lint` — 0 errors, 4 pre-existing warnings (all in `src/lib/error-report.ts`, unrelated to this task). No new lint issues from the new/edited files.
+
+Files created:
+- `src/app/terms/page.tsx`
+- `src/app/privacy/page.tsx`
+
+Files edited:
+- `src/app/landing/page.tsx` (Link import + footer links)
+- `src/app/signup/page.tsx` (Link import + agreement text under submit)
+- `src/middleware.ts` (public routes + doc-comment)
+
+Notes for future agents:
+- The `prose` Tailwind plugin is NOT installed in this project; instead of relying on `prose prose-sm` classes (which would no-op), each legal section renders its body in `space-y-3 text-sm leading-relaxed text-foreground/80 sm:text-[15px]` with explicit `<p>` / `<ul>` / `<strong>` markup for readability. If typography plugin is added later, the markup degrades gracefully to plain prose styling.
+- Both pages use `motion` (framer-motion) for soft entrance animations consistent with the rest of the app.
+- Contact email standardised to `support@broker-os.com` (was `hello@broker-os.app` in the landing footer); use this consistently in future user-facing copy.
+
+---
+Task ID: SEC3
+Agent: Sentry / Error-Monitoring Subagent
+Task: Add Sentry error monitoring + in-app error boundary + friendly 404/global error pages so the SaaS owner knows when things break before beta launch.
+
+Work Log:
+- Read `/home/z/my-project/worklog.md` — confirmed project is a Next.js 16 App Router + TypeScript glassmorphic SaaS for garment brokers (Supabase Auth + Prisma, live on Vercel at https://my-project-self-three-23.vercel.app). All design rules apply: shadcn/ui, lucide-react, glass surfaces, emerald accent, NO indigo/blue.
+- `bun add @sentry/nextjs` → installed `@sentry/nextjs@10.74.0`.
+- Verified `withSentryConfig` is exported from `@sentry/nextjs/config` (used in next.config.ts wrap).
+- Read existing `src/app/layout.tsx`, `next.config.ts`, `.env`, `src/app/api/{bookings,payments,dispatches}/route.ts`, `src/lib/supabase/client.ts`, `src/app/landing/page.tsx` (for the auth-check pattern reused in not-found.tsx). None of the three API POST handlers had try/catch — added it.
+- Created `sentry.client.config.ts`, `sentry.server.config.ts`, `sentry.edge.config.ts` — three Sentry init files (DSN from `NEXT_PUBLIC_SENTRY_DSN`, `tracesSampleRate: 0.1`, `environment: process.env.NODE_ENV`, `enabled` only in production). Identical contents per spec.
+- Created `src/instrumentation.ts` — Next.js `register()` hook that dynamically imports the right Sentry config per `NEXT_RUNTIME` (`nodejs` → server config, `edge` → edge config). Next.js auto-discovers this file.
+- Edited `.env` — appended `NEXT_PUBLIC_SENTRY_DSN=` (empty, with comment explaining it will be set when the Sentry account is created).
+- Created `src/lib/error-report.ts` — isomorphic `reportError(error, context?)` + `reportApiError(path, status, message)` helpers. Always logs to console; forwards to Sentry (`captureException` / `captureMessage`) when the SDK is initialized. Wraps the Sentry call in try/catch so reporting never throws. `normalizeTags` flattens common keys (path, method, route, view, action, component) into Sentry string tags. The `@sentry/nextjs` package is isomorphic via its `exports` map (browser / node / edge / edge-light / worker / workerd variants), so the same file works in `"use client"` components AND Node.js route handlers without bundler/runtime mismatches.
+- Created `src/components/error-boundary.tsx` — class component (`"use client"`) implementing `getDerivedStateFromError` + `componentDidCatch`. Calls `reportError(error, { component: "ErrorBoundary", label, componentStack })`. Renders a calm, glassmorphic fallback card (`glass hover-lift`, emerald `AlertCircle` badge) in place of the failed component — NOT a full-screen overlay. Copy: "Something went wrong" + "Our team has been notified" + truncated error message (140 chars). Actions: "Reload page" (`window.location.reload()`) + "Dismiss" (clears state so the user can retry without a full reload).
+- Edited `src/app/layout.tsx` — imported `ErrorBoundary` and wrapped `{children}` with `<ErrorBoundary label="Broker OS">`. SonnerToaster stays outside the boundary (so toasts remain visible during a fallback).
+- Created `src/app/not-found.tsx` — friendly 404 (`"use client"`). Checks Supabase auth state via `@/lib/supabase/client` (same pattern as the landing page). Glass card with `Compass` icon badge, "404" eyebrow + "Page not found" heading + exploratory copy ("The page you're looking for doesn't exist or has been moved."). Conditional CTAs: signed-in → "Go to Dashboard" + "Go to Landing"; signed-out → "Go to Landing" only (briefly disabled while session is being checked).
+- Created `src/app/error.tsx` — global root error boundary (`"use client"`). Reports via `reportError(error, { component: "GlobalError", digest })` inside a `useEffect` (so it fires once per mount, not on every render). Calm glass card with `AlertCircle` badge, "Something went wrong" + truncated error message (180 chars) + "Try again" (calls `reset()`) + "Go home" (anchor to `/`). Soft ambient gradient backdrop for visual continuity with the rest of the app.
+- Edited `src/app/api/bookings/route.ts` — added `import { reportError } from "@/lib/error-report"` and wrapped the POST handler body in `try { … } catch (error) { reportError(error, { path: "/api/bookings", method: "POST" }); return NextResponse.json({ error: "Failed to create booking" }, { status: 500 }); }`.
+- Edited `src/app/api/payments/route.ts` — same pattern, `path: "/api/payments"`, fallback message "Failed to record payment".
+- Edited `src/app/api/dispatches/route.ts` — same pattern, `path: "/api/dispatches"`, fallback message "Failed to log dispatch".
+- Edited `next.config.ts` — wrapped the Next.js config with `withSentryConfig` from `@sentry/nextjs/config`. Set `autoInstrumentServerFunctions: true`, `autoInstrumentMiddleware: true`, `autoInstrumentAppDirectory: true`. Source-map upload disabled unless `SENTRY_AUTH_TOKEN` env is set at build time. `silent: true` to suppress noisy "no auth token" logs during local builds. `org` / `project` read from `SENTRY_ORG` / `SENTRY_PROJECT` env vars when present.
+
+Style: shadcn/ui (Button — default + outline). lucide-react icons (AlertCircle, RefreshCw, Home, Compass, LayoutDashboard) — calm, exploratory, NOT alarming. Glass surfaces (`glass`, `glass hover-lift`). Emerald accent (`bg-emerald-500/10 ring-1 ring-emerald-500/30` icon badges, `text-emerald-600 dark:text-emerald-400` icon + eyebrow text, `bg-primary` action buttons). Soft ambient radial gradient backdrop on the full-page states for visual continuity. Calm copy: "Something went wrong", "Our team has been notified", "We hit an unexpected error. Our team has been notified — try again, or head home." Truncated error messages (140 / 180 chars) so power users get a hint without a scary stack trace. NO indigo, NO blue.
+
+Created: `sentry.client.config.ts`, `sentry.server.config.ts`, `sentry.edge.config.ts`, `src/instrumentation.ts`, `src/lib/error-report.ts`, `src/components/error-boundary.tsx`, `src/app/not-found.tsx`, `src/app/error.tsx`, `agent-ctx/SEC3-sentry-error-monitoring.md`.
+Edited: `.env`, `src/app/layout.tsx`, `next.config.ts`, `src/app/api/bookings/route.ts`, `src/app/api/payments/route.ts`, `src/app/api/dispatches/route.ts`.
+
+Verification:
+- `bun run lint` → **0 errors, 0 warnings** (exit 0). First pass had 4 "Unused eslint-disable directive" warnings on defensive `// eslint-disable-next-line no-console` lines in `src/lib/error-report.ts` — the project's ESLint config sets `no-console: "off"`, so the directives were unnecessary. Removed all 4 → second pass clean.
+- Did NOT run `bun run build` or the dev server (per task instructions).
+
+## Lint status
+✅ `bun run lint` → 0 errors, 0 warnings (exit 0).
+
+## How to activate Sentry (after beta launch / Sentry account creation)
+1. Create a Sentry project (Next.js platform) at sentry.io.
+2. In Vercel project settings → Environment Variables, add:
+   - `NEXT_PUBLIC_SENTRY_DSN` = the public DSN string from Sentry.
+   - `SENTRY_AUTH_TOKEN` = auth token from Sentry (for source-map upload at build time — optional but recommended for readable stack traces).
+   - `SENTRY_ORG` = Sentry org slug.
+   - `SENTRY_PROJECT` = Sentry project slug.
+3. Trigger a Vercel redeploy. Sentry auto-instruments client + server + edge runtimes and uploads source maps.
+4. Errors flow into Sentry's Issues dashboard; API errors are tagged with `path` + `method`; in-app errors carry `component: ErrorBoundary` / `GlobalError` tags + `componentStack` context.
+
+---
+Task ID: SEC1
+Agent: Security Hardening Agent (SEC1)
+Task: Add rate limiting (in-memory Map-based, no Upstash at runtime), CSRF-safe security headers, and verify input-validation hardening before beta launch.
+
+## Context loaded
+- Read `/home/z/my-project/worklog.md` (esp. Sprint 2 auth context — `getCurrentBroker()` + `brokerId` multi-tenant scoping on every API route, Supabase Auth login/signup/auto-confirm endpoints, public vs protected route matrix in `src/middleware.ts`).
+- Read existing API route handlers (`auth/route.ts`, `auth/create-profile/route.ts`, `auth/auto-confirm/route.ts`, `clients/route.ts`, `suppliers/route.ts`, `bookings/route.ts`, `payments/route.ts`, `visits/route.ts`, `dispatches/route.ts`, `disputes/route.ts`) and `src/middleware.ts` + `src/lib/supabase/server.ts` to understand the existing structure.
+- Discovered SEC3 (Sentry) had already added `try/catch + reportError()` wrappers on `bookings`, `payments`, `dispatches` POST handlers — preserved them when wrapping with `withRateLimit()` so Sentry reporting continues to fire on uncaught errors.
+- All 3 Zod-validation routes the task flagged (`visits`, `dispatches`, `disputes`) already had full Zod schemas covering the required fields — no edits needed (documented below).
+
+## Files created (2)
+1. **`src/lib/rate-limit.ts`** — in-memory Map-based rate limiter (per-identifier sliding window). Exports `rateLimit(identifier, limit, windowMs) → { allowed, remaining, resetAt }`. Includes a 5-minute GC `setInterval` to expire stale buckets — guarded by `typeof setInterval === "function"` for Edge-runtime safety + `.unref?.()` so the timer doesn't keep the Node process alive. Doc comment notes the production swap path to `@upstash/ratelimit` (the deps are installed for exactly this swap, see "Dependencies" below).
+2. **`src/lib/api-middleware.ts`** — `withRateLimit(handler, limit?, windowMs?)` HOF that wraps a Next.js Route Handler. Identifier is `route:${ip}:${path}` so a flood on `/api/clients` does NOT burn the quota for `/api/payments`. On exceedance returns `429` with body `{ error: "Rate limit exceeded. Try again in N seconds." }` plus `Retry-After` + `X-RateLimit-Limit/Remaining/Reset` headers. On success, tags the response with the same `X-RateLimit-*` headers so clients can show a remaining-quota indicator. Resolves client IP via `x-forwarded-for` → `x-real-ip` → `req.ip` (typed cast) → `"unknown"`.
+
+## Files edited (8)
+1. **`src/app/api/auth/route.ts`** — wrapped POST (create-profile, plan-aware) with `withRateLimit(handler, 10, 60_000)` (10 req/min per IP — account-creation surface). Wrapped GET (me) + DELETE (logout) with `withRateLimit(handler, 30, 60_000)`. Converted `export async function` declarations to `export const X = withRateLimit(async (req) => { ... }, limit, window)`.
+2. **`src/app/api/auth/create-profile/route.ts`** — wrapped POST with `withRateLimit(handler, 10, 60_000)` (legacy bare-bones variant of `/api/auth` POST — same strict cap because it's also account-creation).
+3. **`src/app/api/auth/auto-confirm/route.ts`** — wrapped POST with `withRateLimit(handler, 10, 60_000)`. Same strict cap because it calls the Supabase admin API and is a credential-confirmation surface.
+4. **`src/app/api/clients/route.ts`** — wrapped POST with `withRateLimit(handler, 30, 60_000)` (30 creates per minute per IP).
+5. **`src/app/api/suppliers/route.ts`** — wrapped POST with `withRateLimit(handler, 30, 60_000)`.
+6. **`src/app/api/bookings/route.ts`** — wrapped POST with `withRateLimit(handler, 20, 60_000)` (20 creates/min — bookings + POs are heavier writes: audit-log entries + derived totals). Preserved the existing `try/catch + reportError()` from SEC3.
+7. **`src/app/api/payments/route.ts`** — wrapped POST with `withRateLimit(handler, 20, 60_000)` (financial mutation surface, so stricter than entity-create). Preserved SEC3's try/catch.
+8. **`src/middleware.ts`** — added two security-hardening blocks:
+   - **Global API rate limit**: 100 req/min per IP for all `/api/*` routes EXCEPT `/api/auth/*` (carries its own tighter limits via `withRateLimit`) and `/api/webhooks/*` (external Stripe caller — verifies own signature, doesn't deserve a per-IP cap). Exceeded → `429` with `Retry-After` + `X-RateLimit-*` headers + the security headers below. The global limit is layered on top of per-route limits: a flood across many paths burns the global budget; a flood to one path burns only that path's route-scoped bucket. The two layers don't share state (Edge runtime has its own module graph; Node route handlers have theirs), so they count independently — the strictest layer always wins.
+   - **Security headers**: applied to EVERY response (page renders, API responses, redirects, 429s). `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `X-XSS-Protection: 1; mode=block`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy: camera=(), microphone=(), geolocation=()`, plus a baseline `Content-Security-Policy`: `default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://*.supabase.co wss://*.supabase.co;`. Implemented via a single `addSecurityHeaders(res)` helper called before every `return` so redirects (not just the default `res`) also get the headers. `X-Frame-Options: DENY` is the basic CSRF/clickjacking defense (frame-busting) — combined with `SameSite` cookies from Supabase Auth this is the CSRF protection layer.
+   - Helpers added: `SECURITY_HEADERS` constant, `addSecurityHeaders(res)` mutator, `getClientIp(req)` (mirrors `api-middleware.ts`), `GLOBAL_API_LIMIT` + `GLOBAL_API_WINDOW_MS` constants.
+
+## Zod validation check (NO edits needed — already present)
+All three routes the task flagged already had full Zod schemas covering the required fields and already use `safeParse` + return `400` with `parsed.error.flatten()` (field-level errors):
+
+- **`/api/visits/route.ts` POST** — `VisitSchema = z.object({ clientId: z.string().min(1), plannedDate: z.string(), actualDate?: z.string(), status: z.enum(["scheduled","followed_up","occurred","no_show"]).default("scheduled"), notes?: z.string() })`. Covers `clientId`, `plannedDate`, `status` ✅
+- **`/api/dispatches/route.ts` POST** — `DispatchSchema = z.object({ poId: z.string().min(1), supplierId: z.string().min(1), dispatchDate: z.string(), items: z.array(DispatchItemSchema).min(1), status: z.enum(["in_transit","delivered","short_shipment"]).default("delivered"), notes?: z.string() })`. Covers `poId`, `supplierId`, `dispatchDate`, `items`, `status` ✅
+- **`/api/disputes/route.ts` POST** — `DisputeSchema = z.object({ poId: z.string().min(1), dispatchId?: z.string(), type: z.enum(["short_shipment","defective_return","other"]), description?: z.string(), quantityAffected: z.number().int().min(0).default(0), valueAffected: z.number().min(0).default(0) })`. Covers `poId`, `type`, `quantityAffected`, `valueAffected` ✅
+
+No edits were made to these three files — they were already hardened in Sprint 2's batch 1 (S2C-B1).
+
+## Dependencies installed
+- `bun add @upstash/ratelimit @upstash/redis` → installed `@upstash/ratelimit@2.0.8` + `@upstash/redis@1.38.4`. **These are NOT used at runtime** in the in-memory Map implementation — they're installed so the production swap (single-file change to `src/lib/rate-limit.ts` to use `Ratelimit.slidingWindow(new Redis(...), ...)`) requires no new install step. The doc comment in `rate-limit.ts` calls this out explicitly.
+
+## Verification
+- `bun run lint` → **0 errors, 0 warnings** (exit 0). Ran twice to confirm.
+- `bunx tsc --noEmit` → **0 errors in any file I touched** (`rate-limit.ts`, `api-middleware.ts`, `middleware.ts`, all 7 edited API routes). Initial pass had 2 `TS2339: Property 'ip' does not exist on type 'NextRequest'` errors in `api-middleware.ts` + `middleware.ts` — fixed by casting `req` to `{ ip?: string }` via `as unknown as { ip?: string }` (no `any`). Pre-existing TS errors in `backup/route.ts`, `onboarding/route.ts`, `report-templates/route.ts`, `scheduler/route.ts`, `seed/route.ts`, and `examples/` + `skills/` files remain — out of scope for SEC1 and present before this task (the `AuditLog.brokerId` required-relation issue Sprint 2 batch 3 already flagged).
+- Did NOT run `bun run build` or `bun run dev` per task instructions.
+
+## Notes / follow-ups (for the next hardening pass)
+- **Per-instance state**: the in-memory Map rate limit is per server (or per Vercel serverless instance), not globally distributed. A flood spread across many instances could exceed the cap by N×. Swap to `@upstash/ratelimit` (already installed) for global counters before going GA. Documented in `rate-limit.ts` docstring.
+- **CSP `unsafe-inline` + `unsafe-eval` on `script-src`**: needed for Next.js dev mode (HMR / fast refresh injects inline scripts). Tighten to nonce-based CSP in a follow-up — needs a custom Next.js webpack/middleware nonce injection.
+- **`/api/auth/me/route.ts` (duplicate of `/api/auth` GET)** is NOT rate-limited at the route level — only the global middleware limit applies, but auth routes are exempt from that global limit too. If the broker app polls `/api/auth/me` aggressively, wrap its GET with `withRateLimit(handler, 30, 60_000)` for parity with `/api/auth` GET. Documented as a follow-up.
+- **Audit-log `brokerId` required-relation TS errors** in `backup`, `onboarding`, `report-templates`, `scheduler`, `seed` routes — pre-existing; out of scope for SEC1. Flagged for the next Sprint 2 continuation pass.
+- **SEC3's `reportError` import** in `bookings` / `payments` / `dispatches` POST handlers was preserved verbatim — the try/catch wrappers continue to feed Sentry when errors escape the wrapped handler.
+
+## Files summary
+**Created (2)**: `src/lib/rate-limit.ts`, `src/lib/api-middleware.ts`
+**Edited (8)**: `src/app/api/auth/route.ts`, `src/app/api/auth/create-profile/route.ts`, `src/app/api/auth/auto-confirm/route.ts`, `src/app/api/clients/route.ts`, `src/app/api/suppliers/route.ts`, `src/app/api/bookings/route.ts`, `src/app/api/payments/route.ts`, `src/middleware.ts`
+**Verified (no edits needed) (3)**: `src/app/api/visits/route.ts`, `src/app/api/dispatches/route.ts`, `src/app/api/disputes/route.ts` (already had full Zod validation)
+**Lint status**: ✅ 0 errors, 0 warnings (`bun run lint` exit 0)

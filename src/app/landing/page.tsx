@@ -35,6 +35,7 @@ import {
 } from "@/components/ui/accordion";
 import { createClient } from "@/lib/supabase/client";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { cn } from "@/lib/utils";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1032,13 +1033,13 @@ export default function LandingPage() {
               <a href="#faq" className="text-muted-foreground transition-colors hover:text-foreground">
                 FAQ
               </a>
-              <a href="/privacy" className="text-muted-foreground transition-colors hover:text-foreground">
-                Privacy
-              </a>
-              <a href="/terms" className="text-muted-foreground transition-colors hover:text-foreground">
-                Terms
-              </a>
-              <a href="mailto:hello@broker-os.app" className="text-muted-foreground transition-colors hover:text-foreground">
+              <Link href="/privacy" className="text-muted-foreground transition-colors hover:text-foreground">
+                Privacy Policy
+              </Link>
+              <Link href="/terms" className="text-muted-foreground transition-colors hover:text-foreground">
+                Terms of Service
+              </Link>
+              <a href="mailto:support@broker-os.com" className="text-muted-foreground transition-colors hover:text-foreground">
                 Contact
               </a>
             </nav>

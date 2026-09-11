@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
+import Link from "next/link";
 import { cn } from "@/lib/utils";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -283,6 +284,24 @@ function SignupForm() {
             )}
             {loading ? "Creating account…" : `Start 14-day free trial`}
           </Button>
+
+          <p className="text-center text-xs text-muted-foreground">
+            By signing up, you agree to our{" "}
+            <Link
+              href="/terms"
+              className="font-medium text-emerald-600 underline-offset-4 hover:underline dark:text-emerald-400"
+            >
+              Terms of Service
+            </Link>{" "}
+            and{" "}
+            <Link
+              href="/privacy"
+              className="font-medium text-emerald-600 underline-offset-4 hover:underline dark:text-emerald-400"
+            >
+              Privacy Policy
+            </Link>
+            .
+          </p>
         </form>
 
         <div className="mt-6 flex flex-col gap-3 text-center text-sm text-muted-foreground">

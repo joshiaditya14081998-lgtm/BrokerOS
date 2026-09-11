@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { z } from "zod";
 import { getCurrentBroker } from "@/lib/auth";
 import { checkLimit } from "@/lib/usage-limits";
+import { withRateLimit } from "@/lib/api-middleware";
 
 const ClientSchema = z.object({
   name: z.string().min(1),
@@ -67,32 +68,37 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ clients });
 }
 
-export async function POST(req: NextRequest) {
-  const broker = await getCurrentBroker();
-  if (!broker) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+// POST /api/clients — create a client (rate-limited at 30 creates/min per IP).
+export const POST = withRateLimit(
+  async (req: NextRequest) => {
+    const broker = await getCurrentBroker();
+    if (!broker) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const body = await req.json();
-  const parsed = ClientSchema.safeParse(body);
-  if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+    const body = await req.json();
+    const parsed = ClientSchema.safeParse(body);
+    if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
 
-  // Usage-limit check — refuse to create if the broker's plan is at capacity.
-  // 402 Payment Required is the conventional HTTP code for "upgrade to do this".
-  const limit = await checkLimit(broker.id, "clients");
-  if (!limit.allowed) {
-    return NextResponse.json(
-      {
-        error: "Client limit reached. Upgrade to add more clients.",
-        current: limit.current,
-        limit: limit.limit,
-        planName: limit.planName,
-      },
-      { status: 402 },
-    );
-  }
+    // Usage-limit check — refuse to create if the broker's plan is at capacity.
+    // 402 Payment Required is the conventional HTTP code for "upgrade to do this".
+    const limit = await checkLimit(broker.id, "clients");
+    if (!limit.allowed) {
+      return NextResponse.json(
+        {
+          error: "Client limit reached. Upgrade to add more clients.",
+          current: limit.current,
+          limit: limit.limit,
+          planName: limit.planName,
+        },
+        { status: 402 },
+      );
+    }
 
-  const client = await db.client.create({ data: { ...parsed.data, brokerId: broker.id } });
-  await db.auditLog.create({
-    data: { brokerId: broker.id, entityType: "Client", entityId: client.id, action: "create", after: JSON.stringify(client), userName: broker.fullName },
-  });
-  return NextResponse.json({ client });
-}
+    const client = await db.client.create({ data: { ...parsed.data, brokerId: broker.id } });
+    await db.auditLog.create({
+      data: { brokerId: broker.id, entityType: "Client", entityId: client.id, action: "create", after: JSON.stringify(client), userName: broker.fullName },
+    });
+    return NextResponse.json({ client });
+  },
+  30,
+  60_000,
+);

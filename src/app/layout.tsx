@@ -4,6 +4,7 @@ import "./globals.css";
 import { Toaster as SonnerToaster } from "@/components/ui/sonner";
 import { ThemeProvider } from "@/components/theme-provider";
 import { QueryProvider } from "@/components/query-provider";
+import { ErrorBoundary } from "@/components/error-boundary";
 
 const inter = Inter({
   variable: "--font-geist-sans",
@@ -49,7 +50,9 @@ export default function RootLayout({
           disableTransitionOnChange
         >
           <QueryProvider>
-            {children}
+            <ErrorBoundary label="Broker OS">
+              {children}
+            </ErrorBoundary>
             <SonnerToaster position="top-right" richColors closeButton />
           </QueryProvider>
         </ThemeProvider>

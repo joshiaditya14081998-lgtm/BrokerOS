@@ -1,0 +1,1058 @@
+     1→"use client";
+     2→
+     3→import * as React from "react";
+     4→import { motion, useReducedMotion } from "framer-motion";
+     5→import {
+     6→  Shirt,
+     7→  ArrowRight,
+     8→  Check,
+     9→  Star,
+    10→  Zap,
+    11→  Users,
+    12→  Factory,
+    13→  Calendar,
+    14→  FileText,
+    15→  Truck,
+    16→  Receipt,
+    17→  Wallet,
+    18→  BadgePercent,
+    19→  AlertTriangle,
+    20→  Camera,
+    21→  TrendingUp,
+    22→  Shield,
+    23→  BookOpen,
+    24→  Bell,
+    25→  Calculator,
+    26→  type LucideIcon,
+    27→} from "lucide-react";
+    28→import { Button } from "@/components/ui/button";
+    29→import { Badge } from "@/components/ui/badge";
+    30→import {
+    31→  Accordion,
+    32→  AccordionContent,
+    33→  AccordionItem,
+    34→  AccordionTrigger,
+    35→} from "@/components/ui/accordion";
+    36→import { createClient } from "@/lib/supabase/client";
+    37→import { useRouter } from "next/navigation";
+    38→import { cn } from "@/lib/utils";
+    39→
+    40→// ─────────────────────────────────────────────────────────────────────────────
+    41→// Plan catalogue — kept in sync with the backend `create-profile` route.
+    42→// ─────────────────────────────────────────────────────────────────────────────
+    43→type PlanId = "free" | "basic" | "pro" | "enterprise";
+    44→
+    45→type PlanDef = {
+    46→  id: PlanId;
+    47→  name: string;
+    48→  price: number; // ₹ per month; 0 for free
+    49→  tagline: string;
+    50→  features: string[];
+    51→  cta: string;
+    52→  highlight?: boolean;
+    53→};
+    54→
+    55→const PLANS: PlanDef[] = [
+    56→  {
+    57→    id: "free",
+    58→    name: "Free",
+    59→    price: 0,
+    60→    tagline: "Try the full workflow with a small book.",
+    61→    features: [
+    62→      "Up to 5 clients & 5 suppliers",
+    63→      "Up to 10 active POs",
+    64→      "Up to 50 photos",
+    65→      "Core modules: visits, bookings, dispatches, bills",
+    66→      "Manual brokerage calculation",
+    67→      "Community support",
+    68→    ],
+    69→    cta: "Start Free",
+    70→  },
+    71→  {
+    72→    id: "basic",
+    73→    name: "Basic",
+    74→    price: 999,
+    75→    tagline: "For a solo broker running a steady book.",
+    76→    features: [
+    77→      "Up to 50 clients & 50 suppliers",
+    78→      "Up to 200 active POs",
+    79→      "Up to 500 photos",
+    80→      "Auto brokerage calculation",
+    81→      "Daily AI digest email",
+    82→      "Email support",
+    83→    ],
+    84→    cta: "Choose Basic",
+    85→  },
+    86→  {
+    87→    id: "pro",
+    88→    name: "Pro",
+    89→    price: 2999,
+    90→    tagline: "Most popular — for brokers scaling up.",
+    91→    features: [
+    92→      "Unlimited clients, suppliers & POs",
+    93→      "5,000 photos",
+    94→      "Client + supplier portal access",
+    95→      "Custom report builder",
+    96→      "Advanced analytics + forecasting",
+    97→      "Priority support",
+    98→    ],
+    99→    cta: "Choose Pro",
+   100→    highlight: true,
+   101→  },
+   102→  {
+   103→    id: "enterprise",
+   104→    name: "Enterprise",
+   105→    price: 9999,
+   106→    tagline: "For multi-broker teams with heavier needs.",
+   107→    features: [
+   108→      "Everything in Pro, unlimited",
+   109→      "Unlimited photos",
+   110→      "Multi-user team seats",
+   111→      "Custom integrations & API access",
+   112→      "Onboarding + training session",
+   113→      "Dedicated account manager",
+   114→    ],
+   115→    cta: "Talk to Sales",
+   116→  },
+   117→];
+   118→
+   119→// ─────────────────────────────────────────────────────────────────────────────
+   120→// Section data
+   121→// ─────────────────────────────────────────────────────────────────────────────
+   122→
+   123→const PAIN_POINTS = [
+   124→  {
+   125→    icon: BookOpen,
+   126→    title: "Manual Ledger Hell",
+   127→    body: "Every booking, dispatch and payment lives in a worn-out notebook. One missed page = one lost payment.",
+   128→  },
+   129→  {
+   130→    icon: Bell,
+   131→    title: "Forgotten Dispatches",
+   132→    body: "Expected dispatch dates slip silently. Suppliers miss deadlines; clients lose trust; you eat the blame.",
+   133→  },
+   134→  {
+   135→    icon: Calculator,
+   136→    title: "Delayed Brokerage",
+   137→    body: "Commission is calculated by hand at month-end. Errors creep in. You wait months to get paid what you earned.",
+   138→  },
+   139→];
+   140→
+   141→const SOLUTIONS = [
+   142→  {
+   143→    icon: FileText,
+   144→    title: "Digital Tracking",
+   145→    body: "Every visit, booking, PO, dispatch and bill — captured in one glassmorphic dashboard. Search it. Filter it. Trust it.",
+   146→  },
+   147→  {
+   148→    icon: Bell,
+   149→    title: "Auto Reminders",
+   150→    body: "The system watches every expected dispatch + payment date and nudges you before anything slips through the cracks.",
+   151→  },
+   152→  {
+   153→    icon: BadgePercent,
+   154→    title: "Auto Brokerage Calculation",
+   155→    body: "Commission computed on every fully-paid bill, grouped by client payout cadence — immediate, 4-month, or 12-month.",
+   156→  },
+   157→];
+   158→
+   159→const FEATURES: { icon: LucideIcon; title: string; body: string }[] = [
+   160→  { icon: Calendar, title: "Visits", body: "Plan + log market visits. Tag photos. Track follow-ups." },
+   161→  { icon: BookOpen, title: "Bookings", body: "Record styles, sets, prices per supplier per visit." },
+   162→  { icon: FileText, title: "Purchase Orders", body: "Auto-generated POs from bookings with GST snapshot." },
+   163→  { icon: Truck, title: "Dispatches", body: "Partial + full dispatches with photo proof + date logs." },
+   164→  { icon: Receipt, title: "Bills", body: "Auto-compute base, GST and final amount per PO." },
+   165→  { icon: Wallet, title: "Payments", body: "Record payments in any mode. Track outstanding per client." },
+   166→  { icon: BadgePercent, title: "Brokerage", body: "Auto-calc commission per bill, grouped by payout cadence." },
+   167→  { icon: AlertTriangle, title: "Disputes", body: "Log short-shipments, defective returns, resolutions." },
+   168→  { icon: Camera, title: "Photos", body: "Stage-polymorphic photo log — visits, dispatches, disputes." },
+   169→];
+   170→
+   171→const STEPS = [
+   172→  { icon: Zap, title: "Sign up", body: "Create your account in 30 seconds. No credit card required." },
+   173→  { icon: Users, title: "Add clients & suppliers", body: "Import your contact book. Set commission + GST defaults." },
+   174→  { icon: BookOpen, title: "Record bookings", body: "Log visits and bookings — POs and bills are generated automatically." },
+   175→  { icon: Wallet, title: "Get paid", body: "Track payments, watch brokerage accrue, and trigger payouts." },
+   176→];
+   177→
+   178→const TESTIMONIALS = [
+   179→  {
+   180→    quote:
+   181→      "I used to spend every Sunday night reconciling my ledger. Now Broker OS does it as I go. My weekends are mine again.",
+   182→    name: "Ramesh Agarwal",
+   183→    role: "Garment broker, Surat",
+   184→  },
+   185→  {
+   186→    quote:
+   187→      "Dispatch reminders alone have saved me three clients. The system pings me two days before a slip — I call the supplier before the client even notices.",
+   188→    name: "Priya Shah",
+   189→    role: "Independent broker, Mumbai",
+   190→  },
+   191→  {
+   192→    quote:
+   193→      "Brokerage calculation used to take two days at month-end. Now it's instant. I can finally quote new clients with confidence.",
+   194→    name: "Imran Sheikh",
+   195→    role: "Multi-client broker, Tirupur",
+   196→  },
+   197→];
+   198→
+   199→const FAQS = [
+   200→  {
+   201→    q: "Is the 14-day free trial really free? Do I need a credit card?",
+   202→    a: "Yes — the trial is completely free, and no credit card is required to start. You get full access to the Pro plan features for 14 days. After the trial, you can stay on the Free plan or pick a paid plan.",
+   203→  },
+   204→  {
+   205→    q: "Can I switch plans later?",
+   206→    a: "Yes, at any time. Upgrades take effect immediately. Downgrades take effect at the start of your next billing cycle, so you keep your current features until then.",
+   207→  },
+   208→  {
+   209→    q: "What if I work in a market area with poor internet?",
+   210→    a: "Broker OS is offline-tolerant. You can save bookings, dispatches and payments as local drafts while offline — they auto-sync the moment you reconnect.",
+   211→  },
+   212→  {
+   213→    q: "Does my data stay private to me?",
+   214→    a: "Yes. Each broker's data is scoped to their Supabase auth account. Portal users (clients + suppliers) only see their own records — never another broker's data.",
+   215→  },
+   216→  {
+   217→    q: "Can my clients and suppliers log in to see their own data?",
+   218→    a: "Yes — on Pro and Enterprise plans, you can invite clients + suppliers to a self-serve portal where they see only their own POs, dispatches, bills and payments.",
+   219→  },
+   220→  {
+   221→    q: "Do you support Indian GST and brokerage payout cadences?",
+   222→    a: "Yes. GST % is configurable per supplier with a system default. Brokerage payouts can be immediate, 4-month cumulative, or 12-month cumulative — per client.",
+   223→  },
+   224→];
+   225→
+   226→// ─────────────────────────────────────────────────────────────────────────────
+   227→// Animated section wrapper
+   228→// ─────────────────────────────────────────────────────────────────────────────
+   229→
+   230→function Section({
+   231→  id,
+   232→  children,
+   233→  className,
+   234→}: {
+   235→  id?: string;
+   236→  children: React.ReactNode;
+   237→  className?: string;
+   238→}) {
+   239→  const reduce = useReducedMotion();
+   240→  return (
+   241→    <motion.section
+   242→      id={id}
+   243→      className={cn("scroll-mt-24", className)}
+   244→      initial={reduce ? false : { opacity: 0, y: 24 }}
+   245→      whileInView={reduce ? undefined : { opacity: 1, y: 0 }}
+   246→      viewport={{ once: true, margin: "-80px" }}
+   247→      transition={{ duration: 0.6, ease: [0.2, 0.8, 0.2, 1] }}
+   248→    >
+   249→      {children}
+   250→    </motion.section>
+   251→  );
+   252→}
+   253→
+   254→// ─────────────────────────────────────────────────────────────────────────────
+   255→// In-page screenshot mockups — CSS-rendered, themeable, instant.
+   256→// ─────────────────────────────────────────────────────────────────────────────
+   257→
+   258→function ScreenshotDashboard() {
+   259→  return (
+   260→    <div className="flex h-full w-full flex-col gap-3 p-4">
+   261→      {/* Top bar */}
+   262→      <div className="flex items-center gap-2 border-b border-border/60 pb-2">
+   263→        <div className="size-2.5 rounded-full bg-emerald-500/80" />
+   264→        <div className="h-2 w-20 rounded bg-foreground/30" />
+   265→        <div className="ml-auto h-2 w-12 rounded bg-foreground/15" />
+   266→      </div>
+   267→      {/* KPI grid */}
+   268→      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+   269→        {[
+   270→          { l: "Clients", v: "48", a: "text-emerald-500" },
+   271→          { l: "Open POs", v: "23", a: "text-teal-500" },
+   272→          { l: "Outstanding", v: "₹4.2L", a: "text-amber-500" },
+   273→          { l: "Brokerage", v: "₹1.8L", a: "text-emerald-500" },
+   274→        ].map((k) => (
+   275→          <div key={k.l} className="rounded-lg border border-border/50 bg-card/60 p-2">
+   276→            <div className="text-[8px] uppercase tracking-wide text-muted-foreground">{k.l}</div>
+   277→            <div className={cn("text-base font-light tabular-nums", k.a)}>{k.v}</div>
+   278→          </div>
+   279→        ))}
+   280→      </div>
+   281→      {/* Chart row */}
+   282→      <div className="grid flex-1 grid-cols-1 gap-2 sm:grid-cols-2">
+   283→        <div className="rounded-lg border border-border/50 bg-card/60 p-2">
+   284→          <div className="mb-1 text-[8px] uppercase tracking-wide text-muted-foreground">
+   285→            Earnings — last 6 months
+   286→          </div>
+   287→          <svg viewBox="0 0 200 60" className="h-full w-full" preserveAspectRatio="none">
+   288→            <defs>
+   289→              <linearGradient id="lg1" x1="0" x2="0" y1="0" y2="1">
+   290→                <stop offset="0%" stopColor="oklch(0.52 0.13 162)" stopOpacity="0.5" />
+   291→                <stop offset="100%" stopColor="oklch(0.52 0.13 162)" stopOpacity="0" />
+   292→              </linearGradient>
+   293→            </defs>
+   294→            <path
+   295→              d="M0,50 L33,42 L66,46 L100,28 L133,32 L166,18 L200,22 L200,60 L0,60 Z"
+   296→              fill="url(#lg1)"
+   297→            />
+   298→            <path
+   299→              d="M0,50 L33,42 L66,46 L100,28 L133,32 L166,18 L200,22"
+   300→              fill="none"
+   301→              stroke="oklch(0.52 0.13 162)"
+   302→              strokeWidth="1.5"
+   303→            />
+   304→          </svg>
+   305→        </div>
+   306→        <div className="rounded-lg border border-border/50 bg-card/60 p-2">
+   307→          <div className="mb-1 text-[8px] uppercase tracking-wide text-muted-foreground">
+   308→            PO status
+   309→          </div>
+   310→          <div className="flex h-full items-end gap-1.5">
+   311→            {[40, 70, 28, 52, 38, 60, 30].map((h, i) => (
+   312→              <div
+   313→                key={i}
+   314→                className="flex-1 rounded-t-sm bg-emerald-500/60"
+   315→                style={{ height: `${h}%` }}
+   316→              />
+   317→            ))}
+   318→          </div>
+   319→        </div>
+   320→      </div>
+   321→    </div>
+   322→  );
+   323→}
+   324→
+   325→function ScreenshotPoDetail() {
+   326→  return (
+   327→    <div className="flex h-full w-full flex-col gap-2 p-4">
+   328→      <div className="flex items-center gap-2">
+   329→        <div className="size-6 rounded bg-emerald-500/20 text-[8px] text-emerald-600 grid place-items-center font-bold">
+   330→          PO
+   331→        </div>
+   332→        <div className="text-xs font-semibold">PO-2025-0042</div>
+   333→        <Badge className="ml-auto bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">
+   334→          partially_delivered
+   335→        </Badge>
+   336→      </div>
+   337→      <div className="grid grid-cols-2 gap-2 text-[9px]">
+   338→        <div className="rounded border border-border/50 bg-card/60 p-1.5">
+   339→          <div className="text-muted-foreground">Client</div>
+   340→          <div className="font-medium">Sharma Hosiery</div>
+   341→        </div>
+   342→        <div className="rounded border border-border/50 bg-card/60 p-1.5">
+   343→          <div className="text-muted-foreground">Supplier</div>
+   344→          <div className="font-medium">Texmark Mills</div>
+   345→        </div>
+   346→      </div>
+   347→      <div className="overflow-hidden rounded border border-border/50">
+   348→        <div className="grid grid-cols-4 bg-muted/40 px-2 py-1 text-[8px] uppercase tracking-wide text-muted-foreground">
+   349→          <div>Style</div>
+   350→          <div className="text-right">Sets</div>
+   351→          <div className="text-right">Rate</div>
+   352→          <div className="text-right">Total</div>
+   353→        </div>
+   354→        {[
+   355→          ["Cotton Round Tee", "120", "₹450", "₹54,000"],
+   356→          ["Linen Shirt Premium", "80", "₹720", "₹57,600"],
+   357→          ["Fleece Hoodie", "60", "₹890", "₹53,400"],
+   358→        ].map((row, i) => (
+   359→          <div
+   360→            key={i}
+   361→            className="grid grid-cols-4 px-2 py-1 text-[9px] odd:bg-card/40"
+   362→          >
+   363→            <div className="truncate">{row[0]}</div>
+   364→            <div className="text-right tabular-nums">{row[1]}</div>
+   365→            <div className="text-right tabular-nums">{row[2]}</div>
+   366→            <div className="text-right tabular-nums font-medium">{row[3]}</div>
+   367→          </div>
+   368→        ))}
+   369→      </div>
+   370→      <div className="mt-auto flex items-center justify-between border-t border-border/60 pt-2">
+   371→        <div className="text-[9px] text-muted-foreground">
+   372→          Commission <span className="font-medium text-emerald-600">5%</span>
+   373→        </div>
+   374→        <div className="text-xs font-semibold tabular-nums">₹1,65,000</div>
+   375→      </div>
+   376→    </div>
+   377→  );
+   378→}
+   379→
+   380→function ScreenshotBrokerage() {
+   381→  return (
+   382→    <div className="flex h-full w-full flex-col gap-2 p-4">
+   383→      <div className="flex items-center gap-2">
+   384→        <BadgePercent className="size-4 text-emerald-600" />
+   385→        <div className="text-xs font-semibold">Brokerage ledger</div>
+   386→        <Badge className="ml-auto bg-teal-500/15 text-teal-700 dark:text-teal-300">
+   387→          3 eligible
+   388→        </Badge>
+   389→      </div>
+   390→      <div className="overflow-hidden rounded border border-border/50">
+   391→        <div className="grid grid-cols-4 bg-muted/40 px-2 py-1 text-[8px] uppercase tracking-wide text-muted-foreground">
+   392→          <div>Bill</div>
+   393→          <div>Client</div>
+   394→          <div className="text-right">Base</div>
+   395→          <div className="text-right">Commission</div>
+   396→        </div>
+   397→        {[
+   398→          ["BILL-104", "Sharma Hosiery", "₹1.65L", "₹8,250"],
+   399→          ["BILL-098", "Patel Knitwear", "₹2.30L", "₹11,500"],
+   400→          ["BILL-091", "Mehta Garments", "₹0.98L", "₹4,900"],
+   401→        ].map((row, i) => (
+   402→          <div
+   403→            key={i}
+   404→            className="grid grid-cols-4 px-2 py-1 text-[9px] odd:bg-card/40"
+   405→          >
+   406→            <div className="font-medium">{row[0]}</div>
+   407→            <div className="truncate text-muted-foreground">{row[1]}</div>
+   408→            <div className="text-right tabular-nums">{row[2]}</div>
+   409→            <div className="text-right tabular-nums font-medium text-emerald-600">{row[3]}</div>
+   410→          </div>
+   411→        ))}
+   412→      </div>
+   413→      <div className="mt-auto grid grid-cols-2 gap-2">
+   414→        <div className="rounded border border-border/50 bg-card/60 p-2">
+   415→          <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
+   416→            Accrued this period
+   417→          </div>
+   418→          <div className="text-base font-light tabular-nums text-emerald-600">₹24,650</div>
+   419→        </div>
+   420→        <div className="rounded border border-border/50 bg-card/60 p-2">
+   421→          <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
+   422→            Next payout
+   423→          </div>
+   424→          <div className="text-base font-light tabular-nums">15 Sep</div>
+   425→        </div>
+   426→      </div>
+   427→    </div>
+   428→  );
+   429→}
+   430→
+   431→function ScreenshotAnalytics() {
+   432→  return (
+   433→    <div className="flex h-full w-full flex-col gap-2 p-4">
+   434→      <div className="flex items-center gap-2">
+   435→        <TrendingUp className="size-4 text-emerald-600" />
+   436→        <div className="text-xs font-semibold">Analytics</div>
+   437→        <Badge className="ml-auto bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">
+   438→          +18% MoM
+   439→        </Badge>
+   440→      </div>
+   441→      <div className="grid flex-1 grid-cols-1 gap-2 sm:grid-cols-2">
+   442→        <div className="rounded-lg border border-border/50 bg-card/60 p-2">
+   443→          <div className="mb-1 text-[8px] uppercase tracking-wide text-muted-foreground">
+   444→            Volume by client
+   445→          </div>
+   446→          <div className="flex h-full items-end gap-1.5">
+   447→            {[
+   448→              { h: 70, c: "bg-emerald-500/60" },
+   449→              { h: 55, c: "bg-teal-500/60" },
+   450→              { h: 40, c: "bg-amber-500/60" },
+   451→              { h: 30, c: "bg-emerald-500/40" },
+   452→              { h: 22, c: "bg-teal-500/40" },
+   453→            ].map((bar, i) => (
+   454→              <div
+   455→                key={i}
+   456→                className={cn("flex-1 rounded-t-sm", bar.c)}
+   457→                style={{ height: `${bar.h}%` }}
+   458→              />
+   459→            ))}
+   460→          </div>
+   461→        </div>
+   462→        <div className="rounded-lg border border-border/50 bg-card/60 p-2">
+   463→          <div className="mb-1 text-[8px] uppercase tracking-wide text-muted-foreground">
+   464→            Reliability score
+   465→          </div>
+   466→          <svg viewBox="0 0 100 100" className="h-full w-full">
+   467→            <circle cx="50" cy="50" r="38" fill="none" stroke="oklch(0.86 0.01 160 / 0.4)" strokeWidth="10" />
+   468→            <circle
+   469→              cx="50"
+   470→              cy="50"
+   471→              r="38"
+   472→              fill="none"
+   473→              stroke="oklch(0.52 0.13 162)"
+   474→              strokeWidth="10"
+   475→              strokeLinecap="round"
+   476→              strokeDasharray={`${0.86 * 2 * Math.PI * 38} ${2 * Math.PI * 38}`}
+   477→              transform="rotate(-90 50 50)"
+   478→            />
+   479→            <text x="50" y="54" textAnchor="middle" fontSize="16" fill="currentColor" fontWeight="500">
+   480→              86%
+   481→            </text>
+   482→          </svg>
+   483→        </div>
+   484→      </div>
+   485→      <div className="grid grid-cols-3 gap-2">
+   486→        <div className="rounded border border-border/50 bg-card/60 p-1.5">
+   487→          <div className="text-[8px] uppercase tracking-wide text-muted-foreground">Avg delay</div>
+   488→          <div className="text-xs font-light tabular-nums">2.4 days</div>
+   489→        </div>
+   490→        <div className="rounded border border-border/50 bg-card/60 p-1.5">
+   491→          <div className="text-[8px] uppercase tracking-wide text-muted-foreground">Fulfillment</div>
+   492→          <div className="text-xs font-light tabular-nums text-emerald-600">94%</div>
+   493→        </div>
+   494→        <div className="rounded border border-border/50 bg-card/60 p-1.5">
+   495→          <div className="text-[8px] uppercase tracking-wide text-muted-foreground">Credit exposure</div>
+   496→          <div className="text-xs font-light tabular-nums">₹6.8L</div>
+   497→        </div>
+   498→      </div>
+   499→    </div>
+   500→  );
+   501→}
+   502→
+   503→const SCREENSHOTS = [
+   504→  { title: "Dashboard", sub: "Live KPIs + charts", render: ScreenshotDashboard },
+   505→  { title: "PO Detail", sub: "Line items + GST snapshot", render: ScreenshotPoDetail },
+   506→  { title: "Brokerage", sub: "Auto-computed commission", render: ScreenshotBrokerage },
+   507→  { title: "Analytics", sub: "Reliability + trends", render: ScreenshotAnalytics },
+   508→];
+   509→
+   510→// ─────────────────────────────────────────────────────────────────────────────
+   511→// Pricing card
+   512→// ─────────────────────────────────────────────────────────────────────────────
+   513→
+   514→function PlanCard({
+   515→  plan,
+   516→  href,
+   517→}: {
+   518→  plan: PlanDef;
+   519→  href?: string;
+   520→}) {
+   521→  const isPro = plan.highlight;
+   522→  return (
+   523→    <div
+   524→      className={cn(
+   525→        "glass relative flex flex-col rounded-2xl p-6 transition-all duration-200 hover-lift",
+   526→        isPro && "border-emerald-500/50 ring-1 ring-emerald-500/30",
+   527→      )}
+   528→    >
+   529→      {isPro && (
+   530→        <div className="absolute -top-3 left-1/2 -translate-x-1/2">
+   531→          <Badge className="bg-emerald-500 text-primary-foreground shadow-md">
+   532→            <Star className="size-3" /> Most popular
+   533→          </Badge>
+   534→        </div>
+   535→      )}
+   536→      <div className="mb-1 flex items-center justify-between">
+   537→        <h3 className="text-lg font-semibold tracking-tight">{plan.name}</h3>
+   538→        {plan.price === 0 ? (
+   539→          <span className="text-sm text-muted-foreground">Forever</span>
+   540→        ) : (
+   541→          <span className="text-xs text-muted-foreground">per month</span>
+   542→        )}
+   543→      </div>
+   544→      <div className="mb-4 flex items-baseline gap-1">
+   545→        <span className="text-3xl font-light tabular-nums">
+   546→          {plan.price === 0 ? "₹0" : `₹${plan.price.toLocaleString("en-IN")}`}
+   547→        </span>
+   548→      </div>
+   549→      <p className="mb-4 text-sm text-muted-foreground">{plan.tagline}</p>
+   550→      <ul className="mb-6 space-y-2.5 text-sm">
+   551→        {plan.features.map((f) => (
+   552→          <li key={f} className="flex items-start gap-2">
+   553→            <Check className="mt-0.5 size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+   554→            <span className="text-foreground/90">{f}</span>
+   555→          </li>
+   556→        ))}
+   557→      </ul>
+   558→      <Button
+   559→        asChild
+   560→        variant={isPro ? "default" : "outline"}
+   561→        className={cn(
+   562→          "mt-auto w-full",
+   563→          !isPro && "border-emerald-500/40 text-emerald-700 hover:bg-emerald-500/10 dark:text-emerald-300",
+   564→        )}
+   565→      >
+   566→        <a href={href ?? "/signup"}>{plan.cta}</a>
+   567→      </Button>
+   568→    </div>
+   569→  );
+   570→}
+   571→
+   572→// ─────────────────────────────────────────────────────────────────────────────
+   573→// Landing page
+   574→// ─────────────────────────────────────────────────────────────────────────────
+   575→
+   576→export default function LandingPage() {
+   577→  const router = useRouter();
+   578→  const [authed, setAuthed] = React.useState(false);
+   579→  const [checking, setChecking] = React.useState(true);
+   580→
+   581→  // Supabase session check — if the user IS logged in, swap the
+   582→  // "Start Free Trial" CTA for "Go to Dashboard".
+   583→  React.useEffect(() => {
+   584→    const supabase = createClient();
+   585→    supabase.auth.getUser().then(({ data: { user } }) => {
+   586→      setAuthed(!!user);
+   587→      setChecking(false);
+   588→    });
+   589→  }, []);
+   590→
+   591→  const ctaHref = authed ? "/" : "/signup";
+   592→  const ctaLabel = authed ? "Go to Dashboard" : "14-दिन का Free Trial शुरू करें";
+   593→
+   594→  return (
+   595→    <main className="relative min-h-screen overflow-x-hidden">
+   596→      {/* ───────────── Ambient hero background ───────────── */}
+   597→      <div
+   598→        aria-hidden
+   599→        className="pointer-events-none absolute inset-x-0 top-0 h-[760px] -z-10"
+   600→        style={{
+   601→          background:
+   602→            "radial-gradient(60% 50% at 50% 0%, oklch(0.52 0.13 162 / 0.18) 0%, transparent 70%), radial-gradient(40% 40% at 80% 10%, oklch(0.65 0.12 200 / 0.14) 0%, transparent 70%), radial-gradient(40% 40% at 20% 20%, oklch(0.72 0.14 85 / 0.12) 0%, transparent 70%)",
+   603→        }}
+   604→      />
+   605→
+   606→      {/* ───────────── Navbar ───────────── */}
+   607→      <header className="glass-strong sticky top-0 z-40 border-b border-border/60">
+   608→        <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-3 sm:px-6">
+   609→          <div className="flex items-center gap-2">
+   610→            <div className="grid size-9 place-items-center rounded-xl bg-primary text-primary-foreground shadow">
+   611→              <Shirt className="size-5" />
+   612→            </div>
+   613→            <div className="text-base font-semibold tracking-tight">Broker OS</div>
+   614→          </div>
+   615→          <nav className="ml-6 hidden items-center gap-6 text-sm text-muted-foreground md:flex">
+   616→            <a href="#features" className="transition-colors hover:text-foreground">Features</a>
+   617→            <a href="#how" className="transition-colors hover:text-foreground">How it works</a>
+   618→            <a href="#pricing" className="transition-colors hover:text-foreground">Pricing</a>
+   619→            <a href="#faq" className="transition-colors hover:text-foreground">FAQ</a>
+   620→          </nav>
+   621→          <div className="ml-auto flex items-center gap-2">
+   622→            {!checking && authed ? (
+   623→              <Button asChild size="sm" className="gap-1.5">
+   624→                <a href="/">
+   625→                  <Shield className="size-4" /> Dashboard
+   626→                </a>
+   627→              </Button>
+   628→            ) : (
+   629→              <Button
+   630→                variant="ghost"
+   631→                size="sm"
+   632→                onClick={() => router.push("/login")}
+   633→                className="hidden sm:inline-flex"
+   634→              >
+   635→                Sign in
+   636→              </Button>
+   637→            )}
+   638→            <Button asChild size="sm" className="gap-1.5">
+   639→              <a href={ctaHref}>
+   640→                {!authed && <ArrowRight className="size-4" />}
+   641→                {authed ? "Dashboard" : "Start Free Trial"}
+   642→              </a>
+   643→            </Button>
+   644→          </div>
+   645→        </div>
+   646→      </header>
+   647→
+   648→      {/* ───────────── 1. Hero ───────────── */}
+   649→      <Section className="mx-auto max-w-6xl px-4 pb-16 pt-16 sm:px-6 sm:pt-24">
+   650→        <div className="grid items-center gap-10 lg:grid-cols-2">
+   651→          <div>
+   652→            <Badge className="mb-4 border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+   653→              <Zap className="size-3" /> Built for Indian garment brokers
+   654→            </Badge>
+   655→            <h1 className="text-balance text-4xl font-semibold leading-tight tracking-tight sm:text-5xl lg:text-6xl">
+   656→              अपने Garment Brokerage को{" "}
+   657→              <span className="bg-gradient-to-r from-emerald-600 to-teal-500 bg-clip-text text-transparent dark:from-emerald-400 dark:to-teal-300">
+   658→                Digital
+   659→              </span>{" "}
+   660→              बनाएं
+   661→            </h1>
+   662→            <p className="mt-5 max-w-xl text-lg text-muted-foreground">
+   663→              Track every visit, booking, PO, dispatch, bill, payment and brokerage
+   664→              commission in one beautiful, glassmorphic workspace. Auto-calc GST,
+   665→              auto-trigger reminders, auto-pay your commission. Built for the
+   666→              Indian garment trade.
+   667→            </p>
+   668→            <div className="mt-7 flex flex-col gap-3 sm:flex-row sm:items-center">
+   669→              <Button asChild size="lg" className="gap-2 text-base">
+   670→                <a href={ctaHref}>
+   671→                  {!checking && authed ? <Shield className="size-5" /> : <Zap className="size-5" />}
+   672→                  {ctaLabel}
+   673→                </a>
+   674→              </Button>
+   675→              {!authed && (
+   676→                <span className="text-sm text-muted-foreground">
+   677→                  No credit card required
+   678→                </span>
+   679→              )}
+   680→            </div>
+   681→            <div className="mt-8 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-muted-foreground">
+   682→              <span className="inline-flex items-center gap-1.5">
+   683→                <Check className="size-3.5 text-emerald-600" /> 14-day Pro trial
+   684→              </span>
+   685→              <span className="inline-flex items-center gap-1.5">
+   686→                <Check className="size-3.5 text-emerald-600" /> Works offline
+   687→              </span>
+   688→              <span className="inline-flex items-center gap-1.5">
+   689→                <Check className="size-3.5 text-emerald-600" /> Hindi / English / Gujarati
+   690→              </span>
+   691→            </div>
+   692→          </div>
+   693→
+   694→          {/* Hero "screenshot" card */}
+   695→          <div className="relative">
+   696→            <div className="glass-strong rounded-2xl p-3 shadow-2xl">
+   697→              <div className="overflow-hidden rounded-xl border border-border/60 bg-background/60">
+   698→                <div className="h-[360px] sm:h-[420px]">
+   699→                  <ScreenshotDashboard />
+   700→                </div>
+   701→              </div>
+   702→            </div>
+   703→            {/* Floating accent badges */}
+   704→            <motion.div
+   705→              className="glass absolute -left-4 top-12 hidden rounded-xl px-3 py-2 text-xs shadow-lg sm:block"
+   706→              initial={{ opacity: 0, x: -12 }}
+   707→              animate={{ opacity: 1, x: 0 }}
+   708→              transition={{ delay: 0.5, duration: 0.6 }}
+   709→            >
+   710→              <div className="flex items-center gap-2">
+   711→                <BadgePercent className="size-4 text-emerald-600" />
+   712→                <div>
+   713→                  <div className="font-medium">₹1.8L brokerage</div>
+   714→                  <div className="text-muted-foreground">accrued this month</div>
+   715→                </div>
+   716→              </div>
+   717→            </motion.div>
+   718→            <motion.div
+   719→              className="glass absolute -right-4 bottom-12 hidden rounded-xl px-3 py-2 text-xs shadow-lg sm:block"
+   720→              initial={{ opacity: 0, x: 12 }}
+   721→              animate={{ opacity: 1, x: 0 }}
+   722→              transition={{ delay: 0.7, duration: 0.6 }}
+   723→            >
+   724→              <div className="flex items-center gap-2">
+   725→                <Bell className="size-4 text-amber-500" />
+   726→                <div>
+   727→                  <div className="font-medium">3 reminders</div>
+   728→                  <div className="text-muted-foreground">dispatches due this week</div>
+   729→                </div>
+   730→              </div>
+   731→            </motion.div>
+   732→          </div>
+   733→        </div>
+   734→      </Section>
+   735→
+   736→      {/* ───────────── 2. Problem / Solution ───────────── */}
+   737→      <Section className="mx-auto max-w-6xl px-4 py-16 sm:px-6">
+   738→        <div className="mb-10 text-center">
+   739→          <Badge variant="outline" className="mb-3 border-rose-500/30 text-rose-600 dark:text-rose-400">
+   740→            The problem
+   741→          </Badge>
+   742→          <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">
+   743→            Running a brokerage on paper is costing you money
+   744→          </h2>
+   745→          <p className="mx-auto mt-3 max-w-2xl text-muted-foreground">
+   746→            The garment trade moves fast. Manual ledgers and forgotten reminders
+   747→            mean delayed commission, lost clients, and longer hours for less pay.
+   748→          </p>
+   749→        </div>
+   750→        <div className="grid gap-6 md:grid-cols-3">
+   751→          {PAIN_POINTS.map((p) => (
+   752→            <div
+   753→              key={p.title}
+   754→              className="glass rounded-2xl p-6"
+   755→            >
+   756→              <div className="mb-4 grid size-11 place-items-center rounded-xl bg-rose-500/10 text-rose-600 dark:text-rose-400">
+   757→                <p.icon className="size-5" />
+   758→              </div>
+   759→              <h3 className="mb-2 text-base font-semibold">{p.title}</h3>
+   760→              <p className="text-sm text-muted-foreground">{p.body}</p>
+   761→            </div>
+   762→          ))}
+   763→        </div>
+   764→
+   765→        {/* Arrow row */}
+   766→        <div className="my-10 flex justify-center">
+   767→          <div className="glass inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-300">
+   768→            <ArrowRight className="size-4" /> Broker OS solves this
+   769→          </div>
+   770→        </div>
+   771→
+   772→        <div className="grid gap-6 md:grid-cols-3">
+   773→          {SOLUTIONS.map((s) => (
+   774→            <div
+   775→              key={s.title}
+   776→              className="glass rounded-2xl border-emerald-500/20 p-6"
+   777→            >
+   778→              <div className="mb-4 grid size-11 place-items-center rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+   779→                <s.icon className="size-5" />
+   780→              </div>
+   781→              <h3 className="mb-2 text-base font-semibold">{s.title}</h3>
+   782→              <p className="text-sm text-muted-foreground">{s.body}</p>
+   783→            </div>
+   784→          ))}
+   785→        </div>
+   786→      </Section>
+   787→
+   788→      {/* ───────────── 3. Features grid ───────────── */}
+   789→      <Section id="features" className="mx-auto max-w-6xl px-4 py-16 sm:px-6">
+   790→        <div className="mb-10 text-center">
+   791→          <Badge variant="outline" className="mb-3 border-emerald-500/30 text-emerald-700 dark:text-emerald-300">
+   792→            Features
+   793→          </Badge>
+   794→          <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">
+   795→            Everything a garment broker needs — in one place
+   796→          </h2>
+   797→          <p className="mx-auto mt-3 max-w-2xl text-muted-foreground">
+   798→            Nine core modules covering the full visit → booking → PO → dispatch →
+   799→            bill → payment → brokerage lifecycle.
+   800→          </p>
+   801→        </div>
+   802→        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+   803→          {FEATURES.map((f) => (
+   804→            <div
+   805→              key={f.title}
+   806→              className="glass group rounded-2xl p-5 transition-colors hover:border-emerald-500/40 hover-lift"
+   807→            >
+   808→              <div className="mb-3 grid size-10 place-items-center rounded-xl bg-emerald-500/10 text-emerald-600 transition-colors group-hover:bg-emerald-500/20 dark:text-emerald-400">
+   809→                <f.icon className="size-5" />
+   810→              </div>
+   811→              <h3 className="mb-1.5 text-sm font-semibold">{f.title}</h3>
+   812→              <p className="text-sm text-muted-foreground">{f.body}</p>
+   813→            </div>
+   814→          ))}
+   815→        </div>
+   816→      </Section>
+   817→
+   818→      {/* ───────────── 4. Screenshots ───────────── */}
+   819→      <Section className="mx-auto max-w-6xl px-4 py-16 sm:px-6">
+   820→        <div className="mb-10 text-center">
+   821→          <Badge variant="outline" className="mb-3 border-teal-500/30 text-teal-700 dark:text-teal-300">
+   822→            Product tour
+   823→          </Badge>
+   824→          <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">
+   825→            A workspace your team will actually want to use
+   826→          </h2>
+   827→          <p className="mx-auto mt-3 max-w-2xl text-muted-foreground">
+   828→            Glassmorphic cards, gentle motion, emerald accent. Built mobile-first
+   829→            so it works in the market and at the office.
+   830→          </p>
+   831→        </div>
+   832→        <div className="grid gap-6 sm:grid-cols-2">
+   833→          {SCREENSHOTS.map((s) => (
+   834→            <div key={s.title} className="glass rounded-2xl p-3 shadow-lg hover-lift">
+   835→              <div className="overflow-hidden rounded-xl border border-border/60 bg-background/60">
+   836→                <div className="h-[280px] sm:h-[320px]">
+   837→                  <s.render />
+   838→                </div>
+   839→              </div>
+   840→              <div className="flex items-center justify-between px-2 pt-3 pb-1">
+   841→                <div>
+   842→                  <div className="text-sm font-semibold">{s.title}</div>
+   843→                  <div className="text-xs text-muted-foreground">{s.sub}</div>
+   844→                </div>
+   845→                <ArrowRight className="size-4 text-emerald-600" />
+   846→              </div>
+   847→            </div>
+   848→          ))}
+   849→        </div>
+   850→      </Section>
+   851→
+   852→      {/* ───────────── 5. How it works ───────────── */}
+   853→      <Section id="how" className="mx-auto max-w-6xl px-4 py-16 sm:px-6">
+   854→        <div className="mb-10 text-center">
+   855→          <Badge variant="outline" className="mb-3 border-emerald-500/30 text-emerald-700 dark:text-emerald-300">
+   856→            How it works
+   857→          </Badge>
+   858→          <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">
+   859→            From signup to your first paid brokerage in 4 steps
+   860→          </h2>
+   861→        </div>
+   862→        <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
+   863→          {STEPS.map((step, i) => (
+   864→            <div key={step.title} className="glass relative rounded-2xl p-6">
+   865→              <div className="absolute -top-3 -left-3 grid size-9 place-items-center rounded-full bg-emerald-500 text-base font-semibold text-primary-foreground shadow-md">
+   866→                {i + 1}
+   867→              </div>
+   868→              <div className="mb-3 mt-2 grid size-10 place-items-center rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+   869→                <step.icon className="size-5" />
+   870→              </div>
+   871→              <h3 className="mb-1.5 text-sm font-semibold">{step.title}</h3>
+   872→              <p className="text-sm text-muted-foreground">{step.body}</p>
+   873→            </div>
+   874→          ))}
+   875→        </div>
+   876→      </Section>
+   877→
+   878→      {/* ───────────── 6. Pricing ───────────── */}
+   879→      <Section id="pricing" className="mx-auto max-w-6xl px-4 py-16 sm:px-6">
+   880→        <div className="mb-10 text-center">
+   881→          <Badge variant="outline" className="mb-3 border-emerald-500/30 text-emerald-700 dark:text-emerald-300">
+   882→            Pricing
+   883→          </Badge>
+   884→          <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">
+   885→            Simple pricing that scales with your book
+   886→          </h2>
+   887→          <p className="mx-auto mt-3 max-w-2xl text-muted-foreground">
+   888→            Every plan starts with a 14-day Pro trial. No credit card required.
+   889→            Cancel anytime.
+   890→          </p>
+   891→        </div>
+   892→        <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
+   893→          {PLANS.map((p) => (
+   894→            <PlanCard key={p.id} plan={p} href={`/signup?plan=${p.id}`} />
+   895→          ))}
+   896→        </div>
+   897→        <p className="mt-8 text-center text-xs text-muted-foreground">
+   898→          All prices in INR (₹). Annual billing saves ~2 months. GST applicable as
+   899→          per Indian law.
+   900→        </p>
+   901→      </Section>
+   902→
+   903→      {/* ───────────── 7. Testimonials ───────────── */}
+   904→      <Section className="mx-auto max-w-6xl px-4 py-16 sm:px-6">
+   905→        <div className="mb-10 text-center">
+   906→          <Badge variant="outline" className="mb-3 border-amber-500/30 text-amber-600 dark:text-amber-400">
+   907→            Testimonials
+   908→          </Badge>
+   909→          <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">
+   910→            Brokers across India are ditching the ledger
+   911→          </h2>
+   912→        </div>
+   913→        <div className="grid gap-6 md:grid-cols-3">
+   914→          {TESTIMONIALS.map((t) => (
+   915→            <div key={t.name} className="glass flex flex-col rounded-2xl p-6">
+   916→              <div className="mb-4 flex gap-0.5">
+   917→                {Array.from({ length: 5 }).map((_, i) => (
+   918→                  <Star key={i} className="size-4 fill-amber-500 text-amber-500" />
+   919→                ))}
+   920→              </div>
+   921→              <blockquote className="mb-4 flex-1 text-sm text-foreground/90">
+   922→                &ldquo;{t.quote}&rdquo;
+   923→              </blockquote>
+   924→              <div className="flex items-center gap-3 border-t border-border/60 pt-4">
+   925→                <div className="grid size-9 place-items-center rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">
+   926→                  <Users className="size-4" />
+   927→                </div>
+   928→                <div>
+   929→                  <div className="text-sm font-medium">{t.name}</div>
+   930→                  <div className="text-xs text-muted-foreground">{t.role}</div>
+   931→                </div>
+   932→              </div>
+   933→            </div>
+   934→          ))}
+   935→        </div>
+   936→        <p className="mt-6 text-center text-xs text-muted-foreground">
+   937→          Placeholder testimonials — to be replaced with real ones from early
+   938→          access brokers.
+   939→        </p>
+   940→      </Section>
+   941→
+   942→      {/* ───────────── 8. FAQ ───────────── */}
+   943→      <Section id="faq" className="mx-auto max-w-3xl px-4 py-16 sm:px-6">
+   944→        <div className="mb-10 text-center">
+   945→          <Badge variant="outline" className="mb-3 border-emerald-500/30 text-emerald-700 dark:text-emerald-300">
+   946→            FAQ
+   947→          </Badge>
+   948→          <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">
+   949→            Frequently asked questions
+   950→          </h2>
+   951→        </div>
+   952→        <div className="glass rounded-2xl p-6">
+   953→          <Accordion type="single" collapsible className="w-full">
+   954→            {FAQS.map((item, i) => (
+   955→              <AccordionItem key={i} value={`item-${i}`}>
+   956→                <AccordionTrigger className="text-left text-base">
+   957→                  {item.q}
+   958→                </AccordionTrigger>
+   959→                <AccordionContent className="text-sm text-muted-foreground">
+   960→                  {item.a}
+   961→                </AccordionContent>
+   962→              </AccordionItem>
+   963→            ))}
+   964→          </Accordion>
+   965→        </div>
+   966→      </Section>
+   967→
+   968→      {/* ───────────── 9. Final CTA ───────────── */}
+   969→      <Section className="mx-auto max-w-6xl px-4 py-16 sm:px-6">
+   970→        <div className="glass-strong relative overflow-hidden rounded-3xl p-8 text-center sm:p-16">
+   971→          <div
+   972→            aria-hidden
+   973→            className="pointer-events-none absolute inset-0 -z-10"
+   974→            style={{
+   975→              background:
+   976→                "radial-gradient(50% 60% at 50% 30%, oklch(0.52 0.13 162 / 0.18) 0%, transparent 70%)",
+   977→            }}
+   978→          />
+   979→          <Factory className="mx-auto mb-4 size-10 text-emerald-600 dark:text-emerald-400" />
+   980→          <h2 className="mx-auto max-w-2xl text-3xl font-semibold tracking-tight sm:text-4xl">
+   981→            Ready to digitize your brokerage?
+   982→          </h2>
+   983→          <p className="mx-auto mt-3 max-w-xl text-muted-foreground">
+   984→            Start your 14-day free trial today. No credit card. Set up in minutes.
+   985→            See your first auto-computed brokerage by tonight.
+   986→          </p>
+   987→          <div className="mt-7 flex flex-col items-center justify-center gap-3 sm:flex-row">
+   988→            <Button asChild size="lg" className="gap-2 text-base">
+   989→              <a href={ctaHref}>
+   990→                {!checking && authed ? <Shield className="size-5" /> : <Zap className="size-5" />}
+   991→                {authed ? "Open Dashboard" : "Start Free Trial"}
+   992→              </a>
+   993→            </Button>
+   994→            {!authed && (
+   995→              <Button
+   996→                variant="outline"
+   997→                size="lg"
+   998→                onClick={() => router.push("/login")}
+   999→                className="border-emerald-500/40 text-emerald-700 hover:bg-emerald-500/10 dark:text-emerald-300"
+  1000→              >
+  1001→                Sign in
+  1002→              </Button>
+  1003→            )}
+  1004→          </div>
+  1005→        </div>
+  1006→      </Section>
+  1007→
+  1008→      {/* ───────────── 10. Footer ───────────── */}
+  1009→      <footer className="glass-strong mt-12 border-t border-border/60">
+  1010→        <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6">
+  1011→          <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
+  1012→            <div className="max-w-sm">
+  1013→              <div className="flex items-center gap-2">
+  1014→                <div className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
+  1015→                  <Shirt className="size-4" />
+  1016→                </div>
+  1017→                <span className="font-semibold tracking-tight">Broker OS</span>
+  1018→              </div>
+  1019→              <p className="mt-3 text-sm text-muted-foreground">
+  1020→                A glassmorphic operations system for Indian garment brokers.
+  1021→                Track every visit, booking, PO, dispatch, bill, payment and
+  1022→                brokerage commission.
+  1023→              </p>
+  1024→            </div>
+  1025→            <nav className="grid grid-cols-2 gap-x-8 gap-y-3 text-sm sm:grid-cols-3">
+  1026→              <a href="#features" className="text-muted-foreground transition-colors hover:text-foreground">
+  1027→                Features
+  1028→              </a>
+  1029→              <a href="#pricing" className="text-muted-foreground transition-colors hover:text-foreground">
+  1030→                Pricing
+  1031→              </a>
+  1032→              <a href="#faq" className="text-muted-foreground transition-colors hover:text-foreground">
+  1033→                FAQ
+  1034→              </a>
+  1035→              <a href="/privacy" className="text-muted-foreground transition-colors hover:text-foreground">
+  1036→                Privacy
+  1037→              </a>
+  1038→              <a href="/terms" className="text-muted-foreground transition-colors hover:text-foreground">
+  1039→                Terms
+  1040→              </a>
+  1041→              <a href="mailto:hello@broker-os.app" className="text-muted-foreground transition-colors hover:text-foreground">
+  1042→                Contact
+  1043→              </a>
+  1044→            </nav>
+  1045→          </div>
+  1046→          <div className="mt-8 flex flex-col items-center justify-between gap-3 border-t border-border/60 pt-6 text-xs text-muted-foreground sm:flex-row">
+  1047→            <p>© {new Date().getFullYear()} Broker OS. Made for India&rsquo;s garment trade.</p>
+  1048→            <div className="flex items-center gap-1.5">
+  1049→              <Shield className="size-3.5 text-emerald-600" />
+  1050→              <span>Supabase auth · Multi-tenant · 14-day trial on every plan</span>
+  1051→            </div>
+  1052→          </div>
+  1053→        </div>
+  1054→      </footer>
+  1055→    </main>
+  1056→  );
+  1057→}
+  1058→

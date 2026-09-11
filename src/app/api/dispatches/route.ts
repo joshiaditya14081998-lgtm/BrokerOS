@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { z } from "zod";
 import { getCurrentBroker } from "@/lib/auth";
+import { reportError } from "@/lib/error-report";
 
 const DispatchItemSchema = z.object({
   styleName: z.string(),
@@ -36,52 +37,57 @@ export async function GET(_req: NextRequest) {
 
 // POST /api/dispatches — logs a dispatch (full or partial), updates PO status
 export async function POST(req: NextRequest) {
-  const broker = await getCurrentBroker();
-  if (!broker) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try {
+    const broker = await getCurrentBroker();
+    if (!broker) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const body = await req.json();
-  const parsed = DispatchSchema.safeParse(body);
-  if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
-  const { poId, supplierId, dispatchDate, items, status, notes } = parsed.data;
+    const body = await req.json();
+    const parsed = DispatchSchema.safeParse(body);
+    if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+    const { poId, supplierId, dispatchDate, items, status, notes } = parsed.data;
 
-  const po = await db.purchaseOrder.findUnique({ where: { id: poId } });
-  if (!po || po.brokerId !== broker.id) return NextResponse.json({ error: "PO not found" }, { status: 400 });
+    const po = await db.purchaseOrder.findUnique({ where: { id: poId } });
+    if (!po || po.brokerId !== broker.id) return NextResponse.json({ error: "PO not found" }, { status: 400 });
 
-  const dispatchedQty = items.reduce((s, i) => s + i.qty, 0);
-  const poItems = JSON.parse(po.lineItemsJson) as { setQty: number }[];
-  const orderedQty = poItems.reduce((s, i) => s + i.setQty, 0);
-  const priorDispatched = await db.dispatch.aggregate({ where: { poId, brokerId: broker.id }, _sum: { dispatchedQty: true } });
-  const totalDispatched = (priorDispatched._sum.dispatchedQty ?? 0) + dispatchedQty;
+    const dispatchedQty = items.reduce((s, i) => s + i.qty, 0);
+    const poItems = JSON.parse(po.lineItemsJson) as { setQty: number }[];
+    const orderedQty = poItems.reduce((s, i) => s + i.setQty, 0);
+    const priorDispatched = await db.dispatch.aggregate({ where: { poId, brokerId: broker.id }, _sum: { dispatchedQty: true } });
+    const totalDispatched = (priorDispatched._sum.dispatchedQty ?? 0) + dispatchedQty;
 
-  const dispatch = await db.dispatch.create({
-    data: {
-      brokerId: broker.id,
-      poId, supplierId,
-      dispatchDate: new Date(dispatchDate),
-      itemsJson: JSON.stringify(items),
-      dispatchedQty,
-      status,
-      notes,
-    },
-  });
+    const dispatch = await db.dispatch.create({
+      data: {
+        brokerId: broker.id,
+        poId, supplierId,
+        dispatchDate: new Date(dispatchDate),
+        itemsJson: JSON.stringify(items),
+        dispatchedQty,
+        status,
+        notes,
+      },
+    });
 
-  // Update PO status based on cumulative delivery
-  let newPoStatus = po.status;
-  if (totalDispatched >= orderedQty && status !== "short_shipment") {
-    newPoStatus = "fully_delivered";
-  } else if (totalDispatched > 0) {
-    newPoStatus = "partially_delivered";
+    // Update PO status based on cumulative delivery
+    let newPoStatus = po.status;
+    if (totalDispatched >= orderedQty && status !== "short_shipment") {
+      newPoStatus = "fully_delivered";
+    } else if (totalDispatched > 0) {
+      newPoStatus = "partially_delivered";
+    }
+    await db.purchaseOrder.update({ where: { id: poId }, data: { status: newPoStatus } });
+
+    // Recompute bill if it exists (adjust base for short-shipments) — only this broker's bill.
+    const existingBill = await db.bill.findUnique({ where: { poId } });
+    if (existingBill && existingBill.brokerId === broker.id) {
+      await recomputeBill(existingBill.id, broker.id);
+    }
+
+    await db.auditLog.create({ data: { brokerId: broker.id, entityType: "Dispatch", entityId: dispatch.id, action: "create", after: JSON.stringify(dispatch), userName: broker.fullName, reason: `Dispatch logged. PO status → ${newPoStatus}.` } });
+    return NextResponse.json({ dispatch, poStatus: newPoStatus });
+  } catch (error) {
+    reportError(error, { path: "/api/dispatches", method: "POST" });
+    return NextResponse.json({ error: "Failed to log dispatch" }, { status: 500 });
   }
-  await db.purchaseOrder.update({ where: { id: poId }, data: { status: newPoStatus } });
-
-  // Recompute bill if it exists (adjust base for short-shipments) — only this broker's bill.
-  const existingBill = await db.bill.findUnique({ where: { poId } });
-  if (existingBill && existingBill.brokerId === broker.id) {
-    await recomputeBill(existingBill.id, broker.id);
-  }
-
-  await db.auditLog.create({ data: { brokerId: broker.id, entityType: "Dispatch", entityId: dispatch.id, action: "create", after: JSON.stringify(dispatch), userName: broker.fullName, reason: `Dispatch logged. PO status → ${newPoStatus}.` } });
-  return NextResponse.json({ dispatch, poStatus: newPoStatus });
 }
 
 // Recompute bill base from current PO/dispatch/dispute state
