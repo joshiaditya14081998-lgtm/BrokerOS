@@ -370,6 +370,7 @@ function RecordPaymentDialog({ onDone }: { onDone: () => void }) {
         retryCount: 0,
       });
       toast.success("Payment saved as draft — will sync when online.");
+      await new Promise(r => setTimeout(r, 300));
       onDone();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to save draft");

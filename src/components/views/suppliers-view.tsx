@@ -209,6 +209,7 @@ function NewSupplierDialog({ onDone }: { onDone: () => void }) {
     try {
       await api("/api/suppliers", { method: "POST", body: JSON.stringify(form) });
       toast.success("Supplier created");
+      await new Promise(r => setTimeout(r, 300));
       onDone();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed");

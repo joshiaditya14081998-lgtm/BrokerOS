@@ -752,6 +752,7 @@ function LogDisputeDialog({ onDone }: { onDone: () => void }) {
         }),
       });
       toast.success("Dispute logged");
+      await new Promise(r => setTimeout(r, 300));
       onDone();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed");

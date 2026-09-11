@@ -376,6 +376,7 @@ function NewVisitDialog({ onDone }: { onDone: () => void }) {
         }),
       });
       toast.success("Visit scheduled");
+      await new Promise(r => setTimeout(r, 300));
       onDone();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to create visit");
@@ -528,6 +529,7 @@ function RecordBookingDialog({
         retryCount: 0,
       });
       toast.success("Booking saved as draft — will sync when online.");
+      await new Promise(r => setTimeout(r, 300));
       onDone();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to save draft");
@@ -561,6 +563,7 @@ function RecordBookingDialog({
         }),
       });
       toast.success(`Booking recorded — PO ${res.po.poNumber} generated`);
+      await new Promise(r => setTimeout(r, 300));
       onDone();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to record booking");

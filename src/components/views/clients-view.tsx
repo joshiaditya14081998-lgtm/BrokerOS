@@ -221,6 +221,8 @@ function NewClientDialog({ onDone }: { onDone: () => void }) {
     try {
       await api("/api/clients", { method: "POST", body: JSON.stringify(form) });
       toast.success("Client created");
+      // Small delay to ensure the DB write is committed before refresh
+      await new Promise(r => setTimeout(r, 300));
       onDone();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed");

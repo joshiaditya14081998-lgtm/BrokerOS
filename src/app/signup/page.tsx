@@ -127,9 +127,21 @@ function SignupForm() {
     }
 
     if (data.user) {
-      // Auto-create a Broker profile + Subscription in our DB (linked to auth
-      // user). The selected plan + 14-day trial window is recorded on the
-      // Subscription row. Defaults to "free" if none selected.
+      // Auto-confirm email via server-side admin API (avoids requiring the
+      // user to check their inbox). Then sign in immediately.
+      try {
+        await fetch("/api/auth/auto-confirm", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId: data.user.id }),
+        });
+        // Auto-login (sign in with the same credentials)
+        await supabase.auth.signInWithPassword({ email, password });
+      } catch {
+        // Non-critical — user can login manually after email confirm
+      }
+
+      // Auto-create a Broker profile + Subscription in our DB
       try {
         await fetch("/api/auth/create-profile", {
           method: "POST",
@@ -137,8 +149,7 @@ function SignupForm() {
           body: JSON.stringify({ fullName, plan }),
         });
       } catch {
-        // Non-critical — profile (and subscription) will be created on first
-        // API call via getCurrentBroker's auto-create fallback.
+        // Non-critical — profile will be auto-created on first API call
       }
       router.push("/");
       router.refresh();
