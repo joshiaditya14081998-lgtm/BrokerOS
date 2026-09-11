@@ -153,6 +153,8 @@ export async function middleware(req: NextRequest) {
     pathname.startsWith("/portal/login") ||
     pathname.startsWith("/api/auth") ||
     pathname.startsWith("/api/auth/callback") ||
+    pathname.startsWith("/terms") ||
+    pathname.startsWith("/privacy") ||
     pathname.startsWith("/_next") ||
     pathname.startsWith("/uploads") ||
     pathname === "/robots.txt" ||
