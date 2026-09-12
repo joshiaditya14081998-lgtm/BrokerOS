@@ -70,11 +70,9 @@ type SettingsResponse = {
 const BACKUP_REMINDER_KEY = "broker-os:backup-reminder-dismissed";
 const BACKUP_STALE_DAYS = 7;
 
-// localStorage key + sentinel for the data-health error banner dismissal.
 // Dismissal is keyed by the *error count* at dismiss time, so the banner
 // re-appears whenever the error count increases (e.g., dismissed at 2 errors,
 // re-appears when a 3rd error appears). A count of 0 is never stored.
-const HEALTH_BANNER_KEY = "broker-os:data-health-banner-dismissed";
 
 function backupAgeDays(iso: string | null): number | null {
   if (!iso) return null;
@@ -231,48 +229,6 @@ export function DashboardView() {
     setBackupReminderDismissed(effectiveAgeForDismiss);
     try {
       localStorage.setItem(BACKUP_REMINDER_KEY, String(effectiveAgeForDismiss));
-    } catch {
-      /* localStorage unavailable — state-only dismissal still works for this session */
-    }
-  };
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Data-health error banner — surfaces "error" severity issues from
-  // /api/data-health at the top of the dashboard. Dismissible via localStorage,
-  // keyed by the error count at dismiss time so it re-appears if the count
-  // goes up (e.g., dismissed at 2 → re-appears at 3). Non-blocking: failures
-  // are swallowed silently so the dashboard still loads even if the health
-  // API is down.
-  // ─────────────────────────────────────────────────────────────────────────  const [healthDismissedAt, setHealthDismissedAt] = React.useState<number>(0);
-  React.useEffect(() => {
-    try {
-      const raw = localStorage.getItem(HEALTH_BANNER_KEY);
-      if (raw) {
-        const n = parseInt(raw, 10);
-        if (Number.isFinite(n)) setHealthDismissedAt(n);
-      }
-    } catch {
-      /* localStorage unavailable — ignore */
-    }
-    let cancelled = false;
-    void fetch("/api/data-health", { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d: { issues?: { severity: string }[] } | null) => {
-        if (cancelled || !d) return;
-        const errs = (d.issues ?? []).filter((i) => i.severity === "error").length;
-        setHealthErrorCount(errs);
-      })
-      .catch(() => {
-        /* silent — non-blocking */
-      });
-    return () => { cancelled = true; };
-  }, []);
-
-  const showHealthBanner = healthErrorCount > 0 && healthErrorCount > healthDismissedAt;
-  const dismissHealthBanner = () => {
-    setHealthDismissedAt(healthErrorCount);
-    try {
-      localStorage.setItem(HEALTH_BANNER_KEY, String(healthErrorCount));
     } catch {
       /* localStorage unavailable — state-only dismissal still works for this session */
     }
