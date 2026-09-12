@@ -1,14 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import * as fs from "fs";
-import * as path from "path";
 import { db } from "@/lib/db";
 import { getCurrentBroker } from "@/lib/auth";
+import { isCloudinaryConfigured, deleteFromCloudinary } from "@/lib/cloudinary";
 
 // DELETE /api/photos/[id]
-//   → removes the Photo record AND the underlying file from /public/uploads.
-//   → { ok: true }
-//   Scoped to the current broker — a no-op (returns 404) if the photo row
-//   belongs to another tenant.
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const broker = await getCurrentBroker();
   if (!broker) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -19,21 +14,23 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  // Delete the original + thumbnail files from disk (best-effort — DB record
-  // is the source of truth).
-  const uploadsDir = path.join(process.cwd(), "public", "uploads");
-  const filesToDelete = [photo.url, photo.thumbnailUrl];
-  for (const fileUrl of filesToDelete) {
-    if (!fileUrl?.startsWith("/uploads/")) continue;
-    const filename = path.basename(fileUrl);
-    const filePath = path.join(uploadsDir, filename);
-    try {
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-      }
-    } catch {
-      // ignore disk errors; still delete the DB record
+  // Delete from Cloudinary (if Cloudinary-hosted) or local FS (fallback)
+  if (isCloudinaryConfigured && photo.url.includes("cloudinary.com")) {
+    // Extract publicId from Cloudinary URL
+    // URL format: https://res.cloudinary.com/{cloud}/image/upload/v{version}/{folder}/{id}
+    const urlParts = photo.url.split("/upload/");
+    if (urlParts.length > 1) {
+      const publicIdWithVersion = urlParts[1];
+      // Remove version prefix (v123456/) if present
+      const publicId = publicIdWithVersion.replace(/^v\d+\//, "").replace(/\.[^/.]+$/, "");
+      await deleteFromCloudinary(publicId);
     }
+  } else if (photo.url.startsWith("/uploads/")) {
+    // Local FS fallback
+    const fs = await import("fs");
+    const path = await import("path");
+    const filePath = path.join(process.cwd(), "public", photo.url);
+    try { fs.unlinkSync(filePath); } catch {}
   }
 
   try {
@@ -44,7 +41,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
         entityId: id,
         action: "delete",
         before: JSON.stringify(photo),
-        userName: "Broker",
+        userName: broker.fullName || "Broker",
         reason: `Photo removed from ${photo.entityType}:${photo.entityId} (${photo.stage})`,
       },
     });
