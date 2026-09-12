@@ -39,7 +39,6 @@ const G_PREFIX_MAP: Record<string, ViewKey> = {
   k: "brokerage", // k for kommission
   u: "disputes", // u for dispUtes
   n: "notifications",
-  l: "audit", // l for log
   o: "portal", // o for pOrtal
   e: "settings", // e for sEttings
 };

@@ -243,9 +243,7 @@ export function DashboardView() {
   // goes up (e.g., dismissed at 2 → re-appears at 3). Non-blocking: failures
   // are swallowed silently so the dashboard still loads even if the health
   // API is down.
-  // ─────────────────────────────────────────────────────────────────────────
-  const [healthErrorCount, setHealthErrorCount] = React.useState<number>(0);
-  const [healthDismissedAt, setHealthDismissedAt] = React.useState<number>(0);
+  // ─────────────────────────────────────────────────────────────────────────  const [healthDismissedAt, setHealthDismissedAt] = React.useState<number>(0);
   React.useEffect(() => {
     try {
       const raw = localStorage.getItem(HEALTH_BANNER_KEY);
@@ -545,177 +543,28 @@ export function DashboardView() {
 
   return (
     <div className="space-y-6">
-      {/* Data-health error banner — appears when /api/data-health reports any
-          "error" severity issue (stuck bills, forgotten POs). Dismissible via
-          localStorage; re-appears when the error count increases. */}
-      {showHealthBanner && (
-        <div className="flex items-start gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-rose-800 dark:text-rose-200">
-          <div className="grid size-7 shrink-0 place-items-center rounded-lg bg-rose-500/20 text-rose-700 dark:text-rose-300">
-            <AlertCircle className="size-4" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium">
-              ⚠ {healthErrorCount} data issue{healthErrorCount === 1 ? "" : "s"} need{healthErrorCount === 1 ? "s" : ""} attention — View Data Health
-            </p>
-            <p className="mt-0.5 text-[11px] text-rose-700/80 dark:text-rose-300/80">
-              Critical data quality problems detected (e.g., stuck bills with no payments, forgotten POs past their dispatch date). Open Data Health to see details and fix them.
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 border-rose-500/40 bg-rose-500/10 px-2.5 text-[11px] text-rose-800 hover:bg-rose-500/20 dark:text-rose-200"
-              onClick={() => setView("data-health")}
+      {/* Date range selector */}
+      <div className="flex items-center gap-2">
+        <ToggleGroup
+          type="single"
+          value={range}
+          onValueChange={(v) => v && setRange(v as typeof range)}
+          size="sm"
+          className="glass rounded-lg border border-border/60 p-0.5"
+          aria-label="Dashboard date range"
+        >
+          {RANGE_OPTIONS.map((opt) => (
+            <ToggleGroupItem
+              key={opt.value}
+              value={opt.value}
+              aria-label={opt.long}
+              className="rounded-md px-2.5 text-xs font-medium data-[state=on]:bg-emerald-500/15 data-[state=on]:text-emerald-700 dark:data-[state=on]:text-emerald-300"
             >
-              View Data Health
-            </Button>
-            <button
-              type="button"
-              onClick={dismissHealthBanner}
-              aria-label="Dismiss data health warning"
-              className="grid size-7 place-items-center rounded-lg text-rose-700/70 transition-colors hover:bg-rose-500/20 hover:text-rose-800 dark:text-rose-300/70 dark:hover:text-rose-200"
-            >
-              <X className="size-3.5" />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Backup-age reminder — appears when last backup is >7 days old (or never) */}
-      {showBackupReminder && (
-        <div className="flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-amber-800 dark:text-amber-200">
-          <div className="grid size-7 shrink-0 place-items-center rounded-lg bg-amber-500/20 text-amber-700 dark:text-amber-300">
-            <HardDrive className="size-4" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium">
-              {backupAge === null
-                ? "No backup has ever been taken — consider backing up your data."
-                : `Last backup was ${backupAge} day${backupAge === 1 ? "" : "s"} ago — consider backing up your data.`}
-            </p>
-            <p className="mt-0.5 text-[11px] text-amber-700/80 dark:text-amber-300/80">
-              Backups protect against accidental data loss. Open Settings → Backup &amp; Restore to download a full JSON snapshot.
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 border-amber-500/40 bg-amber-500/10 px-2.5 text-[11px] text-amber-800 hover:bg-amber-500/20 dark:text-amber-200"
-              onClick={() => setView("settings")}
-            >
-              Open Settings
-            </Button>
-            <button
-              type="button"
-              onClick={dismissBackupReminder}
-              aria-label="Dismiss backup reminder"
-              className="grid size-7 place-items-center rounded-lg text-amber-700/70 transition-colors hover:bg-amber-500/20 hover:text-amber-800 dark:text-amber-300/70 dark:hover:text-amber-200"
-            >
-              <X className="size-3.5" />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Toolbar: range subtitle (or customize-mode hint) + actions */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
-          {customizeMode ? (
-            <>
-              <Settings2 className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-              <span className="truncate font-medium text-foreground">Customize mode</span>
-              <span className="truncate">
-                {isTouchDevice
-                  ? "— tap ↑ / ↓ to reorder, eye icon to hide"
-                  : "— drag the grip to reorder, eye icon to hide"}
-              </span>
-            </>
-          ) : (
-            <>
-              <Calendar className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-              <span className="truncate">{rangeSubtitle}</span>
-              {loading && (
-                <Loader2 className="size-3.5 shrink-0 animate-spin text-emerald-600 dark:text-emerald-400" />
-              )}
-            </>
-          )}
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {customizeMode ? (
-            <>
-              <Button variant="outline" size="sm" onClick={handleReset}>
-                <RotateCcw className="size-3.5" /> Reset to default
-              </Button>
-              <Button size="sm" onClick={() => setCustomizeMode(false)}>
-                <Check className="size-3.5" /> Done
-              </Button>
-            </>
-          ) : (
-            <>
-              {customized && (
-                <button
-                  type="button"
-                  onClick={() => setCustomizeMode(true)}
-                  aria-label="Layout customized — open customize mode"
-                  className="transition-transform hover:scale-105"
-                >
-                  <Badge
-                    variant="outline"
-                    className="border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                  >
-                    <Check className="size-3" /> Customized
-                  </Badge>
-                </button>
-              )}
-              <Button variant="outline" size="sm" onClick={() => setCustomizeMode(true)}>
-                <Settings2 className="size-3.5" />
-                <span className="hidden sm:inline">Customize</span>
-              </Button>
-              <ShareLinkButton />
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setView("digest")}
-                className="border-emerald-500/30 text-emerald-700 hover:bg-emerald-500/10 hover:text-emerald-700 dark:text-emerald-300 dark:hover:bg-emerald-500/10 dark:hover:text-emerald-200"
-                aria-label="Open Daily Digest"
-              >
-                <Mail className="size-3.5" />
-                <span className="hidden sm:inline">Daily digest</span>
-              </Button>
-              {!isAllTime && data.rangeStart ? (
-                <Badge
-                  variant="outline"
-                  className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                >
-                  <Calendar className="size-3" />
-                  {formatDateShort(data.rangeStart)} – {formatDateShort(data.rangeEnd)}
-                </Badge>
-              ) : null}
-              <ToggleGroup
-                type="single"
-                value={range}
-                onValueChange={(v) => { if (v) setRange(v as Range); }}
-                size="sm"
-                className="glass rounded-lg border border-border/60 p-0.5"
-                aria-label="Dashboard date range"
-              >
-                {RANGE_OPTIONS.map((opt) => (
-                  <ToggleGroupItem
-                    key={opt.value}
-                    value={opt.value}
-                    aria-label={opt.long}
-                    className="rounded-md px-2.5 text-xs font-medium data-[state=on]:bg-emerald-500/15 data-[state=on]:text-emerald-700 dark:data-[state=on]:text-emerald-300"
-                  >
-                    <span className="hidden sm:inline">{opt.long}</span>
-                    <span className="sm:hidden">{opt.short}</span>
-                  </ToggleGroupItem>
-                ))}
-              </ToggleGroup>
-            </>
-          )}
-        </div>
+              <span className="hidden sm:inline">{opt.long}</span>
+              <span className="sm:hidden">{opt.short}</span>
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
       </div>
 
       {/* ───────────────────────────────────────────────────────────────────

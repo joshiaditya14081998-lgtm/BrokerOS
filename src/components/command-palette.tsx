@@ -72,11 +72,8 @@ const NAV_ITEMS: NavItemDef[] = [
   { key: "billing", label: "Billing & Plan", icon: CreditCard },
   { key: "disputes", label: "Disputes", icon: AlertTriangle },
   { key: "notifications", label: "Notifications", icon: Bell },
-  { key: "audit", label: "Audit Trail", icon: ScrollText },
-  { key: "data-health", label: "Data Health", icon: ShieldCheck },
   { key: "saved-views", label: "Saved Views", icon: Bookmark },
   { key: "report-builder", label: "Report Builder", icon: LayoutTemplate },
-  { key: "api-docs", label: "API Docs", icon: Code },
   { key: "settings", label: "Settings", icon: Settings },
   { key: "portal", label: "Portals", icon: Store },
 ];
@@ -135,7 +132,6 @@ const SEARCH_GROUPS: GroupConfig[] = [
   { type: "Visit", label: "Visits", icon: CalendarCheck },
   { type: "Dispatch", label: "Dispatches", icon: Truck },
   { type: "Notification", label: "Notifications", icon: Bell },
-  { type: "AuditLog", label: "Audit", icon: ScrollText },
 ];
 
 const ICON_BY_TYPE: Record<SearchResultType, IconType> = Object.fromEntries(
@@ -276,9 +272,6 @@ export function CommandPalette() {
           break;
         case "Notification":
           setView("notifications");
-          break;
-        case "AuditLog":
-          setView("audit");
           break;
         case "Dispatch":
           setView("dispatches");

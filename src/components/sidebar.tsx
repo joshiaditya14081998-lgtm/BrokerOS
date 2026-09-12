@@ -35,11 +35,8 @@ const NAV: NavItem[] = [
   { key: "portal", labelKey: "nav.portal", icon: Store, groupKey: "nav.portals" },
   { key: "disputes", labelKey: "nav.disputes", icon: AlertTriangle, groupKey: "nav.operations" },
   { key: "notifications", labelKey: "nav.notifications", icon: Bell, groupKey: "nav.system" },
-  { key: "audit", labelKey: "nav.audit", icon: ScrollText, groupKey: "nav.system" },
-  { key: "data-health", labelKey: "nav.dataHealth", icon: ShieldCheck, groupKey: "nav.system" },
   { key: "saved-views", labelKey: "nav.savedViews", icon: Bookmark, groupKey: "nav.system" },
   { key: "report-builder", labelKey: "nav.reportBuilder", icon: LayoutTemplate, groupKey: "nav.system" },
-  { key: "api-docs", labelKey: "nav.apiDocs", icon: Code, groupKey: "nav.system" },
   { key: "settings", labelKey: "nav.settings", icon: Settings, groupKey: "nav.system" },
 ];
 
@@ -100,7 +97,6 @@ export function Sidebar() {
       <div className="border-t border-sidebar-border px-3 py-3">
         <ThemeToggle />
         <SchedulerIndicator />
-        <HealthIndicator />
         <div className="mt-2 flex flex-col gap-0.5 px-3 text-[10px] text-muted-foreground/70">
           <span>v1.0 · Glassmorphic build</span>
           <span className="inline-flex items-center gap-1">
@@ -218,88 +214,3 @@ function SchedulerIndicator() {
   );
 }
 
-// HealthIndicator — small footer pill that shows the system's overall data
-// health score. Fetches /api/data-health on mount + every 5 minutes. The dot
-// colour mirrors the ScoreRing thresholds in the Data Health view:
-//   emerald > 85 · amber 60-85 · rose < 60.
-// Clicking it navigates to the Data Health view so the broker can drill in.
-function HealthIndicator() {
-  const { t } = useTranslation();
-  const setView = useUI((s) => s.setView);
-  const [score, setScore] = React.useState<number | null>(null);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    const check = async () => {
-      try {
-        const res = await fetch("/api/data-health", { cache: "no-store" });
-        if (!res.ok) {
-          if (!cancelled) setScore(null);
-          return;
-        }
-        const data = (await res.json()) as {
-          issues?: { severity: string }[];
-        };
-        if (cancelled) return;
-        const issues = data.issues ?? [];
-        const errorCount = issues.filter((i) => i.severity === "error").length;
-        const total = issues.length;
-        const s = total === 0 ? 100 : Math.round(((total - errorCount) / total) * 100);
-        setScore(s);
-      } catch {
-        if (!cancelled) setScore(null);
-      }
-    };
-    void check();
-    // Re-fetch every 5 minutes — data health is a slow-changing signal.
-    const id = setInterval(() => void check(), 5 * 60_000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, []);
-
-  const tone =
-    score === null ? "muted"
-    : score > 85 ? "emerald"
-    : score >= 60 ? "amber"
-    : "rose";
-
-  return (
-    <button
-      type="button"
-      onClick={() => setView("data-health")}
-      className={cn(
-        "mt-2 flex w-full items-center gap-1.5 rounded-lg px-3 py-1.5 text-[10px] font-medium transition-colors",
-        tone === "emerald" && "bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 dark:text-emerald-400",
-        tone === "amber" && "bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 dark:text-amber-400",
-        tone === "rose" && "bg-rose-500/10 text-rose-600 hover:bg-rose-500/20 dark:text-rose-400",
-        tone === "muted" && "bg-zinc-500/10 text-zinc-500 hover:bg-zinc-500/20 dark:text-zinc-400",
-      )}
-      title={
-        score === null
-          ? "Checking data health…"
-          : `Data health score: ${score}/100 — click to open the Data Health view`
-      }
-      aria-label={
-        score === null
-          ? "Data health: checking"
-          : `Data health: ${score} percent — open Data Health view`
-      }
-    >
-      <span
-        className={cn(
-          "inline-block size-1.5 rounded-full",
-          tone === "emerald" && "bg-emerald-500",
-          tone === "amber" && "bg-amber-500",
-          tone === "rose" && "bg-rose-500 animate-pulse",
-          tone === "muted" && "bg-muted-foreground/50",
-        )}
-      />
-      <span>
-        {t("sidebar.health")}:{" "}
-        {score === null ? t("sidebar.healthChecking") : `${score}%`}
-      </span>
-    </button>
-  );
-}

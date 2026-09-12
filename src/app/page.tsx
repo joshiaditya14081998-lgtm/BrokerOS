@@ -34,14 +34,11 @@ import { BrokerageView } from "@/components/views/brokerage-view";
 import { PartyLedgerView } from "@/components/views/party-ledger-view";
 import { DisputesView } from "@/components/views/disputes-view";
 import { NotificationsView } from "@/components/views/notifications-view";
-import { AuditView } from "@/components/views/audit-view";
 import { TagsView } from "@/components/views/tags-view";
-import { DataHealthView } from "@/components/views/data-health-view";
 import { SavedViewsView } from "@/components/views/saved-views-view";
 import { ReportBuilderView } from "@/components/views/report-builder-view";
 import { SettingsView } from "@/components/views/settings-view";
 import { PortalView } from "@/components/views/portal-view";
-import { ApiDocsView } from "@/components/views/api-docs-view";
 import { DraftQueueView } from "@/components/views/draft-queue-view";
 import { BillingView } from "@/components/views/billing-view";
 import { ClientDetailSheet } from "@/components/views/client-detail-sheet";
@@ -85,12 +82,9 @@ const VIEW_TITLE_KEYS: Record<string, { titleKey: string; subKey: string }> = {
   "party-ledger": { titleKey: "partyLedger.title", subKey: "partyLedger.subtitle" },
   disputes: { titleKey: "disputes.title", subKey: "disputes.subtitle" },
   notifications: { titleKey: "notifications.title", subKey: "notifications.subtitle" },
-  audit: { titleKey: "audit.title", subKey: "audit.subtitle" },
-  "data-health": { titleKey: "dataHealth.title", subKey: "dataHealth.subtitle" },
   tags: { titleKey: "tags.title", subKey: "tags.subtitle" },
   "saved-views": { titleKey: "savedViews.title", subKey: "savedViews.subtitle" },
   "report-builder": { titleKey: "nav.reportBuilder", subKey: "reportBuilder.subtitle" },
-  "api-docs": { titleKey: "apiDocs.title", subKey: "apiDocs.subtitle" },
   settings: { titleKey: "settings.title", subKey: "settings.subtitle" },
   portal: { titleKey: "portals.title", subKey: "portals.subtitle" },
   "draft-queue": { titleKey: "draftQueue.title", subKey: "draftQueue.subtitle" },
@@ -151,8 +145,8 @@ export default function Page() {
     const known = new Set<string>([
       "dashboard", "analytics", "digest", "clients", "suppliers", "visits",
       "pos", "dispatches", "bills", "payments", "brokerage", "party-ledger",
-      "disputes", "notifications", "audit", "data-health", "tags",
-      "saved-views", "report-builder", "api-docs", "settings", "portal",
+      "disputes", "notifications", "tags",
+      "saved-views", "report-builder", "settings", "portal",
       "drafts", "draft-queue", "billing",
     ]);
     if (!known.has(v)) return;
@@ -517,12 +511,9 @@ function ViewRouter({ view }: { view: string }) {
     case "party-ledger": return <PartyLedgerView />;
     case "disputes": return <DisputesView />;
     case "notifications": return <NotificationsView />;
-    case "audit": return <AuditView />;
-    case "data-health": return <DataHealthView />;
     case "tags": return <TagsView />;
     case "saved-views": return <SavedViewsView />;
     case "report-builder": return <ReportBuilderView />;
-    case "api-docs": return <ApiDocsView />;
     case "settings": return <SettingsView />;
     case "portal": return <PortalView />;
     // Sprint 4 — Draft Queue. S4A's production view renders under both the
