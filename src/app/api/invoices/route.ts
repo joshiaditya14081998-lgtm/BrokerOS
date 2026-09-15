@@ -48,15 +48,17 @@ function parseDate(raw: string | null): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-// Generate `INV-YYYY-NNNN` — NNNN = number of invoices this broker has
-// already created in year YYYY, plus 1. Zero-padded to 4 digits.
+// Generate `INV-YYYY-NNNN` — NNNN = number of invoices already created in year
+// YYYY across ALL brokers, plus 1. Zero-padded to 4 digits. The count is
+// table-wide (not scoped to brokerId) because `invoiceNumber` has a UNIQUE
+// constraint at the table level — counting per-broker would collide when two
+// brokers both create their first invoice of the year.
 async function generateInvoiceNumber(brokerId: string, issueDate: Date): Promise<string> {
   const year = issueDate.getFullYear();
   const yearStart = new Date(year, 0, 1);
   const yearEnd = new Date(year + 1, 0, 1);
   const count = await db.invoice.count({
     where: {
-      brokerId,
       issueDate: { gte: yearStart, lt: yearEnd },
     },
   });
