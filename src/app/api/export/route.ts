@@ -14,6 +14,7 @@ type ExportType =
   | "payments"
   | "brokerage"
   | "expenses"
+  | "invoices"
   | "audit";
 
 const VALID_TYPES: ExportType[] = [
@@ -24,6 +25,7 @@ const VALID_TYPES: ExportType[] = [
   "payments",
   "brokerage",
   "expenses",
+  "invoices",
   "audit",
 ];
 
@@ -414,6 +416,43 @@ async function buildExpenses(brokerId: string): Promise<{ columns: CsvColumn[]; 
   return { columns, rows };
 }
 
+async function buildInvoices(brokerId: string): Promise<{ columns: CsvColumn[]; rows: Record<string, unknown>[] }> {
+  const columns: CsvColumn[] = [
+    { key: "invoiceNumber", label: "InvoiceNumber" },
+    { key: "clientName", label: "Client" },
+    { key: "issueDate", label: "IssueDate" },
+    { key: "dueDate", label: "DueDate" },
+    { key: "subtotal", label: "Subtotal" },
+    { key: "gstRate", label: "GSTRate" },
+    { key: "gstAmount", label: "GSTAmount" },
+    { key: "roundOff", label: "RoundOff" },
+    { key: "totalAmount", label: "Total" },
+    { key: "status", label: "Status" },
+    { key: "placeOfSupply", label: "PlaceOfSupply" },
+    { key: "createdAt", label: "CreatedAt" },
+  ];
+  const invoices = await db.invoice.findMany({
+    where: { brokerId },
+    orderBy: { issueDate: "desc" },
+    include: { client: { select: { name: true } } },
+  });
+  const rows = invoices.map((i) => ({
+    invoiceNumber: i.invoiceNumber,
+    clientName: i.client.name,
+    issueDate: i.issueDate,
+    dueDate: i.dueDate,
+    subtotal: i.subtotal,
+    gstRate: i.gstRate,
+    gstAmount: i.gstAmount,
+    roundOff: i.roundOff,
+    totalAmount: i.totalAmount,
+    status: i.status,
+    placeOfSupply: i.placeOfSupply ?? "",
+    createdAt: i.createdAt,
+  }));
+  return { columns, rows };
+}
+
 // Non-audit builders take a brokerId argument.
 const BUILDERS: Record<Exclude<ExportType, "audit">, (brokerId: string) => Promise<{ columns: CsvColumn[]; rows: Record<string, unknown>[] }>> = {
   clients: buildClients,
@@ -423,6 +462,7 @@ const BUILDERS: Record<Exclude<ExportType, "audit">, (brokerId: string) => Promi
   payments: buildPayments,
   brokerage: buildBrokerage,
   expenses: buildExpenses,
+  invoices: buildInvoices,
 };
 
 export async function GET(req: NextRequest) {

@@ -5,7 +5,7 @@ import {
   Users, Factory, FileText, AlertTriangle, Wallet, BadgePercent,
   TrendingUp, Clock, ArrowUpRight, Calendar, Loader2, HardDrive, X,
   GripVertical, Eye, EyeOff, RotateCcw, Settings2, Check, Mail, AlertCircle,
-  Lightbulb,
+  Lightbulb, ReceiptIndianRupee,
 } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid,
@@ -140,6 +140,22 @@ export function DashboardView() {
     `/api/dashboard?range=${range}`,
     { refreshKey: range },
   );
+  // ACC1+2 — fetch this month's operating expenses so the dashboard can show
+  // "Total Expenses" + "Net Profit" alongside brokerage earned. The expense
+  // API returns `{ expenses, summary: { total, byCategory } }` — we only
+  // need `summary.total` here. Always fetches the current month regardless
+  // of the dashboard's `range` selector, so the KPI always reflects
+  // month-to-date operating costs.
+  const now = new Date();
+  const monthStartIso = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  const { data: expenseData } = useApi<{ summary: { total: number } }>(
+    `/api/expenses?from=${encodeURIComponent(monthStartIso)}`,
+  );
+  const totalExpensesThisMonth = expenseData?.summary.total ?? 0;
+  const brokerageEarnedTotal = data
+    ? data.kpis.brokeragePaid + data.kpis.brokerageScheduled + data.kpis.brokerageAccrued
+    : 0;
+  const netProfit = brokerageEarnedTotal - totalExpensesThisMonth;
   const { data: settingsData } = useApi<SettingsResponse>("/api/settings");
   const { setView, openDetail, drillTo } = useUI();
 
@@ -286,7 +302,7 @@ export function DashboardView() {
     switch (id) {
       case "kpiOverview":
         return (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
             <KpiCard
               label={t("dashboard.outstandingReceivable")}
               value={fmtCurrency(kpis.outstandingReceivable, { compact: true })}
@@ -318,6 +334,26 @@ export function DashboardView() {
               icon={<FileText className="size-5" />}
               accent="teal"
               onClick={() => drillTo("disputes", "open")}
+            />
+            {/* ACC1 — Total Expenses this month. Clicking drills into the
+                Expenses view (no preset — just navigates). */}
+            <KpiCard
+              label={t("dashboard.totalExpenses")}
+              value={fmtCurrency(totalExpensesThisMonth, { compact: true })}
+              sub={t("dashboard.totalExpensesHint")}
+              icon={<ReceiptIndianRupee className="size-5" />}
+              accent="rose"
+              onClick={() => setView("expenses")}
+            />
+            {/* ACC2 — Net Profit = brokerage earned − expenses this month.
+                Emerald when positive, rose when negative. */}
+            <KpiCard
+              label={netProfit >= 0 ? t("dashboard.netProfit") : t("dashboard.netLoss")}
+              value={fmtCurrency(Math.abs(netProfit), { compact: true })}
+              sub={t("dashboard.netProfitHint")}
+              icon={<TrendingUp className="size-5" />}
+              accent={netProfit >= 0 ? "emerald" : "rose"}
+              onClick={() => setView("pl-statement")}
             />
           </div>
         );

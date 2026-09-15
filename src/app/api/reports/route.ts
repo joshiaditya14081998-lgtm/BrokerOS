@@ -8,11 +8,16 @@ export const dynamic = "force-dynamic";
 // ─────────────────────────────────────────────────────────────────────────────
 // PDF / print-optimized HTML report API
 //
-// GET /api/reports?type=<brokerage-statement|client-ledger|supplier-summary|audit-trail>
-//                  &range=<month|quarter|year|all>      (brokerage-statement only)
+// GET /api/reports?type=<brokerage-statement|client-ledger|supplier-summary|audit-trail|purchase-order|party-ledger|gst-filing|profit-loss|invoice|trial-balance|cash-flow>
+//                  &range=<month|quarter|year|all>      (brokerage-statement + profit-loss + cash-flow)
 //                  &clientId=<id>                        (client-ledger only)
 //                  &supplierId=<id>                      (supplier-summary only)
-//                  &from=<ISO>&to=<ISO>&entityType=<T>   (audit-trail only)
+//                  &poId=<id>                            (purchase-order only)
+//                  &partyType=<client|supplier>&partyId=<> (party-ledger only)
+//                  &invoiceId=<id>                       (invoice only)
+//                  &asOf=<ISO>                           (trial-balance only)
+//                  &from=<ISO>&to=<ISO>                  (gst-filing / profit-loss / cash-flow with range=custom)
+//                  &entityType=<T>                       (audit-trail only)
 //
 // Returns a standalone HTML document (Content-Type: text/html) that is fully
 // print-optimized. The browser auto-opens the print dialog (window.print()) on
@@ -20,10 +25,33 @@ export const dynamic = "force-dynamic";
 // button is shown in the on-screen view and hidden in print mode.
 // ─────────────────────────────────────────────────────────────────────────────
 
-type ReportType = "brokerage-statement" | "client-ledger" | "supplier-summary" | "audit-trail" | "purchase-order" | "party-ledger" | "gst-filing";
+type ReportType =
+  | "brokerage-statement"
+  | "client-ledger"
+  | "supplier-summary"
+  | "audit-trail"
+  | "purchase-order"
+  | "party-ledger"
+  | "gst-filing"
+  | "profit-loss"
+  | "invoice"
+  | "trial-balance"
+  | "cash-flow";
 type Range = "month" | "quarter" | "year" | "all";
 
-const VALID_TYPES: ReportType[] = ["brokerage-statement", "client-ledger", "supplier-summary", "audit-trail", "purchase-order", "party-ledger", "gst-filing"];
+const VALID_TYPES: ReportType[] = [
+  "brokerage-statement",
+  "client-ledger",
+  "supplier-summary",
+  "audit-trail",
+  "purchase-order",
+  "party-ledger",
+  "gst-filing",
+  "profit-loss",
+  "invoice",
+  "trial-balance",
+  "cash-flow",
+];
 const VALID_RANGES: Range[] = ["month", "quarter", "year", "all"];
 
 const REPORT_TITLES: Record<ReportType, string> = {
@@ -34,6 +62,10 @@ const REPORT_TITLES: Record<ReportType, string> = {
   "purchase-order": "Purchase Order",
   "party-ledger": "Party Ledger Report",
   "gst-filing": "GST Filing Report",
+  "profit-loss": "P&L Statement",
+  "invoice": "Tax Invoice",
+  "trial-balance": "Trial Balance",
+  "cash-flow": "Cash Flow Statement",
 };
 
 // ── Formatting helpers (server-safe — Intl is available in Node) ─────────────
@@ -2136,6 +2168,518 @@ async function buildGstFiling(brokerId: string, params: URLSearchParams): Promis
   return htmlShell(REPORT_TITLES["gst-filing"], rangeLabel, body, footerNote);
 }
 
+// ── P&L Statement report ─────────────────────────────────────────────────────
+//
+// Mirrors the JSON endpoint at `/api/reports/profit-loss/route.ts`. Renders
+// a print-optimized P&L: income (brokerage eligible + paid) vs expenses
+// (by category) → net profit/loss + margin + previous-period comparison.
+
+async function buildProfitLoss(brokerId: string, params: URLSearchParams): Promise<string> {
+  const rawRange = (params.get("range") ?? "month").toLowerCase();
+  const fromRaw = params.get("from");
+  const toRaw = params.get("to");
+
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth();
+
+  let start: Date;
+  let end: Date;
+  let rangeLabel: string;
+
+  if (rawRange === "custom" && fromRaw && toRaw) {
+    const f = new Date(fromRaw);
+    const t = new Date(toRaw);
+    if (!Number.isNaN(f.getTime()) && !Number.isNaN(t.getTime())) {
+      start = new Date(f); start.setHours(0, 0, 0, 0);
+      end = new Date(t); end.setHours(23, 59, 59, 999);
+      rangeLabel = `${fmtDate(start)} → ${fmtDate(end)}`;
+    } else {
+      start = new Date(y, m, 1);
+      end = now;
+      rangeLabel = start.toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+    }
+  } else if (rawRange === "quarter") {
+    const qStartMonth = Math.floor(m / 3) * 3;
+    start = new Date(y, qStartMonth, 1);
+    end = now;
+    const qNum = Math.floor(qStartMonth / 3) + 1;
+    rangeLabel = `Q${qNum} ${y}`;
+  } else if (rawRange === "year") {
+    start = new Date(y, 0, 1);
+    end = now;
+    rangeLabel = `Year ${y}`;
+  } else {
+    start = new Date(y, m, 1);
+    end = now;
+    rangeLabel = start.toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+  }
+
+  // Income — brokerage eligible in range
+  const eligibleAgg = await db.brokerage.aggregate({
+    where: { brokerId, eligible: true, eligibleAt: { gte: start, lte: end } },
+    _sum: { brokerageAmount: true },
+  });
+  const brokerageEligible = eligibleAgg._sum.brokerageAmount ?? 0;
+
+  const paidAgg = await db.brokerage.aggregate({
+    where: { brokerId, payoutStatus: "paid", payout: { paidAt: { gte: start, lte: end } } },
+    _sum: { brokerageAmount: true },
+  });
+  const brokeragePaidOut = paidAgg._sum.brokerageAmount ?? 0;
+
+  const totalIncome = brokerageEligible;
+
+  // Expenses by category
+  const expByCat = await db.expense.groupBy({
+    by: ["category"],
+    where: { brokerId, date: { gte: start, lte: end } },
+    _sum: { amount: true },
+  });
+  const catMap = new Map<string, number>();
+  for (const r of expByCat) catMap.set(r.category, r._sum.amount ?? 0);
+  const CATEGORIES = ["travel", "phone", "staff_salary", "office_rent", "marketing", "miscellaneous"];
+  const expensesByCat = CATEGORIES.map((c) => ({ category: c, amount: catMap.get(c) ?? 0 }));
+  const totalExpenses = expensesByCat.reduce((s, e) => s + e.amount, 0);
+
+  const profit = totalIncome - totalExpenses;
+  const marginPercent = totalIncome > 0 ? (profit / totalIncome) * 100 : 0;
+  const isProfit = profit >= 0;
+
+  // Previous period comparison
+  const duration = end.getTime() - start.getTime();
+  const prevEnd = new Date(start.getTime() - 1);
+  const prevStart = new Date(prevEnd.getTime() - duration);
+  const prevEligible = (await db.brokerage.aggregate({
+    where: { brokerId, eligible: true, eligibleAt: { gte: prevStart, lte: prevEnd } },
+    _sum: { brokerageAmount: true },
+  }))._sum.brokerageAmount ?? 0;
+  const prevExpAgg = await db.expense.groupBy({
+    by: ["category"],
+    where: { brokerId, date: { gte: prevStart, lte: prevEnd } },
+    _sum: { amount: true },
+  });
+  const prevExpenses = prevExpAgg.reduce((s, r) => s + (r._sum.amount ?? 0), 0);
+  const prevProfit = prevEligible - prevExpenses;
+  const changePercent = prevProfit !== 0
+    ? ((profit - prevProfit) / Math.abs(prevProfit)) * 100
+    : profit !== 0 ? 100 : 0;
+
+  const netColor = isProfit ? "#059669" : "#e11d48";
+  const netLabel = isProfit ? "Net Profit" : "Net Loss";
+  const changeArrow = changePercent >= 0 ? "▲" : "▼";
+  const changeColor = changePercent >= 0 ? "#059669" : "#e11d48";
+
+  const incomeRows = `
+    <tr><td>Brokerage Eligible (accrued)</td><td class="num">${fmtCurrency(brokerageEligible)}</td></tr>
+    <tr><td>Brokerage Paid Out</td><td class="num">${fmtCurrency(brokeragePaidOut)}</td></tr>
+    <tr><td>Other Income</td><td class="num">${fmtCurrency(0)}</td></tr>
+  `;
+  const expenseRows = expensesByCat.map((e) => {
+    const pct = totalExpenses > 0 ? (e.amount / totalExpenses) * 100 : 0;
+    return `<tr><td>${titleCase(e.category)}</td><td class="num">${fmtCurrency(e.amount)}</td><td class="num">${pct.toFixed(1)}%</td></tr>`;
+  }).join("");
+
+  const body = `
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-label">Total Income</div>
+        <div class="kpi-value emerald">${fmtCurrency(totalIncome)}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Total Expenses</div>
+        <div class="kpi-value rose">${fmtCurrency(totalExpenses)}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">${netLabel}</div>
+        <div class="kpi-value" style="color:${netColor}">${isProfit ? "" : "−"}${fmtCurrency(Math.abs(profit))}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Margin</div>
+        <div class="kpi-value">${marginPercent.toFixed(1)}%</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Income Breakdown</div>
+      <table class="report">
+        <thead><tr><th>Source</th><th class="num">Amount</th></tr></thead>
+        <tbody>${incomeRows}</tbody>
+        <tfoot><tr><td>Total Income</td><td class="num" style="color:#059669">${fmtCurrency(totalIncome)}</td></tr></tfoot>
+      </table>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Expense Breakdown</div>
+      <table class="report">
+        <thead><tr><th>Category</th><th class="num">Amount</th><th class="num">% of Total</th></tr></thead>
+        <tbody>${expenseRows}</tbody>
+        <tfoot><tr><td>Total Expenses</td><td class="num" style="color:#e11d48">${fmtCurrency(totalExpenses)}</td><td class="num">100%</td></tr></tfoot>
+      </table>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Net Result</div>
+      <div class="kpi-card" style="border-left: 4px solid ${netColor};">
+        <div class="kpi-label">${netLabel}</div>
+        <div class="kpi-value" style="color:${netColor}; font-size: 22px;">${isProfit ? "" : "−"}${fmtCurrency(Math.abs(profit))}</div>
+        <div class="kpi-sub">Margin: ${marginPercent.toFixed(1)}% · vs previous: <span style="color:${changeColor}">${changeArrow} ${Math.abs(changePercent).toFixed(1)}%</span></div>
+      </div>
+    </div>
+  `;
+
+  return htmlShell(REPORT_TITLES["profit-loss"], rangeLabel, body, "P&L computed from brokerage income and operating expenses.");
+}
+
+// ── Invoice (single) — professional GST-compliant tax invoice ─────────────────
+
+async function buildInvoice(brokerId: string, params: URLSearchParams): Promise<string> {
+  const invoiceId = params.get("invoiceId");
+  if (!invoiceId) {
+    throw new Error("invoiceId is required for invoice report");
+  }
+  const invoice = await db.invoice.findUnique({
+    where: { id: invoiceId },
+    include: {
+      broker: { select: { fullName: true, email: true } },
+      client: { select: { name: true, gstNo: true, address: true, email: true, phone: true } },
+    },
+  });
+  if (!invoice || invoice.brokerId !== brokerId) {
+    throw new Error("Invoice not found");
+  }
+
+  let items: Array<{ description: string; hsnCode?: string | null; quantity: number; rate: number; amount: number }> = [];
+  try { items = JSON.parse(invoice.itemsJson) as typeof items; } catch { items = []; }
+
+  const itemRows = items.map((it, i) => `
+    <tr>
+      <td class="center">${i + 1}</td>
+      <td>${escapeHtml(it.description)}</td>
+      <td class="center">${escapeHtml(it.hsnCode ?? "9985")}</td>
+      <td class="num">${it.quantity}</td>
+      <td class="num">${fmtCurrency(it.rate)}</td>
+      <td class="num">${fmtCurrency(it.amount)}</td>
+    </tr>
+  `).join("");
+
+  const body = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; border-bottom: 2px solid #10b981; padding-bottom: 16px; margin-bottom: 20px;">
+      <div>
+        <div style="font-size:18px; font-weight:800; color:#18181b;">${escapeHtml(invoice.broker.fullName ?? invoice.broker.email)}</div>
+        <div style="font-size:11px; color:#71717a;">Broker · ${escapeHtml(invoice.broker.email)}</div>
+      </div>
+      <div style="text-align:right;">
+        <div style="font-size:20px; font-weight:700; color:#10b981; letter-spacing:1px;">TAX INVOICE</div>
+        <div style="font-size:12px; color:#52525b; margin-top:4px;"><strong>${escapeHtml(invoice.invoiceNumber)}</strong></div>
+        <div style="font-size:11px; color:#71717a;">Issue: ${fmtDate(invoice.issueDate)} · Due: ${fmtDate(invoice.dueDate)}</div>
+      </div>
+    </div>
+
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-bottom: 24px;">
+      <div style="border:1px solid #e4e4e7; border-radius:8px; padding:12px;">
+        <div style="font-size:9px; text-transform:uppercase; letter-spacing:0.6px; color:#71717a; font-weight:600; margin-bottom:6px;">Bill From</div>
+        <div style="font-size:13px; font-weight:700;">${escapeHtml(invoice.broker.fullName ?? invoice.broker.email)}</div>
+        <div style="font-size:11px; color:#52525b;">${escapeHtml(invoice.broker.email)}</div>
+      </div>
+      <div style="border:1px solid #e4e4e7; border-radius:8px; padding:12px;">
+        <div style="font-size:9px; text-transform:uppercase; letter-spacing:0.6px; color:#71717a; font-weight:600; margin-bottom:6px;">Bill To</div>
+        <div style="font-size:13px; font-weight:700;">${escapeHtml(invoice.client.name)}</div>
+        <div style="font-size:11px; color:#52525b;">GSTIN: ${escapeHtml(invoice.client.gstNo ?? "—")}</div>
+        <div style="font-size:11px; color:#52525b;">Place of Supply: ${escapeHtml(invoice.placeOfSupply ?? "—")}</div>
+      </div>
+    </div>
+
+    <table class="report">
+      <thead>
+        <tr>
+          <th class="center">#</th>
+          <th>Description</th>
+          <th class="center">HSN</th>
+          <th class="num">Qty</th>
+          <th class="num">Rate</th>
+          <th class="num">Amount</th>
+        </tr>
+      </thead>
+      <tbody>${itemRows}</tbody>
+    </table>
+
+    <div style="display:flex; justify-content:flex-end; margin-top:16px;">
+      <table class="report" style="width: 280px;">
+        <tbody>
+          <tr><td>Subtotal</td><td class="num">${fmtCurrency(invoice.subtotal)}</td></tr>
+          <tr><td>GST (${invoice.gstRate}%)</td><td class="num">${fmtCurrency(invoice.gstAmount)}</td></tr>
+          <tr><td>Round Off</td><td class="num">${fmtCurrency(invoice.roundOff)}</td></tr>
+        </tbody>
+        <tfoot>
+          <tr>
+            <td><strong>Total</strong></td>
+            <td class="num" style="color:#059669; font-size:14px;"><strong>${fmtCurrency(invoice.totalAmount)}</strong></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+
+    ${invoice.notes ? `<div class="section"><div class="section-title">Notes</div><div style="font-size:11px; color:#52525b;">${escapeHtml(invoice.notes)}</div></div>` : ""}
+  `;
+
+  return htmlShell(REPORT_TITLES["invoice"], `${invoice.invoiceNumber} · ${fmtDate(invoice.issueDate)}`, body, "This is a computer-generated invoice. Payment terms as per agreement.");
+}
+
+// ── Trial Balance report ─────────────────────────────────────────────────────
+
+async function buildTrialBalance(brokerId: string, params: URLSearchParams): Promise<string> {
+  const asOfRaw = params.get("asOf");
+  const asOf = asOfRaw ? new Date(asOfRaw) : new Date();
+  if (Number.isNaN(asOf.getTime())) asOf.setTime(Date.now());
+  const rangeLabel = `As of ${fmtDate(asOf)}`;
+
+  // 1. Client Receivables (debit)
+  const bills = await db.bill.findMany({
+    where: { brokerId, createdAt: { lte: asOf } },
+    select: { finalAmount: true, paidAmount: true },
+  });
+  const clientReceivables = bills.reduce((s, b) => s + (b.finalAmount - b.paidAmount), 0);
+
+  // 2. Brokerage Receivable (debit) — eligible + unpaid
+  const brkrAgg = await db.brokerage.aggregate({
+    where: { brokerId, eligible: true, eligibleAt: { lte: asOf }, payoutStatus: { not: "paid" } },
+    _sum: { brokerageAmount: true },
+  });
+  const brokerageReceivable = brkrAgg._sum.brokerageAmount ?? 0;
+
+  // 3. Brokerage Income (credit) — all eligible
+  const incomeAgg = await db.brokerage.aggregate({
+    where: { brokerId, eligible: true, eligibleAt: { lte: asOf } },
+    _sum: { brokerageAmount: true },
+  });
+  const brokerageIncome = incomeAgg._sum.brokerageAmount ?? 0;
+
+  // 4-9. Expense accounts by category
+  const expAgg = await db.expense.groupBy({
+    by: ["category"],
+    where: { brokerId, date: { lte: asOf } },
+    _sum: { amount: true },
+  });
+  const expMap = new Map<string, number>();
+  for (const r of expAgg) expMap.set(r.category, r._sum.amount ?? 0);
+  const CATEGORIES = ["travel", "phone", "staff_salary", "office_rent", "marketing", "miscellaneous"];
+  const expenseAccounts = CATEGORIES.map((c) => ({ category: c, amount: expMap.get(c) ?? 0 }));
+
+  // 10. Bank/Cash
+  const payoutsAgg = await db.brokeragePayout.aggregate({
+    where: { brokerId, status: "paid", paidAt: { lte: asOf } },
+    _sum: { totalAmount: true },
+  });
+  const bankIn = payoutsAgg._sum.totalAmount ?? 0;
+  const bankOut = expenseAccounts.reduce((s, e) => s + e.amount, 0);
+
+  // 11. GST Payable (credit)
+  const gstAgg = await db.bill.aggregate({
+    where: { brokerId, createdAt: { lte: asOf } },
+    _sum: { gstAmount: true },
+  });
+  const gstPayable = gstAgg._sum.gstAmount ?? 0;
+
+  type Account = { name: string; type: string; debit: number; credit: number };
+  const accounts: Account[] = [
+    { name: "Client Receivables", type: "Asset", debit: clientReceivables, credit: 0 },
+    { name: "Brokerage Receivable", type: "Asset", debit: brokerageReceivable, credit: 0 },
+    { name: "Brokerage Income", type: "Income", debit: 0, credit: brokerageIncome },
+    ...expenseAccounts.map((e) => ({ name: `${titleCase(e.category)} Expenses`, type: "Expense", debit: e.amount, credit: 0 })),
+    { name: "Bank/Cash", type: "Asset", debit: bankIn, credit: bankOut },
+    { name: "GST Payable", type: "Liability", debit: 0, credit: gstPayable },
+  ];
+
+  const totalDebit = accounts.reduce((s, a) => s + a.debit, 0);
+  const totalCredit = accounts.reduce((s, a) => s + a.credit, 0);
+  const isBalanced = Math.abs(totalDebit - totalCredit) < 0.01;
+  const balanceColor = isBalanced ? "#059669" : "#e11d48";
+  const balanceLabel = isBalanced ? "✓ Balanced" : "✗ Out of balance";
+
+  const rows = accounts.map((a) => `
+    <tr>
+      <td>${escapeHtml(a.name)}</td>
+      <td class="center">${escapeHtml(a.type)}</td>
+      <td class="num">${a.debit > 0 ? fmtCurrency(a.debit) : "—"}</td>
+      <td class="num">${a.credit > 0 ? fmtCurrency(a.credit) : "—"}</td>
+    </tr>
+  `).join("");
+
+  const body = `
+    <div class="kpi-grid" style="grid-template-columns: repeat(3, 1fr);">
+      <div class="kpi-card">
+        <div class="kpi-label">Total Debit</div>
+        <div class="kpi-value">${fmtCurrency(totalDebit)}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Total Credit</div>
+        <div class="kpi-value">${fmtCurrency(totalCredit)}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Balance Check</div>
+        <div class="kpi-value" style="color:${balanceColor}; font-size:14px;">${balanceLabel}</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Account Balances</div>
+      <table class="report">
+        <thead>
+          <tr>
+            <th>Account</th>
+            <th class="center">Type</th>
+            <th class="num">Debit</th>
+            <th class="num">Credit</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+        <tfoot>
+          <tr>
+            <td colspan="2"><strong>Total</strong></td>
+            <td class="num"><strong>${fmtCurrency(totalDebit)}</strong></td>
+            <td class="num"><strong>${fmtCurrency(totalCredit)}</strong></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  `;
+
+  return htmlShell(REPORT_TITLES["trial-balance"], rangeLabel, body, "Trial balance — all accounts with debit/credit totals. Dr = Cr confirms books are balanced.");
+}
+
+// ── Cash Flow Statement report ───────────────────────────────────────────────
+
+async function buildCashFlow(brokerId: string, params: URLSearchParams): Promise<string> {
+  const rawRange = (params.get("range") ?? "month").toLowerCase();
+  const fromRaw = params.get("from");
+  const toRaw = params.get("to");
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth();
+
+  let start: Date;
+  let end: Date;
+  let rangeLabel: string;
+
+  if (rawRange === "custom" && fromRaw && toRaw) {
+    const f = new Date(fromRaw); const t = new Date(toRaw);
+    if (!Number.isNaN(f.getTime()) && !Number.isNaN(t.getTime())) {
+      start = new Date(f); start.setHours(0, 0, 0, 0);
+      end = new Date(t); end.setHours(23, 59, 59, 999);
+      rangeLabel = `${fmtDate(start)} → ${fmtDate(end)}`;
+    } else {
+      start = new Date(y, m, 1); end = now;
+      rangeLabel = start.toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+    }
+  } else if (rawRange === "quarter") {
+    const qStartMonth = Math.floor(m / 3) * 3;
+    start = new Date(y, qStartMonth, 1); end = now;
+    rangeLabel = `Q${Math.floor(qStartMonth / 3) + 1} ${y}`;
+  } else if (rawRange === "year") {
+    start = new Date(y, 0, 1); end = now;
+    rangeLabel = `Year ${y}`;
+  } else {
+    start = new Date(y, m, 1); end = now;
+    rangeLabel = start.toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+  }
+
+  // Inflows
+  const brokeragePayoutsAgg = await db.brokeragePayout.aggregate({
+    where: { brokerId, status: "paid", paidAt: { gte: start, lte: end } },
+    _sum: { totalAmount: true },
+  });
+  const brokeragePayouts = brokeragePayoutsAgg._sum.totalAmount ?? 0;
+
+  const invoicePaymentsAgg = await db.invoice.aggregate({
+    where: { brokerId, status: "paid", issueDate: { gte: start, lte: end } },
+    _sum: { totalAmount: true },
+  });
+  const invoicePayments = invoicePaymentsAgg._sum.totalAmount ?? 0;
+
+  const totalInflow = brokeragePayouts + invoicePayments;
+
+  // Outflows — expenses by category
+  const expAgg = await db.expense.groupBy({
+    by: ["category"],
+    where: { brokerId, date: { gte: start, lte: end } },
+    _sum: { amount: true },
+  });
+  const CATEGORIES = ["travel", "phone", "staff_salary", "office_rent", "marketing", "miscellaneous"];
+  const expMap = new Map<string, number>();
+  for (const r of expAgg) expMap.set(r.category, r._sum.amount ?? 0);
+  const outflowsByCat = CATEGORIES.map((c) => ({ category: c, amount: expMap.get(c) ?? 0 }));
+  const totalOutflow = outflowsByCat.reduce((s, e) => s + e.amount, 0);
+
+  // Opening balance — cumulative inflow − outflow from epoch to `start`
+  const prevPayouts = (await db.brokeragePayout.aggregate({
+    where: { brokerId, status: "paid", paidAt: { lt: start } },
+    _sum: { totalAmount: true },
+  }))._sum.totalAmount ?? 0;
+  const prevInvoices = (await db.invoice.aggregate({
+    where: { brokerId, status: "paid", issueDate: { lt: start } },
+    _sum: { totalAmount: true },
+  }))._sum.totalAmount ?? 0;
+  const prevExpenses = (await db.expense.aggregate({
+    where: { brokerId, date: { lt: start } },
+    _sum: { amount: true },
+  }))._sum.amount ?? 0;
+  const openingBalance = prevPayouts + prevInvoices - prevExpenses;
+  const closingBalance = openingBalance + (totalInflow - totalOutflow);
+  const netCashFlow = totalInflow - totalOutflow;
+  const netColor = netCashFlow >= 0 ? "#059669" : "#e11d48";
+
+  const inflowRows = `
+    <tr><td>Brokerage Payouts Received</td><td class="num">${fmtCurrency(brokeragePayouts)}</td></tr>
+    <tr><td>Invoice Payments Received</td><td class="num">${fmtCurrency(invoicePayments)}</td></tr>
+  `;
+  const outflowRows = outflowsByCat.map((e) => `
+    <tr><td>${titleCase(e.category)}</td><td class="num">${fmtCurrency(e.amount)}</td></tr>
+  `).join("");
+
+  const body = `
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-label">Total Cash In</div>
+        <div class="kpi-value emerald">${fmtCurrency(totalInflow)}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Total Cash Out</div>
+        <div class="kpi-value rose">${fmtCurrency(totalOutflow)}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Net Cash Flow</div>
+        <div class="kpi-value" style="color:${netColor}">${netCashFlow >= 0 ? "" : "−"}${fmtCurrency(Math.abs(netCashFlow))}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Closing Balance</div>
+        <div class="kpi-value">${fmtCurrency(closingBalance)}</div>
+        <div class="kpi-sub">Opening: ${fmtCurrency(openingBalance)}</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Cash Inflows</div>
+      <table class="report">
+        <thead><tr><th>Source</th><th class="num">Amount</th></tr></thead>
+        <tbody>${inflowRows}</tbody>
+        <tfoot><tr><td>Total Inflow</td><td class="num" style="color:#059669">${fmtCurrency(totalInflow)}</td></tr></tfoot>
+      </table>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Cash Outflows (Operating Expenses)</div>
+      <table class="report">
+        <thead><tr><th>Category</th><th class="num">Amount</th></tr></thead>
+        <tbody>${outflowRows}</tbody>
+        <tfoot><tr><td>Total Outflow</td><td class="num" style="color:#e11d48">${fmtCurrency(totalOutflow)}</td></tr></tfoot>
+      </table>
+    </div>
+  `;
+
+  return htmlShell(REPORT_TITLES["cash-flow"], rangeLabel, body, "Cash flow — money in (payouts + invoice payments) vs money out (operating expenses).");
+}
+
 // ── Route handler ────────────────────────────────────────────────────────────
 
 export async function GET(req: NextRequest) {
@@ -2187,6 +2731,18 @@ export async function GET(req: NextRequest) {
       html = await buildPartyLedger(broker.id, partyType, partyId);
     } else if (typeParam === "gst-filing") {
       html = await buildGstFiling(broker.id, searchParams);
+    } else if (typeParam === "profit-loss") {
+      html = await buildProfitLoss(broker.id, searchParams);
+    } else if (typeParam === "invoice") {
+      const invoiceId = searchParams.get("invoiceId");
+      if (!invoiceId) {
+        return NextResponse.json({ error: "invoiceId is required for invoice report" }, { status: 400 });
+      }
+      html = await buildInvoice(broker.id, searchParams);
+    } else if (typeParam === "trial-balance") {
+      html = await buildTrialBalance(broker.id, searchParams);
+    } else if (typeParam === "cash-flow") {
+      html = await buildCashFlow(broker.id, searchParams);
     } else {
       // audit-trail
       html = await buildAuditTrail(broker.id, searchParams);
