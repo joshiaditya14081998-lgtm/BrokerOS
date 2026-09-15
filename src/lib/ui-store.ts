@@ -36,7 +36,11 @@ export type ViewKey =
   // SA2 — Billing & Plan view. Stripe-backed subscription management
   // (checkout, portal, usage limits, plan comparison). Sidebar nav item +
   // command palette + the page router all use this key.
-  | "billing";
+  | "billing"
+  // ACC1 — Broker Expense Tracking. Operating-cost ledger (travel, phone,
+  // staff salary, office rent, marketing, misc). Sidebar nav item +
+  // command palette + the page router all use this key.
+  | "expenses";
 
 // A drill-down preset is a (view, preset) tuple that list views read on mount
 // to pre-filter themselves. The dashboard's KPI cards / chart elements use

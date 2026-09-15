@@ -13,6 +13,7 @@ type ExportType =
   | "bills"
   | "payments"
   | "brokerage"
+  | "expenses"
   | "audit";
 
 const VALID_TYPES: ExportType[] = [
@@ -22,6 +23,7 @@ const VALID_TYPES: ExportType[] = [
   "bills",
   "payments",
   "brokerage",
+  "expenses",
   "audit",
 ];
 
@@ -388,6 +390,30 @@ async function buildAudit(params: URLSearchParams, brokerId: string): Promise<{ 
   return { columns, rows };
 }
 
+async function buildExpenses(brokerId: string): Promise<{ columns: CsvColumn[]; rows: Record<string, unknown>[] }> {
+  const columns: CsvColumn[] = [
+    { key: "date", label: "Date" },
+    { key: "category", label: "Category" },
+    { key: "description", label: "Description" },
+    { key: "vendor", label: "Vendor" },
+    { key: "amount", label: "Amount" },
+    { key: "createdAt", label: "Recorded" },
+  ];
+  const expenses = await db.expense.findMany({
+    where: { brokerId },
+    orderBy: { date: "desc" },
+  });
+  const rows = expenses.map((e) => ({
+    date: e.date,
+    category: e.category,
+    description: e.description ?? "",
+    vendor: e.vendor ?? "",
+    amount: e.amount,
+    createdAt: e.createdAt,
+  }));
+  return { columns, rows };
+}
+
 // Non-audit builders take a brokerId argument.
 const BUILDERS: Record<Exclude<ExportType, "audit">, (brokerId: string) => Promise<{ columns: CsvColumn[]; rows: Record<string, unknown>[] }>> = {
   clients: buildClients,
@@ -396,6 +422,7 @@ const BUILDERS: Record<Exclude<ExportType, "audit">, (brokerId: string) => Promi
   bills: buildBills,
   payments: buildPayments,
   brokerage: buildBrokerage,
+  expenses: buildExpenses,
 };
 
 export async function GET(req: NextRequest) {

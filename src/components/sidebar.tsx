@@ -6,7 +6,7 @@ import {
   LayoutDashboard, BarChart3, Users, Factory, CalendarCheck, FileText, Truck,
   Receipt, Wallet, BadgePercent, AlertTriangle, Bell, ScrollText,
   Moon, Sun, Shirt, Settings, Store, Coffee, Tag, ShieldCheck, Bookmark, LayoutTemplate,
-  BookOpen, Code, CloudOff, CreditCard,
+  BookOpen, Code, CloudOff, CreditCard, ReceiptIndianRupee,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -31,6 +31,7 @@ const NAV: NavItem[] = [
   { key: "payments", labelKey: "nav.payments", icon: Wallet, groupKey: "nav.finance" },
   { key: "brokerage", labelKey: "nav.brokerage", icon: BadgePercent, groupKey: "nav.finance" },
   { key: "party-ledger", labelKey: "nav.partyLedger", icon: BookOpen, groupKey: "nav.finance" },
+  { key: "expenses", labelKey: "nav.expenses", icon: ReceiptIndianRupee, groupKey: "nav.finance" },
   { key: "billing", labelKey: "nav.billing", icon: CreditCard, groupKey: "nav.finance" },
   { key: "portal", labelKey: "nav.portal", icon: Store, groupKey: "nav.portals" },
   { key: "disputes", labelKey: "nav.disputes", icon: AlertTriangle, groupKey: "nav.operations" },

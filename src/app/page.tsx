@@ -41,6 +41,7 @@ import { SettingsView } from "@/components/views/settings-view";
 import { PortalView } from "@/components/views/portal-view";
 import { DraftQueueView } from "@/components/views/draft-queue-view";
 import { BillingView } from "@/components/views/billing-view";
+import { ExpensesView } from "@/components/views/expenses-view";
 import { ClientDetailSheet } from "@/components/views/client-detail-sheet";
 import { SupplierDetailSheet } from "@/components/views/supplier-detail-sheet";
 import { PoDetailSheet } from "@/components/views/po-detail-sheet";
@@ -91,6 +92,8 @@ const VIEW_TITLE_KEYS: Record<string, { titleKey: string; subKey: string }> = {
   drafts: { titleKey: "draftQueue.title", subKey: "draftQueue.subtitle" },
   // SA2 — Billing & Plan view title + subtitle.
   billing: { titleKey: "billing.title", subKey: "billing.subtitle" },
+  // ACC1 — Broker Expense Tracking view title + subtitle.
+  expenses: { titleKey: "expenses.title", subKey: "expenses.subtitle" },
 };
 
 export default function Page() {
@@ -524,6 +527,7 @@ function ViewRouter({ view }: { view: string }) {
     case "draft-queue":
     case "drafts": return <DraftQueueView />;
     case "billing": return <BillingView />;
+    case "expenses": return <ExpensesView />;
     default: return <DashboardView />;
   }
 }

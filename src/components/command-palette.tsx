@@ -30,6 +30,7 @@ import {
   Code,
   CloudOff,
   CreditCard,
+  ReceiptIndianRupee,
 } from "lucide-react";
 import {
   Dialog,
@@ -69,6 +70,7 @@ const NAV_ITEMS: NavItemDef[] = [
   { key: "payments", label: "Payments", icon: Wallet },
   { key: "brokerage", label: "Brokerage", icon: BadgePercent },
   { key: "party-ledger", label: "Party Ledger", icon: BookOpen },
+  { key: "expenses", label: "Expenses", icon: ReceiptIndianRupee },
   { key: "billing", label: "Billing & Plan", icon: CreditCard },
   { key: "disputes", label: "Disputes", icon: AlertTriangle },
   { key: "notifications", label: "Notifications", icon: Bell },

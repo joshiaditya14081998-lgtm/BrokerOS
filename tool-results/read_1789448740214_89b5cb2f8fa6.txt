@@ -1,0 +1,664 @@
+     1→     1→// Garment Broker OS — Prisma schema
+     2→     2→// Financial-grade relational model: Client <-> Supplier <-> Visit <-> Booking <-> PO <-> Dispatch <-> Bill <-> Payment <-> Brokerage -> Payout
+     3→     3→// Portable to PostgreSQL by changing the datasource provider.
+     4→     4→
+     5→     5→generator client {
+     6→     6→  provider = "prisma-client-js"
+     7→     7→}
+     8→     8→
+     9→     9→datasource db {
+    10→    10→  provider  = "postgresql"
+    11→    11→  url       = env("DATABASE_URL")
+    12→    12→  directUrl = env("DIRECT_URL")
+    13→    13→}
+    14→    14→
+    15→    15→// ─────────────────────────────────────────────────────────────────────────────
+    16→    16→// Auth & Multi-tenancy — Broker (Supabase Auth user profile)
+    17→    17→// ─────────────────────────────────────────────────────────────────────────────
+    18→    18→
+    19→    19→model Broker {
+    20→    20→  id            String   @id  // matches Supabase auth.users.id (UUID)
+    21→    21→  email         String   @unique
+    22→    22→  fullName      String?
+    23→    23→  role          String   @default("admin") // admin | broker | staff | viewer
+    24→    24→  isSuperAdmin  Boolean  @default(false) // SaaS owner — sees all tenants
+    25→    25→  isSuspended   Boolean  @default(false) // account disabled by super admin
+    26→    26→  createdAt     DateTime @default(now())
+    27→    27→  updatedAt     DateTime @updatedAt
+    28→    28→
+    29→    29→  // SaaS billing
+    30→    30→  subscription  Subscription?
+    31→    31→
+    32→    32→  clients        Client[]
+    33→    33→  suppliers      Supplier[]
+    34→    34→  visits        Visit[]
+    35→    35→  bookings      Booking[]
+    36→    36→  purchaseOrders PurchaseOrder[]
+    37→    37→  dispatches    Dispatch[]
+    38→    38→  bills         Bill[]
+    39→    39→  payments      Payment[]
+    40→    40→  brokerages    Brokerage[]
+    41→    41→  brokeragePayouts BrokeragePayout[]
+    42→    42→  disputes      Dispute[]
+    43→    43→  photos        Photo[]
+    44→    44→  notifications Notification[]
+    45→    45→  auditLogs     AuditLog[]
+    46→    46→  savedViews    SavedView[]
+    47→    47→  reportTemplates ReportTemplate[]
+    48→    48→  tags          Tag[]
+    49→    49→  expenses      Expense[]
+    50→    50→  invoices      Invoice[]
+    51→    51→}
+    52→    52→
+    53→    53→// ─────────────────────────────────────────────────────────────────────────────
+    54→    54→// SaaS Billing — Plans + Subscriptions
+    55→    55→// ─────────────────────────────────────────────────────────────────────────────
+    56→    56→
+    57→    57→model Plan {
+    58→    58→  id              String   @id @default(cuid())
+    59→    59→  name            String   @unique // free | basic | pro | enterprise
+    60→    60→  displayName     String   // "Basic" / "Pro" / "Enterprise"
+    61→    61→  priceMonthly    Float    @default(0) // ₹ per month (0 = free)
+    62→    62→  priceYearly     Float    @default(0) // ₹ per year (0 = free)
+    63→    63→  maxClients      Int      @default(5) // -1 = unlimited
+    64→    64→  maxSuppliers    Int      @default(5) // -1 = unlimited
+    65→    65→  maxPOs          Int      @default(10) // -1 = unlimited
+    66→    66→  maxPhotos       Int      @default(50) // -1 = unlimited
+    67→    67→  portalAccess    Boolean  @default(false) // supplier/client portals
+    68→    68→  aiDigest        Boolean  @default(false) // AI daily digest
+    69→    69→  customReports   Boolean  @default(false) // report builder
+    70→    70→  advancedAnalytics Boolean @default(false) // forecasting
+    71→    71→  description     String?
+    72→    72→  isActive        Boolean  @default(true)
+    73→    73→  createdAt       DateTime @default(now())
+    74→    74→  updatedAt       DateTime @updatedAt
+    75→    75→
+    76→    76→  subscriptions   Subscription[]
+    77→    77→}
+    78→    78→
+    79→    79→model Subscription {
+    80→    80→  id              String   @id @default(cuid())
+    81→    81→  brokerId        String   @unique
+    82→    82→  broker          Broker   @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+    83→    83→  planId          String
+    84→    84→  plan            Plan     @relation(fields: [planId], references: [id])
+    85→    85→  status          String   @default("trialing") // trialing | active | past_due | canceled | paused
+    86→    86→  stripeCustomerId  String? // Stripe customer ID
+    87→    87→  stripeSubId       String? // Stripe subscription ID
+    88→    88→  trialStart      DateTime?
+    89→    89→  trialEnd        DateTime?
+    90→    90→  currentPeriodStart  DateTime?
+    91→    91→  currentPeriodEnd    DateTime?
+    92→    92→  canceledAt      DateTime?
+    93→    93→  createdAt       DateTime @default(now())
+    94→    94→  updatedAt       DateTime @updatedAt
+    95→    95→}
+    96→    96→
+    97→    97→model AdminAuditLog {
+    98→    98→  id          String   @id @default(cuid())
+    99→    99→  adminId     String   // Broker.id of the super admin
+   100→   100→  action      String   // suspend_broker | activate_broker | delete_broker | change_plan | send_announcement | etc.
+   101→   101→  targetType  String?  // Broker | Subscription | Plan | etc.
+   102→   102→  targetId    String?
+   103→   103→  before      String?  // JSON snapshot
+   104→   104→  after       String?  // JSON snapshot
+   105→   105→  reason      String?
+   106→   106→  ipAddress   String?
+   107→   107→  createdAt   DateTime @default(now())
+   108→   108→}
+   109→   109→
+   110→   110→// ─────────────────────────────────────────────────────────────────────────────
+   111→   111→// Accounting — Expenses + Invoices
+   112→   112→// ─────────────────────────────────────────────────────────────────────────────
+   113→   113→
+   114→   114→model Expense {
+   115→   115→  id          String   @id @default(cuid())
+   116→   116→  brokerId    String
+   117→   117→  broker      Broker   @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+   118→   118→  category    String   // travel | phone | staff_salary | office_rent | marketing | miscellaneous
+   119→   119→  amount      Float
+   120→   120→  date        DateTime
+   121→   121→  description String?
+   122→   122→  vendor      String?
+   123→   123→  receiptUrl  String?
+   124→   124→  createdAt   DateTime @default(now())
+   125→   125→  updatedAt   DateTime @updatedAt
+   126→   126→
+   127→   127→  @@index([brokerId, date])
+   128→   128→  @@index([brokerId, category])
+   129→   129→}
+   130→   130→
+   131→   131→model Invoice {
+   132→   132→  id            String   @id @default(cuid())
+   133→   133→  brokerId      String
+   134→   134→  broker        Broker   @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+   135→   135→  clientId      String
+   136→   136→  client        Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+   137→   137→  invoiceNumber String   @unique
+   138→   138→  issueDate     DateTime
+   139→   139→  dueDate       DateTime?
+   140→   140→  itemsJson     String
+   141→   141→  subtotal      Float    @default(0)
+   142→   142→  gstRate       Float    @default(5.0)
+   143→   143→  gstAmount     Float    @default(0)
+   144→   144→  roundOff      Float    @default(0)
+   145→   145→  totalAmount   Float    @default(0)
+   146→   146→  status        String   @default("pending")
+   147→   147→  notes         String?
+   148→   148→  placeOfSupply String?
+   149→   149→  createdAt     DateTime @default(now())
+   150→   150→  updatedAt     DateTime @updatedAt
+   151→   151→
+   152→   152→  @@index([brokerId, issueDate])
+   153→   153→  @@index([clientId])
+   154→   154→}
+   155→   155→
+   156→   156→// ─────────────────────────────────────────────────────────────────────────────
+   157→   157→// Core Parties
+   158→   158→// ─────────────────────────────────────────────────────────────────────────────
+   159→   159→
+   160→   160→model Client {
+   161→   161→  id            String   @id @default(cuid())
+   162→   162→  brokerId      String
+   163→   163→  broker        Broker   @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+   164→   164→  // Portal login link — set when the client has a Supabase Auth portal account.
+   165→   165→  // Matches Supabase auth.users.id (UUID). Nullable so a client can exist with no
+   166→   166→  // portal access until the broker invites them.
+   167→   167→  userId        String?
+   168→   168→  name          String
+   169→   169→  contactPerson String?
+   170→   170→  phone         String?
+   171→   171→  email         String?
+   172→   172→  address       String?
+   173→   173→  gstNo         String?
+   174→   174→  // Payment terms
+   175→   175→  defaultPaymentCycleDays Int    @default(120) // e.g. 4 months ~ 120 days
+   176→   176→  // Brokerage payout cadence for this client (drives when broker gets paid)
+   177→   177→  payoutCadence  String   @default("immediate") // immediate | 4_month_cumulative | 12_month_cumulative
+   178→   178→  // GST handling
+   179→   179→  gstRate       Float    @default(5.0) // default GST % applied on bills for this client's goods
+   180→   180→  notes         String?
+   181→   181→  createdAt     DateTime @default(now())
+   182→   182→  updatedAt     DateTime @updatedAt
+   183→   183→
+   184→   184→  visits        Visit[]
+   185→   185→  bookings      Booking[]
+   186→   186→  purchaseOrders PurchaseOrder[]
+   187→   187→  bills         Bill[]
+   188→   188→  payments      Payment[]
+   189→   189→  brokerages    Brokerage[]
+   190→   190→  brokeragePayouts BrokeragePayout[]
+   191→   191→  tags          EntityTag[]
+   192→   192→  invoices      Invoice[]
+   193→   193→}
+   194→   194→
+   195→   195→model Supplier {
+   196→   196→  id            String   @id @default(cuid())
+   197→   197→  brokerId      String
+   198→   198→  broker        Broker   @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+   199→   199→  // Portal login link — set when the supplier has a Supabase Auth portal account.
+   200→   200→  // Matches Supabase auth.users.id (UUID). Nullable so a supplier can exist with no
+   201→   201→  // portal access until the broker invites them.
+   202→   202→  userId        String?
+   203→   203→  name          String
+   204→   204→  contactPerson String?
+   205→   205→  phone         String?
+   206→   206→  email         String?
+   207→   207→  address       String?
+   208→   208→  gstNo         String?
+   209→   209→  // Default commission % earned by broker from this supplier (overridable per PO)
+   210→   210→  defaultCommissionRate Float @default(5.0)
+   211→   211→  // Default GST % the supplier charges on goods
+   212→   212→  defaultGstRate Float   @default(5.0)
+   213→   213→  notes         String?
+   214→   214→  createdAt     DateTime @default(now())
+   215→   215→  updatedAt     DateTime @updatedAt
+   216→   216→
+   217→   217→  bookings      Booking[]
+   218→   218→  purchaseOrders PurchaseOrder[]
+   219→   219→  dispatches    Dispatch[]
+   220→   220→  bills         Bill[]
+   221→   221→  brokerages    Brokerage[]
+   222→   222→  tags          EntityTag[]
+   223→   223→}
+   224→   224→
+   225→   225→// ─────────────────────────────────────────────────────────────────────────────
+   226→   226→// Operations: Visit -> Booking -> PO -> Dispatch
+   227→   227→// ─────────────────────────────────────────────────────────────────────────────
+   228→   228→
+   229→   229→model Visit {
+   230→   230→  id          String   @id @default(cuid())
+   231→   231→  brokerId      String
+   232→   232→  broker        Broker   @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+   233→   233→  clientId    String
+   234→   234→  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+   235→   235→  plannedDate DateTime
+   236→   236→  actualDate  DateTime?
+   237→   237→  status      String   @default("scheduled") // scheduled | followed_up | occurred | no_show
+   238→   238→  notes       String?
+   239→   239→  createdAt   DateTime @default(now())
+   240→   240→  updatedAt   DateTime @updatedAt
+   241→   241→
+   242→   242→  bookings    Booking[]
+   243→   243→  photos      Photo[]  @relation("VisitPhotos")
+   244→   244→}
+   245→   245→
+   246→   246→model Booking {
+   247→   247→  id         String   @id @default(cuid())
+   248→   248→  brokerId      String
+   249→   249→  broker        Broker   @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+   250→   250→  visitId    String
+   251→   251→  visit      Visit    @relation(fields: [visitId], references: [id], onDelete: Cascade)
+   252→   252→  clientId   String
+   253→   253→  client     Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+   254→   254→  supplierId String
+   255→   255→  supplier   Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+   256→   256→  // Overridable commission for this booking's resulting PO
+   257→   257→  commissionRate Float?
+   258→   258→  bookingDate DateTime @default(now())
+   259→   259→  notes      String?
+   260→   260→  createdAt  DateTime @default(now())
+   261→   261→  updatedAt  DateTime @updatedAt
+   262→   262→
+   263→   263→  lineItems  BookingLineItem[]
+   264→   264→  purchaseOrder PurchaseOrder?
+   265→   265→  photos     Photo[]  @relation("BookingPhotos")
+   266→   266→}
+   267→   267→
+   268→   268→model BookingLineItem {
+   269→   269→  id        String  @id @default(cuid())
+   270→   270→  bookingId String
+   271→   271→  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+   272→   272→  styleName String
+   273→   273→  color     String?
+   274→   274→  setQty    Int     @default(0)
+   275→   275→  unitPrice Float   @default(0)
+   276→   276→  createdAt DateTime @default(now())
+   277→   277→}
+   278→   278→
+   279→   279→model PurchaseOrder {
+   280→   280→  id           String   @id @default(cuid())
+   281→   281→  brokerId      String
+   282→   282→  broker        Broker   @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+   283→   283→  poNumber     String   @unique
+   284→   284→  bookingId    String   @unique
+   285→   285→  booking      Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+   286→   286→  clientId     String
+   287→   287→  client       Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+   288→   288→  supplierId   String
+   289→   289→  supplier     Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+   290→   290→  // Snapshot of line items at PO creation (in case booking later edited)
+   291→   291→  lineItemsJson String  // JSON string of [{styleName, color, setQty, unitPrice, lineTotal}]
+   292→   292→  totalValue   Float    @default(0)
+   293→   293→  commissionRate Float  // snapshot commission % used for brokerage
+   294→   294→  gstRate      Float    // snapshot GST %
+   295→   295→  status       String   @default("open") // open | partially_delivered | fully_delivered | closed
+   296→   296→  expectedDispatchDate DateTime?
+   297→   297→  revisedDispatchDate   DateTime?
+   298→   298→  createdAt    DateTime @default(now())
+   299→   299→  updatedAt    DateTime @updatedAt
+   300→   300→
+   301→   301→  dispatches   Dispatch[]
+   302→   302→  bill         Bill?
+   303→   303→  disputes     Dispute[]
+   304→   304→  dispatchDateLogs DispatchDateLog[]
+   305→   305→  tags         EntityTag[]
+   306→   306→}
+   307→   307→
+   308→   308→model DispatchDateLog {
+   309→   309→  id        String   @id @default(cuid())
+   310→   310→  poId      String
+   311→   311→  po        PurchaseOrder @relation(fields: [poId], references: [id], onDelete: Cascade)
+   312→   312→  oldDate   DateTime?
+   313→   313→  newDate   DateTime?
+   314→   314→  reason    String?
+   315→   315→  createdAt DateTime @default(now())
+   316→   316→}
+   317→   317→
+   318→   318→model Dispatch {
+   319→   319→  id           String   @id @default(cuid())
+   320→   320→  brokerId      String
+   321→   321→  broker        Broker   @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+   322→   322→  poId         String
+   323→   323→  po           PurchaseOrder @relation(fields: [poId], references: [id], onDelete: Cascade)
+   324→   324→  supplierId   String
+   325→   325→  supplier     Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+   326→   326→  dispatchDate DateTime
+   327→   327→  // Items dispatched in this batch (JSON: [{styleName, color, qty}])
+   328→   328→  itemsJson    String
+   329→   329→  dispatchedQty Int    @default(0)
+   330→   330→  status       String  @default("in_transit") // in_transit | delivered | short_shipment
+   331→   331→  notes        String?
+   332→   332→  createdAt    DateTime @default(now())
+   333→   333→  updatedAt    DateTime @updatedAt
+   334→   334→
+   335→   335→  photos       Photo[]  @relation("DispatchPhotos")
+   336→   336→  disputes     Dispute[]
+   337→   337→}
+   338→   338→
+   339→   339→// ─────────────────────────────────────────────────────────────────────────────
+   340→   340→// Financial: Bill -> Payment -> Brokerage -> Payout
+   341→   341→// ─────────────────────────────────────────────────────────────────────────────
+   342→   342→
+   343→   343→model Bill {
+   344→   344→  id             String   @id @default(cuid())
+   345→   345→  brokerId      String
+   346→   346→  broker        Broker   @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+   347→   347→  billNumber     String   @unique
+   348→   348→  poId           String   @unique
+   349→   349→  po             PurchaseOrder @relation(fields: [poId], references: [id], onDelete: Cascade)
+   350→   350→  clientId       String
+   351→   351→  client         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+   352→   352→  supplierId     String
+   353→   353→  supplier       Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+   354→   354→  // Base = PO value − short-shipment value − returns value
+   355→   355→  baseAmount     Float    @default(0)
+   356→   356→  gstRate        Float    @default(5.0)
+   357→   357→  gstAmount      Float    @default(0)
+   358→   358→  finalAmount    Float    @default(0) // base + GST
+   359→   359→  paidAmount     Float    @default(0)
+   360→   360→  status         String   @default("pending") // pending | partially_paid | fully_paid
+   361→   361→  notes          String?
+   362→   362→  createdAt      DateTime @default(now())
+   363→   363→  updatedAt      DateTime @updatedAt
+   364→   364→
+   365→   365→  payments       Payment[]
+   366→   366→  brokerage      Brokerage?
+   367→   367→}
+   368→   368→
+   369→   369→model Payment {
+   370→   370→  id        String   @id @default(cuid())
+   371→   371→  brokerId      String
+   372→   372→  broker        Broker   @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+   373→   373→  billId    String
+   374→   374→  bill      Bill     @relation(fields: [billId], references: [id], onDelete: Cascade)
+   375→   375→  clientId  String
+   376→   376→  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+   377→   377→  amount    Float
+   378→   378→  date      DateTime @default(now())
+   379→   379→  mode      String   @default("bank_transfer") // cash | cheque | bank_transfer | upi | other
+   380→   380→  reference String?
+   381→   381→  notes     String?
+   382→   382→  createdAt DateTime @default(now())
+   383→   383→  updatedAt DateTime @updatedAt
+   384→   384→
+   385→   385→  photos    Photo[]  @relation("PaymentPhotos")
+   386→   386→}
+   387→   387→
+   388→   388→model Brokerage {
+   389→   389→  id             String   @id @default(cuid())
+   390→   390→  brokerId      String
+   391→   391→  broker        Broker   @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+   392→   392→  billId         String   @unique
+   393→   393→  bill           Bill     @relation(fields: [billId], references: [id], onDelete: Cascade)
+   394→   394→  supplierId     String
+   395→   395→  supplier       Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+   396→   396→  clientId       String
+   397→   397→  client         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+   398→   398→  commissionRate Float    // snapshot at computation
+   399→   399→  baseAmount     Float    // bill base (excl GST)
+   400→   400→  brokerageAmount Float   // baseAmount × commissionRate
+   401→   401→  // Eligibility: triggers when Bill.status = fully_paid (or forceEligible)
+   402→   402→  eligible       Boolean  @default(false)
+   403→   403→  forceEligible  Boolean  @default(false)
+   404→   404→  forceReason    String?
+   405→   405→  eligibleAt     DateTime?
+   406→   406→  // Payout linkage
+   407→   407→  payoutId       String?
+   408→   408→  payout         BrokeragePayout? @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+   409→   409→  payoutStatus   String   @default("accrued") // accrued | scheduled | paid
+   410→   410→  createdAt      DateTime @default(now())
+   411→   411→  updatedAt      DateTime @updatedAt
+   412→   412→}
+   413→   413→
+   414→   414→model BrokeragePayout {
+   415→   415→  id          String   @id @default(cuid())
+   416→   416→  brokerId      String
+   417→   417→  broker        Broker   @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+   418→   418→  clientId    String   // grouped by client's cadence
+   419→   419→  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+   420→   420→  cadence     String   // immediate | 4_month_cumulative | 12_month_cumulative
+   421→   421→  periodStart DateTime
+   422→   422→  periodEnd   DateTime
+   423→   423→  totalAmount Float    @default(0)
+   424→   424→  status      String   @default("scheduled") // scheduled | paid
+   425→   425→  paidAt      DateTime?
+   426→   426→  notes       String?
+   427→   427→  createdAt   DateTime @default(now())
+   428→   428→  updatedAt   DateTime @updatedAt
+   429→   429→
+   430→   430→  brokerages  Brokerage[]
+   431→   431→}
+   432→   432→
+   433→   433→// ─────────────────────────────────────────────────────────────────────────────
+   434→   434→// Disputes / Returns
+   435→   435→// ─────────────────────────────────────────────────────────────────────────────
+   436→   436→
+   437→   437→model Dispute {
+   438→   438→  id          String   @id @default(cuid())
+   439→   439→  brokerId      String
+   440→   440→  broker        Broker   @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+   441→   441→  poId        String
+   442→   442→  po          PurchaseOrder @relation(fields: [poId], references: [id], onDelete: Cascade)
+   443→   443→  dispatchId  String?
+   444→   444→  dispatch    Dispatch? @relation(fields: [dispatchId], references: [id], onDelete: SetNull)
+   445→   445→  type        String   // short_shipment | defective_return | other
+   446→   446→  description String?
+   447→   447→  quantityAffected Int  @default(0)
+   448→   448→  valueAffected    Float @default(0)
+   449→   449→  status      String   @default("open") // open | resolved | rejected
+   450→   450→  resolution  String?
+   451→   451→  createdAt   DateTime @default(now())
+   452→   452→  updatedAt   DateTime @updatedAt
+   453→   453→
+   454→   454→  photos      Photo[]  @relation("DisputePhotos")
+   455→   455→}
+   456→   456→
+   457→   457→// ─────────────────────────────────────────────────────────────────────────────
+   458→   458→// Photos — stage-polymorphic (S3-migrable: swap URL for object storage later)
+   459→   459→//
+   460→   460→// Polymorphic pattern: `entityType` + `entityId` carry the logical link
+   461→   461→// (so the API can query /api/photos?entityType=Dispatch&entityId=… uniformly),
+   462→   462→// AND a dedicated nullable FK column per parent table is kept in sync so
+   463→   463→// Prisma relations work for `include: { photos: true }` reads. Exactly one
+   464→   464→// of the five *Id columns is set per row (the one matching `entityType`).
+   465→   465→// ─────────────────────────────────────────────────────────────────────────────
+   466→   466→
+   467→   467→model Photo {
+   468→   468→  id         String   @id @default(cuid())
+   469→   469→  brokerId      String
+   470→   470→  broker        Broker   @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+   471→   471→  stage      String   // booking | dispatch | receiving | dispute | visit | payment
+   472→   472→  entityType String   // Visit | Booking | Dispatch | Dispute | Payment
+   473→   473→  entityId   String   // polymorphic — kept in sync with the matching *Id column below
+   474→   474→  url        String   // path under /uploads/...  (full-resolution original)
+   475→   475→  thumbnailUrl String? // path under /uploads/thumb_... (400px-wide JPEG q80) — null on legacy records
+   476→   476→  caption    String?
+   477→   477→  createdAt  DateTime @default(now())
+   478→   478→
+   479→   479→  // Optional FK columns — exactly one is set per row, matching entityType.
+   480→   480→  visitId    String?
+   481→   481→  bookingId  String?
+   482→   482→  dispatchId String?
+   483→   483→  disputeId  String?
+   484→   484→  paymentId  String?
+   485→   485→
+   486→   486→  visit      Visit?   @relation("VisitPhotos",    fields: [visitId],    references: [id], onDelete: Cascade)
+   487→   487→  booking    Booking? @relation("BookingPhotos",  fields: [bookingId],  references: [id], onDelete: Cascade)
+   488→   488→  dispatch   Dispatch? @relation("DispatchPhotos", fields: [dispatchId], references: [id], onDelete: Cascade)
+   489→   489→  dispute    Dispute? @relation("DisputePhotos",  fields: [disputeId],  references: [id], onDelete: Cascade)
+   490→   490→  payment    Payment? @relation("PaymentPhotos",  fields: [paymentId],  references: [id], onDelete: Cascade)
+   491→   491→
+   492→   492→  @@index([entityType, entityId])
+   493→   493→}
+   494→   494→
+   495→   495→// ─────────────────────────────────────────────────────────────────────────────
+   496→   496→// Notifications / Reminders
+   497→   497→// ─────────────────────────────────────────────────────────────────────────────
+   498→   498→
+   499→   499→model Notification {
+   500→   500→  id        String   @id @default(cuid())
+   501→   501→  brokerId      String
+   502→   502→  broker        Broker   @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+   503→   503→  type      String   // visit_followup | dispatch_due | payment_due | brokerage_due
+   504→   504→  title     String
+   505→   505→  message   String?
+   506→   506→  dueDate   DateTime
+   507→   507→  entityType String?
+   508→   508→  entityId  String?
+   509→   509→  status    String   @default("pending") // pending | done | dismissed
+   510→   510→  createdAt DateTime @default(now())
+   511→   511→  updatedAt DateTime @updatedAt
+   512→   512→}
+   513→   513→
+   514→   514→// ─────────────────────────────────────────────────────────────────────────────
+   515→   515→// Audit Log — append-only, immutable record of every financial mutation
+   516→   516→// ─────────────────────────────────────────────────────────────────────────────
+   517→   517→
+   518→   518→model AuditLog {
+   519→   519→  id         String   @id @default(cuid())
+   520→   520→  brokerId      String
+   521→   521→  broker        Broker   @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+   522→   522→  entityType String   // Payment | Bill | Brokerage | BrokeragePayout | Dispute
+   523→   523→  entityId   String
+   524→   524→  action     String   // create | update | delete | force_eligible | payout
+   525→   525→  before     String?  // JSON snapshot before
+   526→   526→  after      String?  // JSON snapshot after
+   527→   527→  userId     String?
+   528→   528→  userName   String?
+   529→   529→  reason     String?
+   530→   530→  createdAt  DateTime @default(now())
+   531→   531→}
+   532→   532→
+   533→   533→// ─────────────────────────────────────────────────────────────────────────────
+   534→   534→// System Settings (GST default, brokerage defaults, etc.)
+   535→   535→// ─────────────────────────────────────────────────────────────────────────────
+   536→   536→
+   537→   537→model SystemSetting {
+   538→   538→  id    String  @id @default(cuid())
+   539→   539→  key   String  @unique
+   540→   540→  value String
+   541→   541→  notes String?
+   542→   542→}
+   543→   543→
+   544→   544→// ─────────────────────────────────────────────────────────────────────────────
+   545→   545→// Tags & Entity Tags — polymorphic tagging system
+   546→   546→//
+   547→   547→// A Tag is a reusable label (e.g. "VIP", "Festive Season") with a colour.
+   548→   548→// An EntityTag links a Tag to an entity (Client | Supplier | PurchaseOrder).
+   549→   549→// The polymorphic pattern matches the Photo model: `entityType` + `entityId`
+   550→   550→// carry the logical link for uniform API queries, AND a dedicated nullable FK
+   551→   551→// column per parent table is kept in sync so Prisma relations work for
+   552→   552→// `include: { tags: true }` reads + cascade deletes. Exactly one of the
+   553→   553→// three optional *Id columns is set per row (the one matching `entityType`).
+   554→   554→// ─────────────────────────────────────────────────────────────────────────────
+   555→   555→
+   556→   556→model Tag {
+   557→   557→  id        String   @id @default(cuid())
+   558→   558→  brokerId      String
+   559→   559→  broker        Broker   @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+   560→   560→  name      String   @unique
+   561→   561→  color     String   @default("emerald") // emerald | amber | rose | teal | plum | slate
+   562→   562→  createdAt DateTime @default(now())
+   563→   563→
+   564→   564→  entityTags EntityTag[]
+   565→   565→}
+   566→   566→
+   567→   567→model EntityTag {
+   568→   568→  id         String   @id @default(cuid())
+   569→   569→  tagId      String
+   570→   570→  tag        Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+   571→   571→  entityType String   // Client | Supplier | PurchaseOrder
+   572→   572→  entityId   String   // polymorphic — kept in sync with the matching *Id column below
+   573→   573→  createdAt  DateTime @default(now())
+   574→   574→
+   575→   575→  // Optional FK columns — exactly one is set per row, matching entityType.
+   576→   576→  clientId          String?
+   577→   577→  supplierId        String?
+   578→   578→  purchaseOrderId   String?
+   579→   579→
+   580→   580→  client            Client?        @relation(fields: [clientId],        references: [id], onDelete: Cascade)
+   581→   581→  supplier          Supplier?      @relation(fields: [supplierId],       references: [id], onDelete: Cascade)
+   582→   582→  purchaseOrder     PurchaseOrder? @relation(fields: [purchaseOrderId],  references: [id], onDelete: Cascade)
+   583→   583→
+   584→   584→  @@unique([entityType, entityId, tagId])
+   585→   585→  @@index([entityType, entityId])
+   586→   586→  @@index([tagId])
+   587→   587→}
+   588→   588→
+   589→   589→// ─────────────────────────────────────────────────────────────────────────────
+   590→   590→// Saved Views — user-persisted filter combinations for list views
+   591→   591→//
+   592→   592→// Brokers often apply the same filter combos repeatedly (e.g. "VIP clients
+   593→   593→// with outstanding > ₹50k", "Overdue dispatches", "Open disputes this week").
+   594→   594→// A SavedView captures the filter state of a view as JSON so it can be
+   595→   595→// re-applied with a single click from the SavedViewsBar or the Saved Views
+   596→   596→// management page.
+   597→   597→//
+   598→   598→// `view` is a ViewKey string ("clients" | "suppliers" | "pos" | "bills" |
+   599→   599→// "disputes" | "audit" | …). `filterJson` is the serialised filter state
+   600→   600→// (shape varies per view — search query + active tags + status chip + date
+   601→   601→// range, etc.). `entityType` is optional, set for tag-filtered views so the
+   602→   602→// Saved Views page can group / describe them. `icon` is one of
+   603→   603→// star|heart|pin|flag|bookmark (lucide icon names).
+   604→   604→// ─────────────────────────────────────────────────────────────────────────────
+   605→   605→
+   606→   606→model SavedView {
+   607→   607→  id         String   @id @default(cuid())
+   608→   608→  brokerId      String
+   609→   609→  broker        Broker   @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+   610→   610→  name       String
+   611→   611→  view       String   // ViewKey — clients | suppliers | pos | bills | disputes | audit | …
+   612→   612→  filterJson String   // JSON of the filter state (shape varies per view)
+   613→   613→  entityType String?  // optional — for tag-filtered views (Client | Supplier | PurchaseOrder)
+   614→   614→  icon       String   @default("star") // star | heart | pin | flag | bookmark
+   615→   615→  createdAt  DateTime @default(now())
+   616→   616→  updatedAt  DateTime @updatedAt
+   617→   617→
+   618→   618→  @@index([view])
+   619→   619→}
+   620→   620→
+   621→   621→// ─────────────────────────────────────────────────────────────────────────────
+   622→   622→// Report Templates — user-defined custom report configurations
+   623→   623→//
+   624→   624→// Brokers have varied reporting needs — some want a weekly client performance
+   625→   625→// summary, others a monthly supplier comparison, others a custom date-range
+   626→   626→// brokerage breakdown. A ReportTemplate captures the user-defined report
+   627→   627→// configuration (entity type, columns, filters, grouping, sorting, options)
+   628→   628→// as JSON in `configJson` so the Custom Report Builder view can edit it and
+   629→   629→// `/api/reports/custom?templateId=…` can render a print-optimized HTML PDF
+   630→   630→// from it on demand.
+   631→   631→//
+   632→   632→// `type` is one of: summary | comparison | ledger | custom.
+   633→   633→// `configJson` shape (see `src/lib/report-columns.ts` + ReportBuilderView):
+   634→   634→//   {
+   635→   635→//     entityType: "client"|"supplier"|"bill"|"payment"|"brokerage"|"dispatch"|"dispute",
+   636→   636→//     columns: string[],                 // column keys from REPORT_COLUMNS[entityType]
+   637→   637→//     filters: {
+   638→   638→//       dateRange?: "all"|"week"|"month"|"quarter"|"year"|"custom",
+   639→   639→//       fromDate?: string,               // ISO date — when dateRange === "custom"
+   640→   640→//       toDate?: string,                 // ISO date — when dateRange === "custom"
+   641→   641→//       status?: string,                 // entity-specific status (e.g. "fully_paid")
+   642→   642→//       tagId?: string                   // restrict to entities with this Tag
+   643→   643→//     },
+   644→   644→//     groupBy?: string | null,           // column key to group rows by (sub-totals per group)
+   645→   645→//     sortBy?: { field: string; direction: "asc"|"desc" },
+   646→   646→//     title: string,                     // report heading (often === template name)
+   647→   647→//     includeCharts: boolean             // embed an inline SVG bar chart in the PDF
+   648→   648→//   }
+   649→   649→// ─────────────────────────────────────────────────────────────────────────────
+   650→   650→
+   651→   651→model ReportTemplate {
+   652→   652→  id          String   @id @default(cuid())
+   653→   653→  brokerId      String
+   654→   654→  broker        Broker   @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+   655→   655→  name        String
+   656→   656→  description String?
+   657→   657→  type        String   // summary | comparison | ledger | custom
+   658→   658→  configJson  String   // JSON of the template config (see module doc)
+   659→   659→  createdAt   DateTime @default(now())
+   660→   660→  updatedAt   DateTime @updatedAt
+   661→   661→
+   662→   662→  @@index([type])
+   663→   663→}
+   664→   664→

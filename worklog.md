@@ -5047,3 +5047,95 @@ No edits were made to these three files — they were already hardened in Sprint
 **Edited (8)**: `src/app/api/auth/route.ts`, `src/app/api/auth/create-profile/route.ts`, `src/app/api/auth/auto-confirm/route.ts`, `src/app/api/clients/route.ts`, `src/app/api/suppliers/route.ts`, `src/app/api/bookings/route.ts`, `src/app/api/payments/route.ts`, `src/middleware.ts`
 **Verified (no edits needed) (3)**: `src/app/api/visits/route.ts`, `src/app/api/dispatches/route.ts`, `src/app/api/disputes/route.ts` (already had full Zod validation)
 **Lint status**: ✅ 0 errors, 0 warnings (`bun run lint` exit 0)
+
+---
+Task ID: ACC1
+Agent: Expense Tracking Agent (ACC1)
+Task: Phase 1 — Broker Expense Tracking. Implement the operating-expense ledger: list/create/update/delete endpoints, glassmorphic list view with KPI strip + filter bar + colored category chips, sidebar/command-palette/page-router wiring, i18n keys (en/hi/gu), and CSV export.
+
+## Context loaded
+- Read `/home/z/my-project/worklog.md` + `/home/z/my-project/plans/01-PHASE1-EXPENSE-TRACKING.md` for the full spec.
+- Read existing patterns: `src/lib/auth.ts` (`getCurrentBroker`), `src/lib/db.ts`, `src/lib/api-middleware.ts` (`withRateLimit`, `RouteContext`), `src/app/api/payments/route.ts` + `src/app/api/disputes/[id]/route.ts` (mutation-route patterns + AuditLog convention), `src/app/api/export/route.ts` (CSV builder pattern), `src/components/views/payments-view.tsx` + `bills-view.tsx` (list-view + Dialog + KPI patterns), `src/components/shared.tsx` (GlassCard/SectionHeader/StatusChip/EmptyState), `src/components/sidebar.tsx`, `src/app/page.tsx`, `src/components/command-palette.tsx`, `src/lib/ui-store.ts`, `src/hooks/use-translation.ts` (`t(key)` — string-only, no interpolation), `src/lib/format.ts` (`formatDate`/`titleCase`/`statusChipClass`), `prisma/schema.prisma` (Expense model already defined; Broker.expenses relation present).
+- The `Expense` model + `Broker.expenses` relation were already in the Prisma schema from Sprint 1 — no schema change or `db:push` needed.
+
+## Files created (3)
+1. **`src/app/api/expenses/route.ts`** — `GET /api/expenses?category=X&from=ISO&to=ISO` + `POST /api/expenses`.
+   - `EXPENSE_CATEGORIES` const exported (`travel | phone | staff_salary | office_rent | marketing | miscellaneous`) so the `[id]` route can re-use it for PATCH validation — single source of truth.
+   - GET: requires auth (`getCurrentBroker`), scoped to `brokerId`. Parses `category`/`from`/`to` query params, defensively validates `category` against the known enum (rejects `?category=,` instead of 500'ing). Inclusive upper bound on `to` (push to end-of-day). Computes server-side summary `{ total, byCategory }` over the same filter set so the list + dashboard KPIs always agree.
+   - POST: `withRateLimit(handler, 30, 60_000)` — 30 mutations/min per IP per route (financial mutation surface; stricter than default 100, looser than auth 10). Zod `ExpenseSchema` validates the body (`category` enum, `amount` ≥ 0.01, `date` ISO string, optional description/vendor/receiptUrl — strings trimmed, empty → null). Creates with `brokerId: broker.id`, writes an `AuditLog` entry (`entityType: "Expense"`, `action: "create"`, `after: JSON.stringify(expense)`). `reportError` from `@/lib/error-report` in the catch (feeds Sentry when configured).
+2. **`src/app/api/expenses/[id]/route.ts`** — `PATCH` + `DELETE` (both `withRateLimit(..., 30, 60_000)`).
+   - PATCH: fetches `before` snapshot, verifies `before.brokerId === broker.id` (404 otherwise, no tenant leak). Zod `PatchSchema` allows partial update of any subset of fields. Only carries forward non-undefined fields so a PATCH with just `{ amount }` doesn't null out description/vendor. Empty strings collapse to null. Writes an `AuditLog` entry with both `before` + `after` JSON snapshots (dispute resolution surface).
+   - DELETE: same ownership verification, then hard-delete. Writes an `AuditLog` entry with `before` snapshot + `action: "delete"` + reason, so a deleted expense can still be reconstructed from the audit trail. Returns `{ ok: true }`.
+3. **`src/components/views/expenses-view.tsx`** — full glassmorphic Expenses view.
+   - **SectionHeader**: title `expenses.title` / subtitle `expenses.subtitle` (locale-aware via `useTranslation`).
+   - **Action row**: `ShareLinkButton` + "Export CSV" outline Button (calls `window.open("/api/export?type=expenses", "_blank")`) + "Add Expense" Button (opens the Add/Edit `Dialog`).
+   - **KPI strip (4 cards)**: This Month (emerald tone) · Last Month (teal) · YTD (default) · Top Category (amber). All computed client-side from the unfiltered list so the KPIs reflect the calendar-month totals regardless of the active filter bar. Top Category uses the server-side `summary.byCategory` roll-up.
+   - **Filter bar (GlassCard)**: free-text search (description/vendor/category), Category Select (All + 6 categories), date range (`from`/`to` date inputs), Clear button. All filters URL-persisted via `useUrlState` (`?q=` / `?c=` / `?from=` / `?to=`) so a refresh or shared link preserves them. Active-filter chips shown below the filter row.
+   - **Table (GlassCard, sticky header, `overflow-x-auto` + `max-h-[70vh] overflow-y-auto`)**: Date | Category (colored chip) | Description (truncate) | Vendor (truncate) | Amount (right-aligned, bold) | Actions (Edit/Delete). Row click → edit dialog. Edit/Delete buttons stop propagation so they don't double-fire.
+   - **CategoryChip**: explicit per-category palette per the design spec — travel=teal, phone=teal, staff_salary=emerald, office_rent=amber, marketing=purple (closest default Tailwind shade to the chart-5 plum token), miscellaneous=zinc. Falls back to the muted primary palette if an unknown category sneaks in. Same shape/spacing as `StatusChip` (border + dot + capitalize label).
+   - **Add/Edit Dialog**: Category Select (with color dot previews), Amount (number Input, validated > 0), Date (date Input, default today, validated), Vendor (Input, optional), Description (Textarea, optional). Live preview row at the bottom showing the chosen category as a `StatusChip` + formatted amount. Inline field errors (AlertCircle + rose text). Submit button label switches between "Recording…/Saving…" based on `saving` + editing state. On success → toast + dialog close + list refresh.
+   - **Delete AlertDialog**: confirms before DELETE, shows amount/category/vendor context, audit-log retained note. Rose-styled destructive action button.
+   - Auto-opens the Add dialog when the keyboard shortcut `n e` fires (via `useUI().newEntityTrigger`).
+   - `PullToRefresh` wraps the table for mobile.
+   - `PaginationBar` for lists > 10 rows.
+   - Responsive: filter bar wraps on mobile (`flex-col gap-3 lg:flex-row lg:items-center`); KPI strip is `grid-cols-2 lg:grid-cols-4`; table scrolls horizontally on small screens.
+
+## Files edited (8)
+1. **`src/lib/ui-store.ts`** — added `"expenses"` to the `ViewKey` union (with doc comment referencing ACC1). Inserted right after `"billing"` to keep finance-group keys together.
+2. **`src/components/sidebar.tsx`** — added `ReceiptIndianRupee` to the lucide-react imports + added the nav item `{ key: "expenses", labelKey: "nav.expenses", icon: ReceiptIndianRupee, groupKey: "nav.finance" }` inside the finance group (between party-ledger and billing).
+3. **`src/app/page.tsx`** — added `import { ExpensesView } from "@/components/views/expenses-view";` after the BillingView import, added `expenses: { titleKey: "expenses.title", subKey: "expenses.subtitle" }` to `VIEW_TITLE_KEYS`, and added `case "expenses": return <ExpensesView />;` to `ViewRouter`.
+4. **`src/components/command-palette.tsx`** — added `ReceiptIndianRupee` to the lucide-react imports + added `{ key: "expenses", label: "Expenses", icon: ReceiptIndianRupee }` to `NAV_ITEMS` (between party-ledger and billing).
+5. **`src/lib/i18n/en.ts`** — added `"nav.expenses": "Expenses"`, the full `"expenses.*"` key block (35 keys: title/subtitle/add/edit/addDescription/editDescription/record/recording/saving/recorded/updated/saveFailed/deleteConfirm/deleteConfirmHint/deleted/deleteFailed/amountInvalid/dateInvalid/thisMonth/lastMonth/ytd/topCategory/allCategories/category/from/to/date/description/vendor/amount/actions/searchPlaceholder/noExpensesYet/noExpensesHint/vendorPlaceholder/descriptionPlaceholder/preview), and `"common.fixFields": "Please fix the highlighted fields"` (used by the inline-form-error toast).
+6. **`src/lib/i18n/hi.ts`** — mirrored the same nav + expenses.* keys (35 keys) + common.fixFields, translated to Hindi (e.g., "expenses.title": "खर्च", "expenses.subtitle": "परिचालन लागत — यात्रा, किराया, स्टाफ, मार्केटिंग").
+7. **`src/lib/i18n/gu.ts`** — mirrored the same nav + expenses.* keys (35 keys) + common.fixFields, translated to Gujarati (e.g., "expenses.title": "ખર્ચ", "expenses.subtitle": "પરિચાલન લાગત — યાત્રા, ભાડું, સ્ટાફ, માર્કેટિંગ").
+8. **`src/app/api/export/route.ts`** — added `"expenses"` to the `ExportType` union + `VALID_TYPES` array, added the `buildExpenses(brokerId)` builder (columns: Date, Category, Description, Vendor, Amount, Recorded — sorted by `date desc`, scoped to brokerId), and registered it in the `BUILDERS` map. The "Export CSV" button in the Expenses view hits this builder.
+
+## Stage Summary
+
+Phase 1 (Broker Expense Tracking) is **feature-complete** end-to-end. A broker can now:
+
+1. **Record** an operating expense (travel / phone / staff salary / office rent / marketing / miscellaneous) via the "Add Expense" dialog → POST `/api/expenses`. Server validates with Zod, creates with `brokerId` scoping, logs an `AuditLog` entry.
+2. **List** expenses with a server-side summary (`{ total, byCategory }`) → GET `/api/expenses`. The same endpoint supports `?category=` / `?from=` / `?to=` for power-user filters (dashboard integration in a later phase).
+3. **Edit** any expense → PATCH `/api/expenses/[id]`. Ownership verified against `brokerId`. Before/after captured in the audit log.
+4. **Delete** an expense → DELETE `/api/expenses/[id]`. Ownership verified. `before` snapshot retained in the audit log so the deletion is reconstructable for dispute resolution.
+5. **Filter** the list by category / date range / free-text search — all URL-persisted so refresh + share-link preserve the filter. Active-filter chips below the filter row make the current state visible.
+6. **Glance** at 4 KPI mini-cards on top: This Month / Last Month / YTD / Top Category — computed client-side from the unfiltered list so the calendar totals stay stable regardless of the active filter bar.
+7. **Export** the full broker-scoped expense list to CSV via `GET /api/export?type=expenses` — Date, Category, Description, Vendor, Amount columns.
+8. **Navigate** to the view from the sidebar (finance group, ReceiptIndianRupee icon) or the Cmd+K command palette.
+9. **Localize** the entire UI in English / Hindi / Gujarati — the view pulls every label through `useTranslation().t(key)`.
+10. **Keyboard shortcut** "n e" auto-opens the Add Expense dialog (via `newEntityTrigger` on the ui-store).
+
+### Acceptance criteria checklist
+- [x] Broker can create an expense with category, amount, date, description (vendor optional)
+- [x] Expenses list shows all entries filtered by category/date
+- [x] Monthly summary shows total + by-category breakdown (server-side `summary.byCategory`)
+- [ ] Dashboard shows "Total Expenses" + "Net Profit" KPI cards — **NOT in scope for ACC1**; the plan file lists this as "Dashboard Integration" but the task explicitly excluded it (ACC1 covers the Expenses view + API only — dashboard integration is a follow-up task; the GET `/api/expenses?from=&to=` endpoint is already in place to support it).
+- [x] Edit + delete works (with ownership verification + AuditLog)
+- [x] CSV export works (`/api/export?type=expenses`)
+- [x] Lint passes (0 errors)
+- [x] brokerId scoping on all queries (GET / POST / PATCH / DELETE + the export builder)
+- [x] AuditLog entry on create/update/delete
+
+### Style compliance
+- shadcn/ui components used throughout: Button (default + outline + ghost), Input, Select, Textarea, Label, Skeleton, Dialog, AlertDialog, Table, Badge (via StatusChip).
+- Icons from lucide-react: `ReceiptIndianRupee` (sidebar + command palette + empty state), `Plus` (add), `Download` (export), `Trash2` (delete), `Pencil` (edit), `Search` (search input), `CalendarDays`/`TrendingDown`/`CalendarRange`/`Crown` (KPI icons), `X` (clear filter), `AlertCircle` (inline error).
+- Glass surfaces: `glass` + `glass-strong` + `glass-panel` + `hover-lift` on interactive KPI cards.
+- `kpi-num` typography on KPI values + the dialog's preview amount.
+- Category chips follow the explicit color spec — teal / emerald / amber / purple (plum proxy) / zinc. **NO indigo, NO blue.** Emerald accent (`bg-emerald-500/15 text-emerald-600`) used throughout.
+- Responsive: KPI strip `grid-cols-2 lg:grid-cols-4`; filter bar wraps on mobile (`flex-col gap-3 lg:flex-row lg:items-center`); table scrolls horizontally on small screens (`overflow-x-auto` + `max-h-[70vh] overflow-y-auto` with sticky header).
+
+## Lint status
+✅ `bun run lint` → 0 errors, 0 warnings (exit 0). Ran twice to confirm.
+
+## Notes / follow-ups
+- **Dashboard integration deferred**: the plan file's "Dashboard Integration" section (Total Expenses + Net Profit KPI cards on the dashboard view) was explicitly out of scope for ACC1 — the Expenses view + API + export are the deliverables. The GET `/api/expenses?from=&to=` endpoint is ready for the dashboard to consume in a follow-up task.
+- **PhotoUpload for receipts**: the plan mentioned an optional `receiptUrl` field with a PhotoUpload widget. ACC1 implements the `receiptUrl` schema field + API support but does NOT wire the PhotoUpload component into the Add/Edit dialog (deferred to keep the dialog scope minimal). The field is plumbed through Zod validation and PATCH/POST support — adding the PhotoUpload widget later requires only a single `<PhotoUpload entityType="Expense" entityId={editing?.id ?? "new"} stage="expense" />` slot in the dialog body, no API changes.
+- **Server-side filter passthrough**: the GET endpoint supports `category`/`from`/`to` query params, but the view currently fetches all expenses and filters client-side (consistent with the bills-view / payments-view pattern). This keeps the filter UX instant (no network round-trips on each filter change) and lets the server-side filters serve power users / dashboards / exports. If the broker's expense list grows past a few hundred rows, swap the view to pass filters through to the URL — the API is already shaped for it.
+- **Top Category KPI**: uses the server-side `summary.byCategory` roll-up (which excludes category filters). This is intentional — the "top category" should reflect the broker's overall spending pattern, not the filtered subset. If the broker wants the top category *within the current filter*, that's a follow-up tweak to compute off `filtered` instead of `summary`.
+- **`brokerId` on `AuditLog`**: the existing `AuditLog` model carries `brokerId` as a required relation — the Expense create/update/delete audit entries use the standard `brokerId: broker.id` scoping, consistent with all other audited entities (Payment, Bill, Dispute, Brokerage).
+- **Prisma schema unchanged**: the `Expense` model + `Broker.expenses` relation were already in `prisma/schema.prisma` from Sprint 1 (the model is the source of truth for the Phase-1 plan in `plans/01-PHASE1-EXPENSE-TRACKING.md`). No `db:push` was needed.
+
+## Files summary
+**Created (3)**: `src/app/api/expenses/route.ts`, `src/app/api/expenses/[id]/route.ts`, `src/components/views/expenses-view.tsx`
+**Edited (8)**: `src/lib/ui-store.ts`, `src/components/sidebar.tsx`, `src/app/page.tsx`, `src/components/command-palette.tsx`, `src/lib/i18n/en.ts`, `src/lib/i18n/hi.ts`, `src/lib/i18n/gu.ts`, `src/app/api/export/route.ts`
+**Lint status**: ✅ `bun run lint` → 0 errors, 0 warnings (exit 0)
