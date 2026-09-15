@@ -46,6 +46,8 @@ model Broker {
   savedViews    SavedView[]
   reportTemplates ReportTemplate[]
   tags          Tag[]
+  expenses      Expense[]
+  invoices      Invoice[]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -106,6 +108,52 @@ model AdminAuditLog {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Accounting — Expenses + Invoices
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Expense {
+  id          String   @id @default(cuid())
+  brokerId    String
+  broker      Broker   @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+  category    String   // travel | phone | staff_salary | office_rent | marketing | miscellaneous
+  amount      Float
+  date        DateTime
+  description String?
+  vendor      String?
+  receiptUrl  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([brokerId, date])
+  @@index([brokerId, category])
+}
+
+model Invoice {
+  id            String   @id @default(cuid())
+  brokerId      String
+  broker        Broker   @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+  clientId      String
+  client        Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  invoiceNumber String   @unique
+  issueDate     DateTime
+  dueDate       DateTime?
+  itemsJson     String
+  subtotal      Float    @default(0)
+  gstRate       Float    @default(5.0)
+  gstAmount     Float    @default(0)
+  roundOff      Float    @default(0)
+  totalAmount   Float    @default(0)
+  status        String   @default("pending")
+  notes         String?
+  placeOfSupply String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([brokerId, issueDate])
+  @@index([clientId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Core Parties
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -141,6 +189,7 @@ model Client {
   brokerages    Brokerage[]
   brokeragePayouts BrokeragePayout[]
   tags          EntityTag[]
+  invoices      Invoice[]
 }
 
 model Supplier {
