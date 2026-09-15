@@ -197,7 +197,8 @@ export const POST = withRateLimit(
       return NextResponse.json({ invoice }, { status: 201 });
     } catch (error) {
       reportError(error, { path: "/api/invoices", method: "POST" });
-      return NextResponse.json({ error: "Failed to create invoice" }, { status: 500 });
+      const detail = error instanceof Error ? error.message : String(error);
+      return NextResponse.json({ error: "Failed to create invoice", detail }, { status: 500 });
     }
   },
   30,
