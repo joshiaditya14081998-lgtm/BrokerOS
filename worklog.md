@@ -5139,3 +5139,317 @@ Phase 1 (Broker Expense Tracking) is **feature-complete** end-to-end. A broker c
 **Created (3)**: `src/app/api/expenses/route.ts`, `src/app/api/expenses/[id]/route.ts`, `src/components/views/expenses-view.tsx`
 **Edited (8)**: `src/lib/ui-store.ts`, `src/components/sidebar.tsx`, `src/app/page.tsx`, `src/components/command-palette.tsx`, `src/lib/i18n/en.ts`, `src/lib/i18n/hi.ts`, `src/lib/i18n/gu.ts`, `src/app/api/export/route.ts`
 **Lint status**: ✅ `bun run lint` → 0 errors, 0 warnings (exit 0)
+
+---
+Task ID: AUDIT
+Agent: Explore Subagent (Audit)
+Task: Audit the Accounting & Finance 5-phase plan to determine which parts are complete vs missing. Phase 1 (Expense Tracking) was completed by ACC1. Phases 2-5 (P&L, GST Filing, Invoices, Trial Balance + Cash Flow) need verification.
+
+## Context loaded
+- Read `/home/z/my-project/worklog.md` first 200 + last 200 lines. The latest task is ACC1 (Phase 1 — complete). The plan lives in `/home/z/my-project/plans/00-MASTER-PLAN.md` + per-phase files `01..05`.
+- Read `prisma/schema.prisma`, `src/lib/ui-store.ts`, `src/components/sidebar.tsx`, `src/app/page.tsx`, `src/components/command-palette.tsx`, `src/lib/i18n/en.ts`, `src/app/api/reports/route.ts` (head + ReportType union), `src/app/api/export/route.ts` (head + ExportType union), `src/app/api/expenses/route.ts` + `[id]/route.ts` (full), `src/components/views/expenses-view.tsx` (line count + head), `src/components/views/dashboard-view.tsx` (KPI section + expense grep), `src/components/views/brokerage-view.tsx` (head 60 lines for pattern reference).
+- Searched src/ for `profit-loss`, `gst-filing`, `trial-balance`, `cash-flow`, `gstFiling`, `plStatement`, `trialBalance`, `cashFlow`, `ProfitLoss`, `GstFiling`, `TrialBalance`, `CashFlow`, `P&L` — **zero matches**. The only `Invoice` reference in `src/` is the Stripe SDK type in `src/app/api/webhooks/stripe/route.ts` (not the Prisma model).
+
+## Audit verdict (item-by-item)
+
+### Phase 1 — Expense Tracking — **EXISTS (feature-complete)** ✅
+1. **`prisma/schema.prisma` — Expense model + Broker.expenses relation** → EXISTS.
+   - `model Expense` (lines 114-129): id, brokerId, broker, category, amount, date, description?, vendor?, receiptUrl?, createdAt, updatedAt, `@@index([brokerId, date])`, `@@index([brokerId, category])`.
+   - `Broker.expenses Expense[]` (line 49).
+2. **`src/app/api/expenses/route.ts`** → EXISTS (147 lines). GET supports `?category=X&from=ISO&to=ISO` and returns `{ expenses, summary: { total, byCategory } }`. POST exists with Zod validation, rate-limit (30/60s), and AuditLog entry (`entityType: "Expense"`, `action: "create"`).
+3. **`src/app/api/expenses/[id]/route.ts`** → EXISTS (113 lines). PATCH (partial update with `before`/`after` audit log) + DELETE (`before` snapshot + reason in audit log). Both verify `before.brokerId === broker.id` (404 otherwise).
+4. **`src/components/views/expenses-view.tsx`** → EXISTS (703 lines). Full glassmorphic view with KPI strip (4 cards), filter bar, table with colored CategoryChip, Add/Edit Dialog, Delete AlertDialog, CSV export, `PullToRefresh`, `PaginationBar`, URL-persisted filters.
+5. **`ViewKey` "expenses"** → EXISTS (`src/lib/ui-store.ts` line 43, with ACC1 doc comment).
+6. **Sidebar item** → EXISTS (`src/components/sidebar.tsx` line 34: `{ key: "expenses", labelKey: "nav.expenses", icon: ReceiptIndianRupee, groupKey: "nav.finance" }`).
+7. **Page route case** → EXISTS (`src/app/page.tsx` line 530: `case "expenses": return <ExpensesView />;`; import on line 44; VIEW_TITLE_KEYS entry on line 96).
+8. **Command palette entry** → EXISTS (`src/components/command-palette.tsx` line 73: `{ key: "expenses", label: "Expenses", icon: ReceiptIndianRupee }`).
+9. **i18n keys** → EXISTS. `src/lib/i18n/en.ts`: `"nav.expenses": "Expenses"` (line 52) + full `expenses.*` block (lines 81-117, 35 keys). Mirrored in `hi.ts` + `gu.ts`.
+10. **Dashboard "expenses" KPI card** → **MISSING**. `src/components/views/dashboard-view.tsx` has NO expense/Expense reference; KPI strip is `outstandingReceivable` / `brokerageEarned` / `pending` / `activePOs` (lines 290-319). ACC1 worklog explicitly defers dashboard integration. GET `/api/expenses?from=&to=` endpoint is ready to be consumed.
+
+### Phase 2 — P&L Statement — **MISSING** ❌
+11. `src/app/api/reports/profit-loss/route.ts` → **MISSING**. `/api/reports/` only contains `route.ts` + `custom/` subdirectory.
+12. ReportType `"profit-loss"` in `/api/reports/route.ts` → **MISSING**. Current union is `"brokerage-statement" | "client-ledger" | "supplier-summary" | "audit-trail" | "purchase-order" | "party-ledger"` (line 23).
+13. `src/components/views/pl-statement-view.tsx` → **MISSING**.
+14. ViewKey `"pl-statement"` → **MISSING** (last entry in union is `"expenses"`).
+15. Sidebar item (new "accounting" group OR finance group) → **MISSING**. No `nav.accounting` group key exists; existing groups are overview/contacts/operations/finance/portals/system.
+16. Page route case `"pl-statement"` → **MISSING**.
+17. Command palette entry → **MISSING**.
+18. i18n keys `nav.plStatement` + `pl.*` → **MISSING** (no `plStatement.` or `pl.` keys in en.ts).
+
+### Phase 3 — GST Filing Report — **MISSING** ❌
+19. `src/app/api/reports/gst-filing/route.ts` → **MISSING**.
+20. ReportType `"gst-filing"` in `/api/reports/route.ts` → **MISSING** (see Phase 2 #12).
+21. `src/components/views/gst-filing-view.tsx` → **MISSING**.
+22. ViewKey `"gst-filing"` → **MISSING**.
+23. Sidebar item → **MISSING**.
+24. Page route case → **MISSING**.
+25. Command palette entry → **MISSING**.
+26. i18n keys `nav.gstFiling` + `gst.*` → **MISSING**.
+
+### Phase 4 — Invoice Generation — **PARTIAL (schema-only)** ⚠️
+27. **`prisma/schema.prisma` — Invoice model + relations** → EXISTS.
+   - `model Invoice` (lines 131-154): id, brokerId, broker, clientId, client, invoiceNumber (@unique), issueDate, dueDate?, itemsJson, subtotal, gstRate (default 5.0), gstAmount, roundOff, totalAmount, status (default "pending"), notes?, placeOfSupply?, createdAt, updatedAt, `@@index([brokerId, issueDate])`, `@@index([clientId])`.
+   - `Broker.invoices Invoice[]` (line 50).
+   - `Client.invoices Invoice[]` (line 192).
+   - **Note**: the master plan mentions an `InvoiceLineItem` model — the actual schema uses `itemsJson` (JSON-encoded line items) instead. So the schema diverges from the plan but is internally consistent (mirrors the existing `Booking.lineItemsJson` / `Dispatch.itemsJson` pattern).
+28. `src/app/api/invoices/route.ts` → **MISSING** (no `src/app/api/invoices/` directory).
+29. `src/app/api/invoices/[id]/route.ts` → **MISSING**.
+30. ReportType `"invoice"` in `/api/reports/route.ts` → **MISSING** (see Phase 2 #12).
+31. `src/components/views/invoices-view.tsx` → **MISSING**.
+32. ViewKey `"invoices"` → **MISSING**.
+33. Sidebar item → **MISSING**.
+34. Page route case → **MISSING**.
+35. Command palette entry → **MISSING**.
+36. i18n keys `nav.invoices` + `invoices.*` → **MISSING**.
+   - Also missing: `"invoices"` in the `ExportType` union of `src/app/api/export/route.ts` (currently `clients | suppliers | pos | bills | payments | brokerage | expenses | audit`).
+
+### Phase 5 — Trial Balance + Cash Flow — **MISSING** ❌
+37. `src/app/api/reports/trial-balance/route.ts` → **MISSING**.
+38. `src/app/api/reports/cash-flow/route.ts` → **MISSING**.
+39. `src/components/views/trial-balance-view.tsx` → **MISSING**.
+40. `src/components/views/cash-flow-view.tsx` → **MISSING**.
+41. ViewKeys `"trial-balance"` + `"cash-flow"` → **MISSING**.
+42. Sidebar items → **MISSING**.
+43. Page route cases → **MISSING**.
+44. Command palette entries → **MISSING**.
+45. i18n keys (`nav.trialBalance` + `nav.cashFlow` + `trialBalance.*` + `cashFlow.*`) → **MISSING**.
+
+## Infrastructure context captured (for planning exact edits)
+
+### 46. ReportType union — `src/app/api/reports/route.ts` lines 23-36
+```ts
+type ReportType = "brokerage-statement" | "client-ledger" | "supplier-summary" | "audit-trail" | "purchase-order" | "party-ledger";
+type Range = "month" | "quarter" | "year" | "all";
+
+const VALID_TYPES: ReportType[] = ["brokerage-statement", "client-ledger", "supplier-summary", "audit-trail", "purchase-order", "party-ledger"];
+const VALID_RANGES: Range[] = ["month", "quarter", "year", "all"];
+
+const REPORT_TITLES: Record<ReportType, string> = {
+  "brokerage-statement": "Brokerage Statement",
+  "client-ledger": "Client Ledger Report",
+  "supplier-summary": "Supplier Performance Summary",
+  "audit-trail": "Audit Trail Report",
+  "purchase-order": "Purchase Order",
+  "party-ledger": "Party Ledger Report",
+};
+```
+**To add**: append `"profit-loss"`, `"gst-filing"`, `"invoice"`, `"trial-balance"`, `"cash-flow"` to the union + VALID_TYPES + REPORT_TITLES. File is 1983 lines (HTML PDF builder pattern with `htmlShell()` helper). New report types either (a) add a branch in the giant switch in this file, or (b) live in dedicated sub-routes like `/api/reports/profit-loss/route.ts` that return JSON for an in-app view, keeping this route for PDF-only output. Plan files say new endpoints live at `/api/reports/<type>/route.ts` — but the existing pattern only has `route.ts` (single switch) + `custom/` for user-defined reports. Decision needed per phase.
+
+### 47. ViewKey union — `src/lib/ui-store.ts` lines 5-43
+```ts
+export type ViewKey =
+  | "dashboard" | "analytics" | "digest"
+  | "clients" | "suppliers"
+  | "visits" | "pos" | "dispatches"
+  | "bills" | "payments" | "brokerage" | "party-ledger"
+  | "disputes" | "notifications" | "audit"
+  | "data-health" | "tags" | "saved-views" | "report-builder" | "api-docs"
+  | "settings" | "portal"
+  | "drafts" | "draft-queue"
+  | "billing"
+  | "expenses";   // ← last entry, no trailing comma issues — append new keys here
+```
+**To add**: `"pl-statement"`, `"gst-filing"`, `"invoices"`, `"trial-balance"`, `"cash-flow"` (with ACC2/ACC3/ACC4/ACC5 doc comments matching the ACC1 convention).
+
+### 48. Sidebar structure — `src/components/sidebar.tsx` lines 17-42
+Flat `NAV: NavItem[]` array; groups computed at render time via `groupKey`:
+```ts
+type NavItem = { key: ViewKey; labelKey: string; icon: React.ComponentType<{ className?: string }>; groupKey: string };
+
+const NAV: NavItem[] = [
+  { key: "dashboard", ..., groupKey: "nav.overview" },
+  { key: "analytics", ..., groupKey: "nav.overview" },
+  { key: "digest", ..., groupKey: "nav.overview" },
+  { key: "clients", ..., groupKey: "nav.contacts" },
+  { key: "suppliers", ..., groupKey: "nav.contacts" },
+  { key: "tags", ..., groupKey: "nav.contacts" },
+  { key: "visits", ..., groupKey: "nav.operations" },
+  { key: "pos", ..., groupKey: "nav.operations" },
+  { key: "dispatches", ..., groupKey: "nav.operations" },
+  { key: "draft-queue", ..., groupKey: "nav.operations" },
+  { key: "bills", ..., groupKey: "nav.finance" },
+  { key: "payments", ..., groupKey: "nav.finance" },
+  { key: "brokerage", ..., groupKey: "nav.finance" },
+  { key: "party-ledger", ..., groupKey: "nav.finance" },
+  { key: "expenses", ..., groupKey: "nav.finance" },
+  { key: "billing", ..., groupKey: "nav.finance" },
+  { key: "portal", ..., groupKey: "nav.portals" },
+  { key: "disputes", ..., groupKey: "nav.operations" },
+  { key: "notifications", ..., groupKey: "nav.system" },
+  { key: "saved-views", ..., groupKey: "nav.system" },
+  { key: "report-builder", ..., groupKey: "nav.system" },
+  { key: "settings", ..., groupKey: "nav.system" },
+];
+```
+Existing groups: `nav.overview`, `nav.contacts`, `nav.operations`, `nav.finance`, `nav.portals`, `nav.system`. **No `nav.accounting` group yet.** Master plan calls for a new `Accounting` group (P&L, GST Filing, Trial Balance, Cash Flow) — adding a new group requires a new `nav.accounting` i18n key + items with `groupKey: "nav.accounting"`. Invoices belongs in `nav.finance` per the master plan.
+
+### 49. ViewRouter — `src/app/page.tsx` lines 501-533
+```tsx
+function ViewRouter({ view }: { view: string }) {
+  switch (view) {
+    case "dashboard": return <DashboardView />;
+    case "analytics": return <AnalyticsView />;
+    case "digest": return <DigestView />;
+    case "clients": return <ClientsView />;
+    case "suppliers": return <SuppliersView />;
+    case "visits": return <VisitsView />;
+    case "pos": return <PosView />;
+    case "dispatches": return <DispatchesView />;
+    case "bills": return <BillsView />;
+    case "payments": return <PaymentsView />;
+    case "brokerage": return <BrokerageView />;
+    case "party-ledger": return <PartyLedgerView />;
+    case "disputes": return <DisputesView />;
+    case "notifications": return <NotificationsView />;
+    case "tags": return <TagsView />;
+    case "saved-views": return <SavedViewsView />;
+    case "report-builder": return <ReportBuilderView />;
+    case "settings": return <SettingsView />;
+    case "portal": return <PortalView />;
+    case "draft-queue":
+    case "drafts": return <DraftQueueView />;
+    case "billing": return <BillingView />;
+    case "expenses": return <ExpensesView />;
+    default: return <DashboardView />;
+  }
+}
+```
+`VIEW_TITLE_KEYS` (lines 71-97) is a parallel `Record<string, { titleKey: string; subKey: string }>` that also needs an entry per new view. Imports are at top (lines 23-44); new view imports go after `ExpensesView` import on line 44.
+
+### 50. Command palette NAV_ITEMS — `src/components/command-palette.tsx` lines 56-81
+```ts
+type NavItemDef = { key: ViewKey; label: string; icon: IconType };
+
+const NAV_ITEMS: NavItemDef[] = [
+  { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { key: "analytics", label: "Analytics", icon: BarChart3 },
+  { key: "digest", label: "Daily Digest", icon: Coffee },
+  { key: "clients", label: "Clients", icon: Users },
+  { key: "suppliers", label: "Suppliers", icon: Factory },
+  { key: "tags", label: "Tags", icon: Tag },
+  { key: "visits", label: "Visits", icon: CalendarCheck },
+  { key: "pos", label: "Purchase Orders", icon: FileText },
+  { key: "dispatches", label: "Dispatch Tracking", icon: Truck },
+  { key: "draft-queue", label: "Draft Queue", icon: CloudOff },
+  { key: "bills", label: "Bills", icon: Receipt },
+  { key: "payments", label: "Payments", icon: Wallet },
+  { key: "brokerage", label: "Brokerage", icon: BadgePercent },
+  { key: "party-ledger", label: "Party Ledger", icon: BookOpen },
+  { key: "expenses", label: "Expenses", icon: ReceiptIndianRupee },
+  { key: "billing", label: "Billing & Plan", icon: CreditCard },
+  { key: "disputes", label: "Disputes", icon: AlertTriangle },
+  { key: "notifications", label: "Notifications", icon: Bell },
+  { key: "saved-views", label: "Saved Views", icon: Bookmark },
+  { key: "report-builder", label: "Report Builder", icon: LayoutTemplate },
+  { key: "settings", label: "Settings", icon: Settings },
+  { key: "portal", label: "Portals", icon: Store },
+];
+```
+Note: `NAV_ITEMS` uses hardcoded English labels (NOT `t()`-driven) — unlike the sidebar's `labelKey` approach. Existing icons import list at top of file: `LayoutDashboard, BarChart3, Users, Factory, CalendarCheck, FileText, Truck, Receipt, Wallet, BadgePercent, AlertTriangle, Bell, ScrollText, Moon, Sun, Shirt, Settings, Store, Coffee, Tag, ShieldCheck, Bookmark, LayoutTemplate, BookOpen, Code, CloudOff, CreditCard, ReceiptIndianRupee`.
+
+### 51. Example view pattern — `src/components/views/brokerage-view.tsx` (lines 1-30)
+```tsx
+"use client";
+
+import * as React from "react";
+import {
+  BadgePercent, Wallet, CheckCircle2, XCircle, Plus, Zap, ChevronDown, Download, Filter, X, FileText,
+} from "lucide-react";
+import { useApi, api } from "@/lib/api";
+import { formatDate, titleCase } from "@/lib/format";
+import { useCurrencyFormat } from "@/hooks/use-currency";
+import { GlassCard, KpiCard, StatusChip, SectionHeader, EmptyState } from "@/components/shared";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Table, TableHeader, TableBody, TableHead, TableRow, TableCell,
+} from "@/components/ui/table";
+import {
+  Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter,
+} from "@/components/ui/dialog";
+import {
+  Collapsible, CollapsibleContent, CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import { useUI } from "@/lib/ui-store";
+import { cn } from "@/lib/utils";
+import { useTranslation } from "@/hooks/use-translation";
+import { toast } from "sonner";
+```
+Established conventions for new views:
+- `"use client"`, then `import * as React from "react"`.
+- shadcn/ui components: Button, Input, Label, Textarea, Skeleton, Badge, Checkbox, Table, Dialog, AlertDialog, Select, Collapsible, Progress.
+- Shared helpers from `@/components/shared`: `GlassCard`, `KpiCard`, `StatusChip`, `SectionHeader`, `EmptyState`.
+- `useApi` (query hook) + `api` (mutation helpers) from `@/lib/api`.
+- `formatDate` / `formatDateTime` / `titleCase` / `safeParse` / `statusChipClass` from `@/lib/format`.
+- `useCurrencyFormat` from `@/hooks/use-currency` (`fmtCurrency(n, { compact: true })`).
+- `useUI` from `@/lib/ui-store` (`setView`, `openDetail`, `drillTo`, `newEntityTrigger`).
+- `useTranslation` from `@/hooks/use-translation` (`t(key)` — string-only, no interpolation).
+- `toast` from `sonner`.
+- Glass surfaces: `glass`, `glass-strong`, `glass-panel`, `hover-lift`, `kpi-num`.
+- Emerald accent throughout; amber / rose / teal / zinc for status tones. **NO indigo, NO blue.**
+- Responsive grids `md:grid-cols-2 xl:grid-cols-3` or KPI `grid-cols-2 lg:grid-cols-4`.
+
+### 52. `src/app/api/expenses/route.ts` (full file shown above in work log — see lines 1-147)
+Key exports: `EXPENSE_CATEGORIES` const array (`travel | phone | staff_salary | office_rent | marketing | miscellaneous`) + `ExpenseCategory` type, both consumed by `[id]/route.ts` PATCH validation. GET returns `{ expenses, summary: { total, byCategory } }`. POST is wrapped in `withRateLimit(handler, 30, 60_000)` and writes an `AuditLog` entry on success.
+
+### 53. `src/app/api/expenses/[id]/route.ts` (full file shown above in work log — see lines 1-113)
+PATCH: partial update with non-undefined field carry-forward + empty-string-to-null collapse + `before`/`after` audit log. DELETE: hard-delete + `before` snapshot + reason in audit log. Both verify `before.brokerId === broker.id` (404 otherwise, no tenant leak). Both wrapped in `withRateLimit(handler, 30, 60_000)`. Both use `reportError(error, { path, method })` from `@/lib/error-report` in the catch.
+
+### 54. `src/components/views/expenses-view.tsx` — 703 lines (head + 30 imports shown above; full body too large to include)
+Includes the full pattern: `SectionHeader`, KPI strip (4 cards), filter bar with URL persistence via `useUrlState`, table with `CategoryChip`, Add/Edit Dialog with inline field errors + live preview, Delete AlertDialog, CSV export via `window.open("/api/export?type=expenses")`, `PullToRefresh` wrapper, `PaginationBar` (>10 rows), `ShareLinkButton`, keyboard-shortcut integration via `useUI().newEntityTrigger`.
+
+### 55. i18n nav section — `src/lib/i18n/en.ts` lines 19-52
+```ts
+// ── Nav group headers (sidebar) ────────────────────────────────────────────
+"nav.overview": "Overview",
+"nav.contacts": "Contacts",
+"nav.operations": "Operations",
+"nav.finance": "Finance",
+"nav.portals": "Portals",
+"nav.system": "System",
+
+// ── Nav items ──────────────────────────────────────────────────────────────
+"nav.dashboard": "Dashboard",
+"nav.analytics": "Analytics",
+"nav.digest": "Daily Digest",
+"nav.clients": "Clients",
+"nav.suppliers": "Suppliers",
+"nav.tags": "Tags",
+"nav.visits": "Visits",
+"nav.purchaseOrders": "Purchase Orders",
+"nav.dispatches": "Dispatch Tracking",
+"nav.bills": "Bills",
+"nav.payments": "Payments",
+"nav.brokerage": "Brokerage",
+"nav.partyLedger": "Party Ledger",
+"nav.portal": "Portals",
+"nav.disputes": "Disputes",
+"nav.notifications": "Notifications",
+"nav.audit": "Audit Trail",
+"nav.dataHealth": "Data Health",
+"nav.savedViews": "Saved Views",
+"nav.reportBuilder": "Report Builder",
+"nav.apiDocs": "API Docs",
+"nav.settings": "Settings",
+"nav.draftQueue": "Draft Queue",
+"nav.billing": "Billing & Plan",
+"nav.expenses": "Expenses",
+```
+Common keys (`common.fixFields`, `common.export`, `common.save`, etc.) live at lines 54-220. Status keys (`status.*`) start at line 222.
+
+## Cross-cutting observations
+- **`Invoice` schema divergence**: the master plan (`04-PHASE4-INVOICE-GENERATION.md` line 88) calls for `Invoice + InvoiceLineItem` models. The actual schema uses `Invoice.itemsJson` (JSON-encoded line items) — no `InvoiceLineItem` model. This mirrors the existing `Booking.lineItemsJson` + `Dispatch.itemsJson` pattern in the codebase. Any Phase-4 implementation should follow the JSON-encoded pattern, not introduce a new relational model.
+- **PDF report routing decision needed**: the existing `/api/reports/route.ts` is a 1983-line monolith that returns print-optimized HTML (`window.print()` → Save as PDF). The plan files mention new endpoints at `/api/reports/<type>/route.ts` (sub-routes). Two viable patterns: (a) sub-route returns JSON consumed by an in-app React view; the existing `/api/reports/route.ts?type=<X>` continues to be the PDF-only path (recommended — matches the existing brokerage-view ↔ `/api/brokerages` JSON ↔ `/api/reports?type=brokerage-statement` PDF split). (b) Add cases to the existing switch for both JSON + HTML branches (bloats the monolith). Pattern (a) is consistent with what's already shipped.
+- **Dashboard integration debt**: Phase 1 #10 + Phase 2 "Dashboard: add net profit/loss KPI card" both punch into `src/components/views/dashboard-view.tsx`. The KPI strip is currently `outstandingReceivable` / `brokerageEarned` / `pending` / `activePOs` (4 cards, `lg:grid-cols-4`). Adding "Total Expenses" + "Net Profit" would either push to 6 cards (drop to `lg:grid-cols-3` x 2 rows, or `lg:grid-cols-6`) or replace existing cards. The dashboard already calls `useApi("/api/dashboard")` — the `/api/dashboard` route would need to aggregate expenses + P&L totals. Worth bundling as a single follow-up task once Phase 1 dashboard integration + Phase 2 are both ready, so the dashboard KPI strip is re-laid once.
+- **Export wiring**: `src/app/api/export/route.ts` `ExportType` union (lines 9-17) currently covers `clients | suppliers | pos | bills | payments | brokerage | expenses | audit`. Phase 4 (Invoices) will need an `"invoices"` entry + `buildInvoices(brokerId)` builder. Phase 2/3/5 (P&L / GST / TB / CF) are statement-style reports — they belong in the PDF `/api/reports` route, not the CSV `/api/export` route.
+- **No new `InvoiceLineItem` model needed**: the existing `Booking.lineItemsJson` + `Dispatch.itemsJson` + `Bill` patterns establish that line-item arrays are JSON-encoded; Phase 4 should follow suit and parse `Invoice.itemsJson` via the existing `safeParse` helper from `@/lib/format`.
+
+## Files summary
+**Created (0)** — this is an audit task; no files were created or edited.
+**Read (12)**: `worklog.md` (head + tail), `plans/00-MASTER-PLAN.md`, `prisma/schema.prisma`, `src/lib/ui-store.ts`, `src/components/sidebar.tsx`, `src/app/page.tsx`, `src/components/command-palette.tsx`, `src/lib/i18n/en.ts`, `src/app/api/reports/route.ts` (head), `src/app/api/export/route.ts` (head), `src/app/api/expenses/route.ts` (full), `src/app/api/expenses/[id]/route.ts` (full), `src/components/views/expenses-view.tsx` (head + line count), `src/components/views/dashboard-view.tsx` (KPI section), `src/components/views/brokerage-view.tsx` (head 60 lines).
+**Lint status**: not run (audit-only task — no source changes).

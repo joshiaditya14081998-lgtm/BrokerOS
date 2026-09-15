@@ -40,7 +40,24 @@ export type ViewKey =
   // ACC1 — Broker Expense Tracking. Operating-cost ledger (travel, phone,
   // staff salary, office rent, marketing, misc). Sidebar nav item +
   // command palette + the page router all use this key.
-  | "expenses";
+  | "expenses"
+  // ACC2 — P&L Statement. Profit & Loss report: brokerage income minus
+  // operating expenses = net profit/loss. Lives under the new Accounting
+  // sidebar group.
+  | "pl-statement"
+  // ACC3 — GST Filing. GSTR-1-style output GST summary grouped by rate +
+  // client. Used for monthly/quarterly tax filing reference.
+  | "gst-filing"
+  // ACC4 — Invoices. GST-compliant service invoices (brokerage services,
+  // dispatch coordination, etc.). New `Invoice` Prisma model.
+  | "invoices"
+  // ACC5 — Trial Balance. All accounts (assets, income, expenses,
+  // liabilities) with debit/credit totals — balanced check.
+  | "trial-balance"
+  // ACC5 — Cash Flow. Money in (brokerage payouts, invoice payments) vs
+  // money out (operating expenses) over a date range, with opening +
+  // closing balance.
+  | "cash-flow";
 
 // A drill-down preset is a (view, preset) tuple that list views read on mount
 // to pre-filter themselves. The dashboard's KPI cards / chart elements use

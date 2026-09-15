@@ -20,10 +20,10 @@ export const dynamic = "force-dynamic";
 // button is shown in the on-screen view and hidden in print mode.
 // ─────────────────────────────────────────────────────────────────────────────
 
-type ReportType = "brokerage-statement" | "client-ledger" | "supplier-summary" | "audit-trail" | "purchase-order" | "party-ledger";
+type ReportType = "brokerage-statement" | "client-ledger" | "supplier-summary" | "audit-trail" | "purchase-order" | "party-ledger" | "gst-filing";
 type Range = "month" | "quarter" | "year" | "all";
 
-const VALID_TYPES: ReportType[] = ["brokerage-statement", "client-ledger", "supplier-summary", "audit-trail", "purchase-order", "party-ledger"];
+const VALID_TYPES: ReportType[] = ["brokerage-statement", "client-ledger", "supplier-summary", "audit-trail", "purchase-order", "party-ledger", "gst-filing"];
 const VALID_RANGES: Range[] = ["month", "quarter", "year", "all"];
 
 const REPORT_TITLES: Record<ReportType, string> = {
@@ -33,6 +33,7 @@ const REPORT_TITLES: Record<ReportType, string> = {
   "audit-trail": "Audit Trail Report",
   "purchase-order": "Purchase Order",
   "party-ledger": "Party Ledger Report",
+  "gst-filing": "GST Filing Report",
 };
 
 // ── Formatting helpers (server-safe — Intl is available in Node) ─────────────
@@ -1913,6 +1914,228 @@ async function buildAuditTrail(brokerId: string, params: URLSearchParams): Promi
   return htmlShell(REPORT_TITLES["audit-trail"], rangeLabel, body, footerNote);
 }
 
+// ── GST filing report ────────────────────────────────────────────────────────
+//
+// Mirrors the JSON endpoint at `/api/reports/gst-filing/route.ts` but renders
+// a print-optimized HTML document (window.print() → "Save as PDF"). Output
+// GST is grouped by GST rate (5/12/18/28 — or whatever rates appear in the
+// data), with a GSTR-1-style client-wise breakdown. Input GST is a placeholder
+// (expenses don't yet carry a GST component).
+//
+// Range handling: `month` / `quarter` resolve to the current period; `custom`
+// reads `from` + `to` query params (ISO). Falls back to month when `custom`
+// is requested without `from`/`to`.
+
+async function buildGstFiling(brokerId: string, params: URLSearchParams): Promise<string> {
+  const rawRange = (params.get("range") ?? "month").toLowerCase();
+  const fromRaw = params.get("from");
+  const toRaw = params.get("to");
+
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth();
+
+  let start: Date;
+  let end: Date;
+  let rangeLabel: string;
+
+  if (rawRange === "custom" && fromRaw && toRaw) {
+    const f = new Date(fromRaw);
+    const t = new Date(toRaw);
+    if (!Number.isNaN(f.getTime()) && !Number.isNaN(t.getTime())) {
+      start = new Date(f);
+      start.setHours(0, 0, 0, 0);
+      end = new Date(t);
+      end.setHours(23, 59, 59, 999);
+      rangeLabel = `${fmtDate(start)} → ${fmtDate(end)}`;
+    } else {
+      start = new Date(y, m, 1);
+      end = new Date(y, m + 1, 0, 23, 59, 59, 999);
+      rangeLabel = start.toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+    }
+  } else if (rawRange === "quarter") {
+    const qStartMonth = Math.floor(m / 3) * 3;
+    start = new Date(y, qStartMonth, 1);
+    end = new Date(y, qStartMonth + 3, 0, 23, 59, 59, 999);
+    const qNum = Math.floor(qStartMonth / 3) + 1;
+    rangeLabel = `Q${qNum} ${y}`;
+  } else {
+    // `month` (default) — also the fallback for invalid custom params.
+    start = new Date(y, m, 1);
+    end = new Date(y, m + 1, 0, 23, 59, 59, 999);
+    rangeLabel = start.toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+  }
+
+  const bills = await db.bill.findMany({
+    where: {
+      brokerId,
+      createdAt: { gte: start, lte: end },
+    },
+    include: {
+      client: { select: { name: true, gstNo: true } },
+    },
+    orderBy: { createdAt: "asc" },
+  });
+
+  // ── Aggregate output GST by rate ──────────────────────────────────────────
+  const byRateMap = new Map<number, { baseAmount: number; gstAmount: number; billCount: number }>();
+  for (const b of bills) {
+    const acc = byRateMap.get(b.gstRate) ?? { baseAmount: 0, gstAmount: 0, billCount: 0 };
+    acc.baseAmount += b.baseAmount;
+    acc.gstAmount += b.gstAmount;
+    acc.billCount += 1;
+    byRateMap.set(b.gstRate, acc);
+  }
+  const byRate = Array.from(byRateMap.entries())
+    .map(([rate, v]) => ({ rate, ...v }))
+    .sort((a, b) => a.rate - b.rate);
+
+  const totalBase = byRate.reduce((s, r) => s + r.baseAmount, 0);
+  const totalGst = byRate.reduce((s, r) => s + r.gstAmount, 0);
+  const totalBillCount = byRate.reduce((s, r) => s + r.billCount, 0);
+
+  // ── Aggregate client-wise breakdown (one row per client × rate) ───────────
+  const byClientMap = new Map<
+    string,
+    {
+      clientName: string;
+      gstin: string | null;
+      gstRate: number;
+      baseAmount: number;
+      gstAmount: number;
+      billCount: number;
+    }
+  >();
+  for (const b of bills) {
+    const key = `${b.clientId}__${b.gstRate}`;
+    const acc =
+      byClientMap.get(key) ??
+      {
+        clientName: b.client.name,
+        gstin: b.client.gstNo ?? null,
+        gstRate: b.gstRate,
+        baseAmount: 0,
+        gstAmount: 0,
+        billCount: 0,
+      };
+    acc.baseAmount += b.baseAmount;
+    acc.gstAmount += b.gstAmount;
+    acc.billCount += 1;
+    byClientMap.set(key, acc);
+  }
+  const clientRows = Array.from(byClientMap.values()).sort((a, b) => b.gstAmount - a.gstAmount);
+  const clientTotalGst = clientRows.reduce((s, c) => s + c.gstAmount, 0);
+  const clientTotalBills = clientRows.reduce((s, c) => s + c.billCount, 0);
+
+  // Input GST placeholder — expenses don't yet carry a GST component.
+  const inputGstTotal = 0;
+  const liability = totalGst - inputGstTotal;
+  const isLiability = liability >= 0;
+
+  // ── KPI grid ──────────────────────────────────────────────────────────────
+  const byRateRowsHtml = byRate.length
+    ? byRate
+        .map(
+          (r) => `<tr>
+        <td><span class="pill amber">${r.rate.toFixed(1).replace(/\.0$/, "")}%</span></td>
+        <td class="num">${fmtCurrency(r.baseAmount)}</td>
+        <td class="num amber">${fmtCurrency(r.gstAmount)}</td>
+        <td class="num">${r.billCount}</td>
+      </tr>`,
+        )
+        .join("")
+    : `<tr><td colspan="4" style="text-align:center;padding:24px;color:#a1a1aa;">No bills in this range.</td></tr>`;
+
+  const clientRowsHtml = clientRows.length
+    ? clientRows
+        .map(
+          (c) => `<tr>
+        <td>${escapeHtml(c.clientName)}</td>
+        <td style="font-family:'JetBrains Mono',monospace;font-size:10px;">${escapeHtml(c.gstin ?? "—")}</td>
+        <td class="num">${fmtCurrency(c.baseAmount)}</td>
+        <td class="center"><span class="pill amber">${c.gstRate.toFixed(1).replace(/\.0$/, "")}%</span></td>
+        <td class="num amber">${fmtCurrency(c.gstAmount)}</td>
+        <td class="num">${c.billCount}</td>
+      </tr>`,
+        )
+        .join("")
+    : `<tr><td colspan="6" style="text-align:center;padding:24px;color:#a1a1aa;">No client-wise entries in this range.</td></tr>`;
+
+  const body = `
+    <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);">
+      <div class="kpi-card">
+        <div class="kpi-label">Output GST (collected)</div>
+        <div class="kpi-value amber">${fmtCurrency(totalGst)}</div>
+        <div class="kpi-sub">${byRate.length} rate${byRate.length === 1 ? "" : "s"} · ${totalBillCount} bill${totalBillCount === 1 ? "" : "s"}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Input GST (paid)</div>
+        <div class="kpi-value" style="color:#0f766e;">${fmtCurrency(inputGstTotal)}</div>
+        <div class="kpi-sub">Expenses GST — coming soon</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">${isLiability ? "Net GST Liability" : "Net GST Refund"}</div>
+        <div class="kpi-value ${isLiability ? "rose" : "emerald"}">${fmtCurrency(Math.abs(liability))}</div>
+        <div class="kpi-sub">${isLiability ? "Pay to government" : "Refund due"}</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Output GST by rate</div>
+      <div class="section-desc">GST collected from bills raised in ${escapeHtml(rangeLabel)}, grouped by GST rate.</div>
+      <table class="report">
+        <thead>
+          <tr>
+            <th>GST Rate</th>
+            <th class="num">Base Amount</th>
+            <th class="num">GST Amount</th>
+            <th class="num">Bills</th>
+          </tr>
+        </thead>
+        <tbody>${byRateRowsHtml}</tbody>
+        ${byRate.length ? `<tfoot>
+          <tr>
+            <td>Total</td>
+            <td class="num">${fmtCurrency(totalBase)}</td>
+            <td class="num">${fmtCurrency(totalGst)}</td>
+            <td class="num">${totalBillCount}</td>
+          </tr>
+        </tfoot>` : ""}
+      </table>
+    </div>
+
+    <div class="section section-break">
+      <div class="section-title">Client-wise breakdown (GSTR-1 style)</div>
+      <div class="section-desc">One row per client × rate pair. Sorted by GST amount (highest first).</div>
+      <table class="report">
+        <thead>
+          <tr>
+            <th>Client</th>
+            <th>GSTIN</th>
+            <th class="num">Base</th>
+            <th class="center">Rate</th>
+            <th class="num">GST Amount</th>
+            <th class="num">Bills</th>
+          </tr>
+        </thead>
+        <tbody>${clientRowsHtml}</tbody>
+        ${clientRows.length ? `<tfoot>
+          <tr>
+            <td colspan="4">Total</td>
+            <td class="num">${fmtCurrency(clientTotalGst)}</td>
+            <td class="num">${clientTotalBills}</td>
+          </tr>
+        </tfoot>` : ""}
+      </table>
+    </div>
+  `;
+
+  const footerNote =
+    "This report is for GST filing reference. Verify with your Chartered Accountant before filing GST returns.";
+
+  return htmlShell(REPORT_TITLES["gst-filing"], rangeLabel, body, footerNote);
+}
+
 // ── Route handler ────────────────────────────────────────────────────────────
 
 export async function GET(req: NextRequest) {
@@ -1962,6 +2185,8 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ error: "partyId is required for party-ledger report" }, { status: 400 });
       }
       html = await buildPartyLedger(broker.id, partyType, partyId);
+    } else if (typeParam === "gst-filing") {
+      html = await buildGstFiling(broker.id, searchParams);
     } else {
       // audit-trail
       html = await buildAuditTrail(broker.id, searchParams);

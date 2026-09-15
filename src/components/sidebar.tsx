@@ -7,6 +7,7 @@ import {
   Receipt, Wallet, BadgePercent, AlertTriangle, Bell, ScrollText,
   Moon, Sun, Shirt, Settings, Store, Coffee, Tag, ShieldCheck, Bookmark, LayoutTemplate,
   BookOpen, Code, CloudOff, CreditCard, ReceiptIndianRupee,
+  TrendingUp, Scale, Banknote, FileSpreadsheet,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -32,7 +33,14 @@ const NAV: NavItem[] = [
   { key: "brokerage", labelKey: "nav.brokerage", icon: BadgePercent, groupKey: "nav.finance" },
   { key: "party-ledger", labelKey: "nav.partyLedger", icon: BookOpen, groupKey: "nav.finance" },
   { key: "expenses", labelKey: "nav.expenses", icon: ReceiptIndianRupee, groupKey: "nav.finance" },
+  { key: "invoices", labelKey: "nav.invoices", icon: FileText, groupKey: "nav.finance" },
   { key: "billing", labelKey: "nav.billing", icon: CreditCard, groupKey: "nav.finance" },
+  // ACC2-5 — Accounting group: P&L, GST Filing, Trial Balance, Cash Flow.
+  // Statements + reports for tax filing + financial review.
+  { key: "pl-statement", labelKey: "nav.plStatement", icon: TrendingUp, groupKey: "nav.accounting" },
+  { key: "gst-filing", labelKey: "nav.gstFiling", icon: FileSpreadsheet, groupKey: "nav.accounting" },
+  { key: "trial-balance", labelKey: "nav.trialBalance", icon: Scale, groupKey: "nav.accounting" },
+  { key: "cash-flow", labelKey: "nav.cashFlow", icon: Banknote, groupKey: "nav.accounting" },
   { key: "portal", labelKey: "nav.portal", icon: Store, groupKey: "nav.portals" },
   { key: "disputes", labelKey: "nav.disputes", icon: AlertTriangle, groupKey: "nav.operations" },
   { key: "notifications", labelKey: "nav.notifications", icon: Bell, groupKey: "nav.system" },

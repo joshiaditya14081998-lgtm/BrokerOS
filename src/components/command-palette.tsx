@@ -31,6 +31,10 @@ import {
   CloudOff,
   CreditCard,
   ReceiptIndianRupee,
+  TrendingUp,
+  Scale,
+  Banknote,
+  FileSpreadsheet,
 } from "lucide-react";
 import {
   Dialog,
@@ -71,7 +75,13 @@ const NAV_ITEMS: NavItemDef[] = [
   { key: "brokerage", label: "Brokerage", icon: BadgePercent },
   { key: "party-ledger", label: "Party Ledger", icon: BookOpen },
   { key: "expenses", label: "Expenses", icon: ReceiptIndianRupee },
+  { key: "invoices", label: "Invoices", icon: FileText },
   { key: "billing", label: "Billing & Plan", icon: CreditCard },
+  // ACC2-5 — Accounting group entries.
+  { key: "pl-statement", label: "P&L Statement", icon: TrendingUp },
+  { key: "gst-filing", label: "GST Filing", icon: FileSpreadsheet },
+  { key: "trial-balance", label: "Trial Balance", icon: Scale },
+  { key: "cash-flow", label: "Cash Flow", icon: Banknote },
   { key: "disputes", label: "Disputes", icon: AlertTriangle },
   { key: "notifications", label: "Notifications", icon: Bell },
   { key: "saved-views", label: "Saved Views", icon: Bookmark },

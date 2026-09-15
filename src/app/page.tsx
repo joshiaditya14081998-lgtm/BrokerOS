@@ -42,6 +42,11 @@ import { PortalView } from "@/components/views/portal-view";
 import { DraftQueueView } from "@/components/views/draft-queue-view";
 import { BillingView } from "@/components/views/billing-view";
 import { ExpensesView } from "@/components/views/expenses-view";
+import { PlStatementView } from "@/components/views/pl-statement-view";
+import { GstFilingView } from "@/components/views/gst-filing-view";
+import { InvoicesView } from "@/components/views/invoices-view";
+import { TrialBalanceView } from "@/components/views/trial-balance-view";
+import { CashFlowView } from "@/components/views/cash-flow-view";
 import { ClientDetailSheet } from "@/components/views/client-detail-sheet";
 import { SupplierDetailSheet } from "@/components/views/supplier-detail-sheet";
 import { PoDetailSheet } from "@/components/views/po-detail-sheet";
@@ -94,6 +99,16 @@ const VIEW_TITLE_KEYS: Record<string, { titleKey: string; subKey: string }> = {
   billing: { titleKey: "billing.title", subKey: "billing.subtitle" },
   // ACC1 — Broker Expense Tracking view title + subtitle.
   expenses: { titleKey: "expenses.title", subKey: "expenses.subtitle" },
+  // ACC2 — P&L Statement view.
+  "pl-statement": { titleKey: "plStatement.title", subKey: "plStatement.subtitle" },
+  // ACC3 — GST Filing report view.
+  "gst-filing": { titleKey: "gstFiling.title", subKey: "gstFiling.subtitle" },
+  // ACC4 — Invoices view.
+  invoices: { titleKey: "invoices.title", subKey: "invoices.subtitle" },
+  // ACC5 — Trial Balance view.
+  "trial-balance": { titleKey: "trialBalance.title", subKey: "trialBalance.subtitle" },
+  // ACC5 — Cash Flow view.
+  "cash-flow": { titleKey: "cashFlow.title", subKey: "cashFlow.subtitle" },
 };
 
 export default function Page() {
@@ -528,6 +543,12 @@ function ViewRouter({ view }: { view: string }) {
     case "drafts": return <DraftQueueView />;
     case "billing": return <BillingView />;
     case "expenses": return <ExpensesView />;
+    // ACC2-5 — Accounting views.
+    case "pl-statement": return <PlStatementView />;
+    case "gst-filing": return <GstFilingView />;
+    case "invoices": return <InvoicesView />;
+    case "trial-balance": return <TrialBalanceView />;
+    case "cash-flow": return <CashFlowView />;
     default: return <DashboardView />;
   }
 }

@@ -1,0 +1,704 @@
+     1→"use client";
+     2→
+     3→import * as React from "react";
+     4→import {
+     5→  ReceiptIndianRupee, Plus, Download, Trash2, Pencil, Search, CalendarDays,
+     6→  TrendingDown, CalendarRange, Crown, X, AlertCircle,
+     7→} from "lucide-react";
+     8→import { useApi, api } from "@/lib/api";
+     9→import { formatDate, titleCase } from "@/lib/format";
+    10→import { useCurrencyFormat } from "@/hooks/use-currency";
+    11→import { GlassCard, SectionHeader, StatusChip, EmptyState } from "@/components/shared";
+    12→import { Button } from "@/components/ui/button";
+    13→import { Input } from "@/components/ui/input";
+    14→import { Label } from "@/components/ui/label";
+    15→import { Textarea } from "@/components/ui/textarea";
+    16→import { Skeleton } from "@/components/ui/skeleton";
+    17→import {
+    18→  Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
+    19→  DialogFooter,
+    20→} from "@/components/ui/dialog";
+    21→import {
+    22→  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+    23→  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+    24→} from "@/components/ui/alert-dialog";
+    25→import {
+    26→  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+    27→} from "@/components/ui/select";
+    28→import {
+    29→  Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
+    30→} from "@/components/ui/table";
+    31→import { useUI } from "@/lib/ui-store";
+    32→import { useUrlState } from "@/hooks/use-url-state";
+    33→import { useTranslation } from "@/hooks/use-translation";
+    34→import { usePagination } from "@/hooks/use-pagination";
+    35→import { PaginationBar } from "@/components/pagination-bar";
+    36→import { PullToRefresh } from "@/components/pull-to-refresh";
+    37→import { ShareLinkButton } from "@/components/share-link-button";
+    38→import { toast } from "sonner";
+    39→
+    40→// ─────────────────────────────────────────────────────────────────────────────
+    41→// Categories — mirrors the server enum from /api/expenses/route.ts. Kept in
+    42→// sync so the Select dropdown + the chip color map show every valid value
+    43→// (and no more).
+    44→// ─────────────────────────────────────────────────────────────────────────────
+    45→const CATEGORIES = [
+    46→  "travel",
+    47→  "phone",
+    48→  "staff_salary",
+    49→  "office_rent",
+    50→  "marketing",
+    51→  "miscellaneous",
+    52→] as const;
+    53→type Category = (typeof CATEGORIES)[number];
+    54→
+    55→// Per-category Tailwind chip colors. Matches the design spec exactly:
+    56→// travel=teal, phone=teal, staff_salary=emerald, office_rent=amber,
+    57→// marketing=plum (using `purple` — closest default Tailwind shade to the
+    58→// chart-5 plum token), miscellaneous=zinc.
+    59→const CATEGORY_COLORS: Record<Category, string> = {
+    60→  travel: "bg-teal-500/15 text-teal-700 dark:text-teal-300 border-teal-500/30",
+    61→  phone: "bg-teal-500/15 text-teal-700 dark:text-teal-300 border-teal-500/30",
+    62→  staff_salary: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30",
+    63→  office_rent: "bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30",
+    64→  marketing: "bg-purple-500/15 text-purple-700 dark:text-purple-300 border-purple-500/30",
+    65→  miscellaneous: "bg-zinc-500/15 text-zinc-600 dark:text-zinc-300 border-zinc-500/30",
+    66→};
+    67→
+    68→// Friendly category labels — used in dropdowns + the table chip. Title-cased
+    69→// snake_case so "staff_salary" renders as "Staff Salary".
+    70→function categoryLabel(c: string): string {
+    71→  return titleCase(c);
+    72→}
+    73→
+    74→type Expense = {
+    75→  id: string;
+    76→  category: string;
+    77→  amount: number;
+    78→  date: string;
+    79→  description: string | null;
+    80→  vendor: string | null;
+    81→  receiptUrl: string | null;
+    82→  createdAt: string;
+    83→};
+    84→
+    85→type Summary = {
+    86→  total: number;
+    87→  byCategory: Record<string, number>;
+    88→};
+    89→
+    90→export function ExpensesView() {
+    91→  const { t } = useTranslation();
+    92→  const { data, loading, refresh } = useApi<{ expenses: Expense[]; summary: Summary }>(
+    93→    "/api/expenses",
+    94→  );
+    95→  const { format: fmtCurrency } = useCurrencyFormat();
+    96→  const { newEntityTrigger } = useUI();
+    97→
+    98→  // URL-persisted filters so a refresh or shared link preserves them.
+    99→  // `c` = category, `q` = search text, `from`/`to` = ISO date range.
+   100→  const [q, setQ] = useUrlState<string>("q", "");
+   101→  const [categoryFilter, setCategoryFilter] = useUrlState<string>("c", "all");
+   102→  const [from, setFrom] = useUrlState<string>("from", "");
+   103→  const [to, setTo] = useUrlState<string>("to", "");
+   104→
+   105→  const [addOpen, setAddOpen] = React.useState(false);
+   106→  const [editExpense, setEditExpense] = React.useState<Expense | null>(null);
+   107→  const [deleteExpense, setDeleteExpense] = React.useState<Expense | null>(null);
+   108→
+   109→  // Auto-open the "Add Expense" dialog when the user fires the "n e" shortcut.
+   110→  React.useEffect(() => {
+   111→    if (newEntityTrigger?.view === "expenses") {
+   112→      setAddOpen(true);
+   113→    }
+   114→  }, [newEntityTrigger]);
+   115→
+   116→  const expenses = data?.expenses ?? [];
+   117→  const summary = data?.summary ?? { total: 0, byCategory: {} as Record<string, number> };
+   118→
+   119→  // ── KPI roll-ups ─────────────────────────────────────────────────────────
+   120→  // Computed client-side from the (unfiltered-by-default) list — but the
+   121→  // category filter / date range are explicit user intent, so the KPIs
+   122→  // reflect the *current month + year-to-date* regardless of the active
+   123→  // filter bar.
+   124→  const now = new Date();
+   125→  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+   126→  const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+   127→  const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+   128→  const yearStart = new Date(now.getFullYear(), 0, 1);
+   129→
+   130→  const inRange = (e: Expense, start: Date, end: Date) => {
+   131→    const d = new Date(e.date);
+   132→    return d >= start && d <= end;
+   133→  };
+   134→  const thisMonth = expenses
+   135→    .filter((e) => inRange(e, monthStart, now))
+   136→    .reduce((s, e) => s + e.amount, 0);
+   137→  const lastMonth = expenses
+   138→    .filter((e) => inRange(e, lastMonthStart, lastMonthEnd))
+   139→    .reduce((s, e) => s + e.amount, 0);
+   140→  const ytd = expenses
+   141→    .filter((e) => inRange(e, yearStart, now))
+   142→    .reduce((s, e) => s + e.amount, 0);
+   143→
+   144→  // Top category — the highest-spend category in the byCategory roll-up.
+   145→  const topCategory = React.useMemo(() => {
+   146→    const entries = Object.entries(summary.byCategory).filter(([, v]) => v > 0);
+   147→    if (entries.length === 0) return null;
+   148→    return entries.reduce((best, cur) => (cur[1] > best[1] ? cur : best));
+   149→  }, [summary.byCategory]);
+   150→
+   151→  // ── Filtered rows (category + date range + search) ───────────────────────
+   152→  const filtered = expenses.filter((e) => {
+   153→    if (categoryFilter !== "all" && e.category !== categoryFilter) return false;
+   154→    if (from) {
+   155→      const fd = new Date(from);
+   156→      if (!Number.isNaN(fd.getTime()) && new Date(e.date) < fd) return false;
+   157→    }
+   158→    if (to) {
+   159→      const td = new Date(to);
+   160→      if (!Number.isNaN(td.getTime())) {
+   161→        td.setHours(23, 59, 59, 999);
+   162→        if (new Date(e.date) > td) return false;
+   163→      }
+   164→    }
+   165→    const s = q.toLowerCase();
+   166→    if (s) {
+   167→      const matches =
+   168→        (e.description ?? "").toLowerCase().includes(s) ||
+   169→        (e.vendor ?? "").toLowerCase().includes(s) ||
+   170→        e.category.toLowerCase().includes(s);
+   171→      if (!matches) return false;
+   172→    }
+   173→    return true;
+   174→  });
+   175→
+   176→  const {
+   177→    paginated, currentPage, totalPages, size, setPage, setSize, range,
+   178→  } = usePagination<Expense>(filtered, 10);
+   179→
+   180→  // Reset to page 1 whenever any filter changes so the broker doesn't land on
+   181→  // a page that no longer exists.
+   182→  React.useEffect(() => { setPage(1); }, [q, categoryFilter, from, to, setPage]);
+   183→
+   184→  const clearFilters = () => {
+   185→    setQ("");
+   186→    setCategoryFilter("all");
+   187→    setFrom("");
+   188→    setTo("");
+   189→  };
+   190→
+   191→  const hasActiveFilters =
+   192→    q !== "" || categoryFilter !== "all" || from !== "" || to !== "";
+   193→
+   194→  return (
+   195→    <div className="space-y-5">
+   196→      <SectionHeader
+   197→        title={t("expenses.title")}
+   198→        description={t("expenses.subtitle")}
+   199→        action={
+   200→          <div className="flex flex-wrap items-center gap-2">
+   201→            <ShareLinkButton />
+   202→            <Button
+   203→              size="sm"
+   204→              variant="outline"
+   205→              onClick={() => window.open("/api/export?type=expenses", "_blank")}
+   206→            >
+   207→              <Download className="mr-1.5 size-4" />
+   208→              {t("common.export")}
+   209→            </Button>
+   210→            <Button
+   211→              size="sm"
+   212→              onClick={() => { setEditExpense(null); setAddOpen(true); }}
+   213→            >
+   214→              <Plus className="mr-1.5 size-4" />
+   215→              {t("expenses.add")}
+   216→            </Button>
+   217→            <Dialog open={addOpen} onOpenChange={(o) => { setAddOpen(o); if (!o) setEditExpense(null); }}>
+   218→              <ExpenseDialog
+   219→                editing={editExpense}
+   220→                onDone={() => { setAddOpen(false); setEditExpense(null); refresh(); }}
+   221→              />
+   222→            </Dialog>
+   223→          </div>
+   224→        }
+   225→      />
+   226→
+   227→      {/* ── KPI strip ─────────────────────────────────────────────────────── */}
+   228→      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+   229→        <KpiMini
+   230→          icon={<CalendarDays className="size-4" />}
+   231→          label={t("expenses.thisMonth")}
+   232→          value={fmtCurrency(thisMonth, { compact: true })}
+   233→          sub={now.toLocaleDateString("en-IN", { month: "long", year: "numeric" })}
+   234→          tone="emerald"
+   235→        />
+   236→        <KpiMini
+   237→          icon={<TrendingDown className="size-4" />}
+   238→          label={t("expenses.lastMonth")}
+   239→          value={fmtCurrency(lastMonth, { compact: true })}
+   240→          sub={lastMonthStart.toLocaleDateString("en-IN", { month: "long", year: "numeric" })}
+   241→          tone="teal"
+   242→        />
+   243→        <KpiMini
+   244→          icon={<CalendarRange className="size-4" />}
+   245→          label={t("expenses.ytd")}
+   246→          value={fmtCurrency(ytd, { compact: true })}
+   247→          sub={`${now.getFullYear()} · ${fmtCurrency(ytd)}`}
+   248→        />
+   249→        <KpiMini
+   250→          icon={<Crown className="size-4" />}
+   251→          label={t("expenses.topCategory")}
+   252→          value={topCategory ? categoryLabel(topCategory[0]) : "—"}
+   253→          sub={topCategory ? fmtCurrency(topCategory[1]) : t("expenses.noExpensesYet")}
+   254→          tone="amber"
+   255→        />
+   256→      </div>
+   257→
+   258→      {/* ── Filter bar ─────────────────────────────────────────────────────── */}
+   259→      <GlassCard className="p-3">
+   260→        <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+   261→          <div className="relative flex-1">
+   262→            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+   263→            <Input
+   264→              placeholder={t("expenses.searchPlaceholder")}
+   265→              value={q}
+   266→              onChange={(e) => setQ(e.target.value)}
+   267→              className="border-0 bg-transparent pl-9 shadow-none focus-visible:ring-1"
+   268→            />
+   269→          </div>
+   270→          <div className="flex flex-wrap items-center gap-2">
+   271→            <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+   272→              <SelectTrigger className="h-9 w-[160px]">
+   273→                <SelectValue placeholder={t("expenses.allCategories")} />
+   274→              </SelectTrigger>
+   275→              <SelectContent>
+   276→                <SelectItem value="all">{t("expenses.allCategories")}</SelectItem>
+   277→                {CATEGORIES.map((c) => (
+   278→                  <SelectItem key={c} value={c}>{categoryLabel(c)}</SelectItem>
+   279→                ))}
+   280→              </SelectContent>
+   281→            </Select>
+   282→            <Input
+   283→              type="date"
+   284→              value={from}
+   285→              onChange={(e) => setFrom(e.target.value)}
+   286→              className="h-9 w-[150px]"
+   287→              aria-label={t("expenses.from")}
+   288→            />
+   289→            <span className="text-xs text-muted-foreground">→</span>
+   290→            <Input
+   291→              type="date"
+   292→              value={to}
+   293→              onChange={(e) => setTo(e.target.value)}
+   294→              className="h-9 w-[150px]"
+   295→              aria-label={t("expenses.to")}
+   296→            />
+   297→            {hasActiveFilters ? (
+   298→              <Button size="sm" variant="ghost" className="h-9" onClick={clearFilters}>
+   299→                <X className="mr-1 size-3.5" />
+   300→                {t("common.clear")}
+   301→              </Button>
+   302→            ) : null}
+   303→          </div>
+   304→        </div>
+   305→        {hasActiveFilters ? (
+   306→          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+   307→            <span className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-card/40 px-2 py-0.5">
+   308→              {categoryFilter !== "all" ? (
+   309→                <span>{t("expenses.category")}: {categoryLabel(categoryFilter)}</span>
+   310→              ) : (
+   311→                <span>{t("expenses.allCategories")}</span>
+   312→              )}
+   313→            </span>
+   314→            {(from || to) ? (
+   315→              <span className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-card/40 px-2 py-0.5">
+   316→                {from || "…"} → {to || "…"}
+   317→              </span>
+   318→            ) : null}
+   319→            {q ? (
+   320→              <span className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-card/40 px-2 py-0.5">
+   321→                “{q}”
+   322→              </span>
+   323→            ) : null}
+   324→          </div>
+   325→        ) : null}
+   326→      </GlassCard>
+   327→
+   328→      {/* ── Table ─────────────────────────────────────────────────────────── */}
+   329→      <PullToRefresh onRefresh={refresh}>
+   330→        {loading ? (
+   331→          <div className="space-y-2">{Array.from({ length: 4 }).map((_, i) => (
+   332→            <Skeleton key={i} className="h-16 rounded-2xl" />
+   333→          ))}</div>
+   334→        ) : filtered.length === 0 ? (
+   335→          <GlassCard className="p-8">
+   336→            <EmptyState
+   337→              title={t("expenses.noExpensesYet")}
+   338→              hint={t("expenses.noExpensesHint")}
+   339→              icon={<ReceiptIndianRupee className="size-5" />}
+   340→            />
+   341→          </GlassCard>
+   342→        ) : (
+   343→          <>
+   344→            <GlassCard className="overflow-hidden p-0">
+   345→              <div className="max-h-[70vh] overflow-x-auto">
+   346→                <Table>
+   347→                  <TableHeader className="sticky top-0 z-10 bg-muted/60 backdrop-blur">
+   348→                    <TableRow>
+   349→                      <TableHead className="pl-4">{t("expenses.date")}</TableHead>
+   350→                      <TableHead>{t("expenses.category")}</TableHead>
+   351→                      <TableHead>{t("expenses.description")}</TableHead>
+   352→                      <TableHead>{t("expenses.vendor")}</TableHead>
+   353→                      <TableHead className="text-right">{t("expenses.amount")}</TableHead>
+   354→                      <TableHead className="pr-4 text-right">{t("expenses.actions")}</TableHead>
+   355→                    </TableRow>
+   356→                  </TableHeader>
+   357→                  <TableBody>
+   358→                    {paginated.map((e) => (
+   359→                      <TableRow
+   360→                        key={e.id}
+   361→                        className="cursor-pointer"
+   362→                        onClick={() => { setEditExpense(e); setAddOpen(true); }}
+   363→                      >
+   364→                        <TableCell className="pl-4 whitespace-nowrap font-medium text-foreground">
+   365→                          {formatDate(e.date)}
+   366→                        </TableCell>
+   367→                        <TableCell>
+   368→                          <CategoryChip category={e.category} />
+   369→                        </TableCell>
+   370→                        <TableCell className="max-w-[220px] truncate text-muted-foreground">
+   371→                          {e.description ?? "—"}
+   372→                        </TableCell>
+   373→                        <TableCell className="max-w-[160px] truncate text-muted-foreground">
+   374→                          {e.vendor ?? "—"}
+   375→                        </TableCell>
+   376→                        <TableCell className="text-right font-bold text-foreground whitespace-nowrap">
+   377→                          {fmtCurrency(e.amount)}
+   378→                        </TableCell>
+   379→                        <TableCell className="pr-4 text-right">
+   380→                          <div className="flex items-center justify-end gap-1" onClick={(e2) => e2.stopPropagation()}>
+   381→                            <Button
+   382→                              size="sm"
+   383→                              variant="ghost"
+   384→                              className="size-8 p-0"
+   385→                              aria-label={t("common.edit")}
+   386→                              onClick={() => { setEditExpense(e); setAddOpen(true); }}
+   387→                            >
+   388→                              <Pencil className="size-3.5" />
+   389→                            </Button>
+   390→                            <Button
+   391→                              size="sm"
+   392→                              variant="ghost"
+   393→                              className="size-8 p-0 text-rose-500 hover:bg-rose-500/10 hover:text-rose-600"
+   394→                              aria-label={t("common.delete")}
+   395→                              onClick={() => setDeleteExpense(e)}
+   396→                            >
+   397→                              <Trash2 className="size-3.5" />
+   398→                            </Button>
+   399→                          </div>
+   400→                        </TableCell>
+   401→                      </TableRow>
+   402→                    ))}
+   403→                  </TableBody>
+   404→                </Table>
+   405→              </div>
+   406→            </GlassCard>
+   407→            <PaginationBar
+   408→              currentPage={currentPage}
+   409→              totalPages={totalPages}
+   410→              range={range}
+   411→              onPageChange={setPage}
+   412→              pageSize={size}
+   413→              onPageSizeChange={setSize}
+   414→            />
+   415→          </>
+   416→        )}
+   417→      </PullToRefresh>
+   418→
+   419→      {/* ── Delete confirm ────────────────────────────────────────────────── */}
+   420→      <AlertDialog
+   421→        open={!!deleteExpense}
+   422→        onOpenChange={(o) => { if (!o) setDeleteExpense(null); }}
+   423→      >
+   424→        <AlertDialogContent className="glass-strong">
+   425→          <AlertDialogHeader>
+   426→            <AlertDialogTitle>{t("expenses.deleteConfirm")}</AlertDialogTitle>
+   427→            <AlertDialogDescription>
+   428→              {deleteExpense ? (
+   429→                <>
+   430→                  {fmtCurrency(deleteExpense.amount)} · {categoryLabel(deleteExpense.category)}
+   431→                  {deleteExpense.vendor ? ` · ${deleteExpense.vendor}` : ""}
+   432→                  <br />
+   433→                  {t("expenses.deleteConfirmHint")}
+   434→                </>
+   435→              ) : null}
+   436→            </AlertDialogDescription>
+   437→          </AlertDialogHeader>
+   438→          <AlertDialogFooter>
+   439→            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+   440→            <AlertDialogAction
+   441→              className="bg-rose-600 text-white hover:bg-rose-700"
+   442→              onClick={async () => {
+   443→                if (!deleteExpense) return;
+   444→                try {
+   445→                  await api(`/api/expenses/${deleteExpense.id}`, { method: "DELETE" });
+   446→                  toast.success(t("expenses.deleted"));
+   447→                  setDeleteExpense(null);
+   448→                  refresh();
+   449→                } catch (e) {
+   450→                  toast.error(e instanceof Error ? e.message : t("expenses.deleteFailed"));
+   451→                }
+   452→              }}
+   453→            >
+   454→              {t("common.delete")}
+   455→            </AlertDialogAction>
+   456→          </AlertDialogFooter>
+   457→        </AlertDialogContent>
+   458→      </AlertDialog>
+   459→    </div>
+   460→  );
+   461→}
+   462→
+   463→// CategoryChip — colored chip per the design spec. Uses CATEGORY_COLORS for
+   464→// the explicit per-category palette (teal / emerald / amber / plum / zinc).
+   465→// Falls back to the muted primary palette if an unknown category sneaks in.
+   466→function CategoryChip({ category }: { category: string }) {
+   467→  const isKnown = (CATEGORIES as readonly string[]).includes(category);
+   468→  const colorClass = isKnown
+   469→    ? CATEGORY_COLORS[category as Category]
+   470→    : "bg-primary/10 text-primary border-primary/25";
+   471→  return (
+   472→    <span
+   473→      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium capitalize ${colorClass}`}
+   474→    >
+   475→      <span className="size-1.5 rounded-full bg-current opacity-70" />
+   476→      {categoryLabel(category)}
+   477→    </span>
+   478→  );
+   479→}
+   480→
+   481→function KpiMini({
+   482→  icon, label, value, sub, tone = "default",
+   483→}: {
+   484→  icon: React.ReactNode;
+   485→  label: string;
+   486→  value: string;
+   487→  sub?: string;
+   488→  tone?: "default" | "emerald" | "amber" | "teal";
+   489→}) {
+   490→  const toneText =
+   491→    tone === "emerald" ? "text-emerald-600 dark:text-emerald-400"
+   492→    : tone === "amber" ? "text-amber-600 dark:text-amber-400"
+   493→    : tone === "teal" ? "text-teal-600 dark:text-teal-400"
+   494→    : "text-foreground";
+   495→  const iconWrap =
+   496→    tone === "emerald" ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+   497→    : tone === "amber" ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+   498→    : tone === "teal" ? "bg-teal-500/15 text-teal-600 dark:text-teal-400"
+   499→    : "bg-primary/10 text-primary";
+   500→  return (
+   501→    <GlassCard className="relative overflow-hidden p-4 hover-lift">
+   502→      <div className="flex items-start justify-between gap-3">
+   503→        <div className="min-w-0">
+   504→          <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{label}</p>
+   505→          <p className={`kpi-num mt-1 text-2xl font-light ${toneText}`}>{value}</p>
+   506→          {sub ? <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{sub}</p> : null}
+   507→        </div>
+   508→        <div className={`grid size-9 shrink-0 place-items-center rounded-xl ${iconWrap}`}>{icon}</div>
+   509→      </div>
+   510→    </GlassCard>
+   511→  );
+   512→}
+   513→
+   514→// ─────────────────────────────────────────────────────────────────────────────
+   515→// Add / Edit dialog — same form, different submit verb. When `editing` is
+   516→// provided we PATCH /api/expenses/[id]; otherwise we POST /api/expenses.
+   517→// ─────────────────────────────────────────────────────────────────────────────
+   518→function ExpenseDialog({
+   519→  editing,
+   520→  onDone,
+   521→}: {
+   522→  editing: Expense | null;
+   523→  onDone: () => void;
+   524→}) {
+   525→  const { t } = useTranslation();
+   526→  const { format: fmtCurrency } = useCurrencyFormat();
+   527→
+   528→  const [category, setCategory] = React.useState<Category>("travel");
+   529→  const [amount, setAmount] = React.useState("");
+   530→  const [date, setDate] = React.useState(new Date().toISOString().slice(0, 10));
+   531→  const [description, setDescription] = React.useState("");
+   532→  const [vendor, setVendor] = React.useState("");
+   533→  const [saving, setSaving] = React.useState(false);
+   534→  const [formErrors, setFormErrors] = React.useState<Record<string, string>>({});
+   535→
+   536→  // Pre-fill the form when editing. Re-runs whenever `editing` changes — e.g.
+   537→  // the broker clicks Edit on a row while the dialog is already open.
+   538→  React.useEffect(() => {
+   539→    if (editing) {
+   540→      setCategory(editing.category as Category);
+   541→      setAmount(String(editing.amount));
+   542→      setDate(new Date(editing.date).toISOString().slice(0, 10));
+   543→      setDescription(editing.description ?? "");
+   544→      setVendor(editing.vendor ?? "");
+   545→    } else {
+   546→      setCategory("travel");
+   547→      setAmount("");
+   548→      setDate(new Date().toISOString().slice(0, 10));
+   549→      setDescription("");
+   550→      setVendor("");
+   551→    }
+   552→    setFormErrors({});
+   553→  }, [editing]);
+   554→
+   555→  const submit = async () => {
+   556→    const amt = Number(amount);
+   557→    const errors: Record<string, string> = {};
+   558→    if (!Number.isFinite(amt) || amt <= 0) errors.amount = t("expenses.amountInvalid");
+   559→    if (!date) errors.date = t("expenses.dateInvalid");
+   560→    if (Object.keys(errors).length > 0) {
+   561→      setFormErrors(errors);
+   562→      toast.error(t("common.fixFields"));
+   563→      return;
+   564→    }
+   565→    setFormErrors({});
+   566→    setSaving(true);
+   567→    try {
+   568→      const payload = {
+   569→        category,
+   570→        amount: amt,
+   571→        date: new Date(date).toISOString(),
+   572→        description: description.trim() || null,
+   573→        vendor: vendor.trim() || null,
+   574→      };
+   575→      if (editing) {
+   576→        const res = await api<{ expense: Expense }>(
+   577→          `/api/expenses/${editing.id}`,
+   578→          { method: "PATCH", body: JSON.stringify(payload) },
+   579→        );
+   580→        toast.success(`${t("expenses.updated")} — ${fmtCurrency(res.expense.amount)}`);
+   581→      } else {
+   582→        const res = await api<{ expense: Expense }>(
+   583→          "/api/expenses",
+   584→          { method: "POST", body: JSON.stringify(payload) },
+   585→        );
+   586→        toast.success(`${t("expenses.recorded")} — ${fmtCurrency(res.expense.amount)}`);
+   587→      }
+   588→      onDone();
+   589→    } catch (e) {
+   590→      toast.error(e instanceof Error ? e.message : t("expenses.saveFailed"));
+   591→    } finally {
+   592→      setSaving(false);
+   593→    }
+   594→  };
+   595→
+   596→  return (
+   597→    <DialogContent className="glass-strong max-h-[92vh] max-w-lg overflow-y-auto">
+   598→      <DialogHeader>
+   599→        <DialogTitle>{editing ? t("expenses.edit") : t("expenses.add")}</DialogTitle>
+   600→        <DialogDescription className="sr-only">
+   601→          {editing
+   602→            ? t("expenses.editDescription")
+   603→            : t("expenses.addDescription")}
+   604→        </DialogDescription>
+   605→      </DialogHeader>
+   606→      <div className="grid gap-4 py-2">
+   607→        <Field label={`${t("expenses.category")} *`}>
+   608→          <Select value={category} onValueChange={(v) => setCategory(v as Category)}>
+   609→            <SelectTrigger>
+   610→              <SelectValue />
+   611→            </SelectTrigger>
+   612→            <SelectContent>
+   613→              {CATEGORIES.map((c) => (
+   614→                <SelectItem key={c} value={c}>
+   615→                  <span className="inline-flex items-center gap-2">
+   616→                    <span className={`size-1.5 rounded-full ${CATEGORY_COLORS[c].split(" ")[0]}`} />
+   617→                    {categoryLabel(c)}
+   618→                  </span>
+   619→                </SelectItem>
+   620→              ))}
+   621→            </SelectContent>
+   622→          </Select>
+   623→        </Field>
+   624→
+   625→        <div className="grid grid-cols-2 gap-3">
+   626→          <Field label={`${t("expenses.amount")} *`} error={formErrors.amount}>
+   627→            <Input
+   628→              type="number"
+   629→              min={0}
+   630→              step="any"
+   631→              value={amount}
+   632→              onChange={(e) => {
+   633→                setAmount(e.target.value);
+   634→                setFormErrors((p) => { if (!p.amount) return p; const n = { ...p }; delete n.amount; return n; });
+   635→              }}
+   636→              placeholder="0"
+   637→              className={formErrors.amount ? "border-rose-500 focus-visible:ring-rose-500" : ""}
+   638→            />
+   639→          </Field>
+   640→          <Field label={`${t("expenses.date")} *`} error={formErrors.date}>
+   641→            <Input
+   642→              type="date"
+   643→              value={date}
+   644→              onChange={(e) => setDate(e.target.value)}
+   645→              className={formErrors.date ? "border-rose-500 focus-visible:ring-rose-500" : ""}
+   646→            />
+   647→          </Field>
+   648→        </div>
+   649→
+   650→        <Field label={t("expenses.vendor")}>
+   651→          <Input
+   652→            value={vendor}
+   653→            onChange={(e) => setVendor(e.target.value)}
+   654→            placeholder={t("expenses.vendorPlaceholder")}
+   655→          />
+   656→        </Field>
+   657→
+   658→        <Field label={t("expenses.description")}>
+   659→          <Textarea
+   660→            value={description}
+   661→            onChange={(e) => setDescription(e.target.value)}
+   662→            placeholder={t("expenses.descriptionPlaceholder")}
+   663→            rows={3}
+   664→          />
+   665→        </Field>
+   666→
+   667→        {/* StatusChip — surfaces the chosen category as a chip preview so the
+   668→            broker sees the exact color the row will render with. */}
+   669→        <div className="flex items-center gap-2 rounded-lg border border-border/50 bg-card/40 px-3 py-2 text-xs">
+   670→          <span className="text-muted-foreground">{t("expenses.preview")}:</span>
+   671→          <StatusChip status={category} />
+   672→          <span className="ml-auto text-muted-foreground">
+   673→            {amount ? fmtCurrency(Number(amount)) : "—"}
+   674→          </span>
+   675→        </div>
+   676→      </div>
+   677→      <DialogFooter>
+   678→        <Button onClick={submit} disabled={saving}>
+   679→          {saving
+   680→            ? (editing ? t("expenses.saving") : t("expenses.recording"))
+   681→            : (editing ? t("common.save") : t("expenses.record"))}
+   682→        </Button>
+   683→      </DialogFooter>
+   684→    </DialogContent>
+   685→  );
+   686→}
+   687→
+   688→function Field({ label, children, error }: { label: string; children: React.ReactNode; error?: string }) {
+   689→  return (
+   690→    <div className="space-y-1.5">
+   691→      <Label className="text-xs font-medium text-muted-foreground">{label}</Label>
+   692→      {children}
+   693→      {error ? (
+   694→        <p className="inline-flex items-center gap-1 text-xs text-rose-500">
+   695→          <AlertCircle className="size-3" />
+   696→          {error}
+   697→        </p>
+   698→      ) : null}
+   699→    </div>
+   700→  );
+   701→}
+   702→
+   703→
+   704→
