@@ -16,13 +16,40 @@ export const dynamic = "force-dynamic";
 // to be in balance — `totals.isBalanced` exposes the check (rounding tolerance
 // 0.01).
 //
-// Accounts computed (all scoped to brokerId):
-//   1.  Client Receivables  (Asset, debit)   — outstanding bill balances
+// Double-entry model for a garment broker (agent, not goods owner):
+//   When a bill is raised on a client:
+//     Dr Client Receivables (finalAmount incl GST)
+//       Cr Supplier Payable (baseAmount — owed to supplier)
+//       Cr GST Payable (gstAmount — owed to government)
+//   When the client pays the bill:
+//     Dr Bank/Cash
+//       Cr Client Receivables
+//   When brokerage becomes eligible (bill fully paid):
+//     Dr Brokerage Receivable
+//       Cr Brokerage Income
+//   When a service invoice is issued:
+//     Dr Client Receivables (totalAmount)
+//       Cr Service Income (subtotal)
+//       Cr GST Payable (gstAmount)
+//   When the invoice is paid:
+//     Dr Bank/Cash
+//       Cr Client Receivables
+//   When the broker pays a supplier (not tracked in app — assumed):
+//     Dr Supplier Payable
+//       Cr Bank/Cash
+//   When the broker incurs an operating expense:
+//     Dr Operating Expenses (by category)
+//       Cr Bank/Cash
+//
+// Accounts computed (all scoped to brokerId, all as-of `asOf`):
+//   1.  Client Receivables  (Asset, debit)   — outstanding bills + pending invoices
 //   2.  Brokerage Receivable (Asset, debit)  — eligible but unpaid brokerage
 //   3.  Brokerage Income    (Income, credit) — all eligible brokerage
 //   4-9.Operating Expenses  (Expense, debit) — one account per Expense category
-//   10. Bank/Cash           (Asset, both)    — payouts in (debit) / expenses out (credit)
-//   11. GST Payable         (Liability, credit) — output GST billed to clients
+//   10. Bank/Cash           (Asset, both)    — all cash in (debit) / expenses out (credit)
+//   11. Supplier Payable    (Liability, credit) — bill base amounts owed to suppliers
+//   12. GST Payable         (Liability, credit) — output GST from bills + invoices
+//   13. Service Income      (Income, credit) — invoice subtotals (service revenue)
 //
 // The view (`trial-balance-view.tsx`) consumes this JSON directly. The PDF
 // variant lives in `/api/reports?type=trial-balance&asOf=<>` (see the main
@@ -65,14 +92,41 @@ export const GET = withRateLimit(
       }
 
       // ── 1. Client Receivables (Asset, debit) ──────────────────────────────
-      // sum of (finalAmount - paidAmount) for every bill created on or before asOf
+      // Outstanding bill balances + pending invoice totals, all created on or
+      // before asOf. Bills: sum(finalAmount - paidAmount). Invoices: sum of
+      // totalAmount where status = "pending" (cancelled invoices are written
+      // off, paid invoices have zero receivable).
       const bills = await db.bill.findMany({
         where: { brokerId: broker.id, createdAt: { lte: asOf } },
-        select: { finalAmount: true, paidAmount: true },
+        select: { finalAmount: true, paidAmount: true, baseAmount: true, gstAmount: true },
       });
-      const clientReceivables = round2(
+      const billReceivables = round2(
         bills.reduce((s, b) => s + (b.finalAmount - b.paidAmount), 0),
       );
+      // Supplier Payable = sum of bill base amounts (money owed to suppliers for
+      // goods shipped on the broker's behalf). The broker is an agent — the
+      // base belongs to the supplier, not the broker.
+      const supplierPayable = round2(
+        bills.reduce((s, b) => s + b.baseAmount, 0),
+      );
+      // Bill GST collected (output GST on goods).
+      const billGstCollected = round2(
+        bills.reduce((s, b) => s + b.gstAmount, 0),
+      );
+
+      // Pending invoices — these are receivables too (client owes for services).
+      const pendingInvoices = await db.invoice.findMany({
+        where: {
+          brokerId: broker.id,
+          status: "pending",
+          issueDate: { lte: asOf },
+        },
+        select: { totalAmount: true, subtotal: true, gstAmount: true },
+      });
+      const invoiceReceivables = round2(
+        pendingInvoices.reduce((s, i) => s + i.totalAmount, 0),
+      );
+      const clientReceivables = round2(billReceivables + invoiceReceivables);
 
       // ── 2. Brokerage Receivable (Asset, debit) ────────────────────────────
       // eligible AND not-yet-paid AND eligibleAt <= asOf
@@ -118,14 +172,41 @@ export const GET = withRateLimit(
       }
 
       // ── 10. Bank/Cash (Asset, both) ───────────────────────────────────────
-      //  debit  = sum of BrokeragePayout.totalAmount where status=paid AND paidAt <= asOf
-      //  credit = sum of all expenses where date <= asOf
-      const paidPayouts = await db.brokeragePayout.findMany({
-        where: { brokerId: broker.id, status: "paid", paidAt: { lte: asOf } },
-        select: { totalAmount: true },
+      //  debit  = bill payments received + invoice payments received + brokerage payouts paid
+      //  credit = operating expenses paid
+      // Bill payments: sum of all Payment.amount where the bill was created <= asOf
+      // AND the payment date <= asOf. These are the cash the broker received
+      // from clients on behalf of suppliers + GST + brokerage.
+      const billPayments = await db.payment.aggregate({
+        where: { brokerId: broker.id, date: { lte: asOf } },
+        _sum: { amount: true },
       });
+      const billPaymentsReceived = round2(billPayments._sum.amount ?? 0);
+
+      // Invoice payments: sum of Invoice.totalAmount where status="paid" AND
+      // issueDate <= asOf. (We don't track a separate paidAt on invoices — use
+      // issueDate as the best proxy for when cash was received.)
+      const paidInvoices = await db.invoice.aggregate({
+        where: {
+          brokerId: broker.id,
+          status: "paid",
+          issueDate: { lte: asOf },
+        },
+        _sum: { totalAmount: true, subtotal: true, gstAmount: true },
+      });
+      const invoicePaymentsReceived = round2(paidInvoices._sum.totalAmount ?? 0);
+      const serviceIncome = round2(paidInvoices._sum.subtotal ?? 0);
+      const invoiceGstCollected = round2(paidInvoices._sum.gstAmount ?? 0);
+
+      // Brokerage payouts actually paid out to the broker (cash in)
+      const paidPayouts = await db.brokeragePayout.aggregate({
+        where: { brokerId: broker.id, status: "paid", paidAt: { lte: asOf } },
+        _sum: { totalAmount: true },
+      });
+      const payoutsReceived = round2(paidPayouts._sum.totalAmount ?? 0);
+
       const bankCashDebit = round2(
-        paidPayouts.reduce((s, p) => s + p.totalAmount, 0),
+        billPaymentsReceived + invoicePaymentsReceived + payoutsReceived,
       );
       const allExpenses = await db.expense.aggregate({
         where: { brokerId: broker.id, date: { lte: asOf } },
@@ -134,11 +215,9 @@ export const GET = withRateLimit(
       const bankCashCredit = round2(allExpenses._sum.amount ?? 0);
 
       // ── 11. GST Payable (Liability, credit) ───────────────────────────────
-      const gstAgg = await db.bill.aggregate({
-        where: { brokerId: broker.id, createdAt: { lte: asOf } },
-        _sum: { gstAmount: true },
-      });
-      const gstPayable = round2(gstAgg._sum.gstAmount ?? 0);
+      // Output GST from bills + invoices (both are GST the broker collected on
+      // behalf of the government).
+      const gstPayable = round2(billGstCollected + invoiceGstCollected);
 
       // ── Compose accounts array ────────────────────────────────────────────
       const accounts: Array<{
@@ -160,7 +239,9 @@ export const GET = withRateLimit(
         });
       }
       accounts.push({ name: "Bank/Cash", type: "asset", debit: bankCashDebit, credit: bankCashCredit });
+      accounts.push({ name: "Supplier Payable", type: "liability", debit: 0, credit: supplierPayable });
       accounts.push({ name: "GST Payable", type: "liability", debit: 0, credit: gstPayable });
+      accounts.push({ name: "Service Income", type: "income", debit: 0, credit: serviceIncome });
 
       const totalDebit = round2(accounts.reduce((s, a) => s + a.debit, 0));
       const totalCredit = round2(accounts.reduce((s, a) => s + a.credit, 0));

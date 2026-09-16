@@ -2434,12 +2434,21 @@ async function buildTrialBalance(brokerId: string, params: URLSearchParams): Pro
   if (Number.isNaN(asOf.getTime())) asOf.setTime(Date.now());
   const rangeLabel = `As of ${fmtDate(asOf)}`;
 
-  // 1. Client Receivables (debit)
+  // 1. Client Receivables (debit) — outstanding bills + pending invoices
   const bills = await db.bill.findMany({
     where: { brokerId, createdAt: { lte: asOf } },
-    select: { finalAmount: true, paidAmount: true },
+    select: { finalAmount: true, paidAmount: true, baseAmount: true, gstAmount: true },
   });
-  const clientReceivables = bills.reduce((s, b) => s + (b.finalAmount - b.paidAmount), 0);
+  const billReceivables = bills.reduce((s, b) => s + (b.finalAmount - b.paidAmount), 0);
+  const supplierPayable = bills.reduce((s, b) => s + b.baseAmount, 0);
+  const billGstCollected = bills.reduce((s, b) => s + b.gstAmount, 0);
+
+  const pendingInvoices = await db.invoice.findMany({
+    where: { brokerId, status: "pending", issueDate: { lte: asOf } },
+    select: { totalAmount: true, subtotal: true, gstAmount: true },
+  });
+  const invoiceReceivables = pendingInvoices.reduce((s, i) => s + i.totalAmount, 0);
+  const clientReceivables = billReceivables + invoiceReceivables;
 
   // 2. Brokerage Receivable (debit) — eligible + unpaid
   const brkrAgg = await db.brokerage.aggregate({
@@ -2466,20 +2475,32 @@ async function buildTrialBalance(brokerId: string, params: URLSearchParams): Pro
   const CATEGORIES = ["travel", "phone", "staff_salary", "office_rent", "marketing", "miscellaneous"];
   const expenseAccounts = CATEGORIES.map((c) => ({ category: c, amount: expMap.get(c) ?? 0 }));
 
-  // 10. Bank/Cash
+  // 10. Bank/Cash — bill payments + invoice payments + payouts in / expenses out
+  const billPaymentsAgg = await db.payment.aggregate({
+    where: { brokerId, date: { lte: asOf } },
+    _sum: { amount: true },
+  });
+  const billPaymentsReceived = billPaymentsAgg._sum.amount ?? 0;
+
+  const paidInvoicesAgg = await db.invoice.aggregate({
+    where: { brokerId, status: "paid", issueDate: { lte: asOf } },
+    _sum: { totalAmount: true, subtotal: true, gstAmount: true },
+  });
+  const invoicePaymentsReceived = paidInvoicesAgg._sum.totalAmount ?? 0;
+  const serviceIncome = paidInvoicesAgg._sum.subtotal ?? 0;
+  const invoiceGstCollected = paidInvoicesAgg._sum.gstAmount ?? 0;
+
   const payoutsAgg = await db.brokeragePayout.aggregate({
     where: { brokerId, status: "paid", paidAt: { lte: asOf } },
     _sum: { totalAmount: true },
   });
-  const bankIn = payoutsAgg._sum.totalAmount ?? 0;
+  const payoutsReceived = payoutsAgg._sum.totalAmount ?? 0;
+
+  const bankIn = billPaymentsReceived + invoicePaymentsReceived + payoutsReceived;
   const bankOut = expenseAccounts.reduce((s, e) => s + e.amount, 0);
 
-  // 11. GST Payable (credit)
-  const gstAgg = await db.bill.aggregate({
-    where: { brokerId, createdAt: { lte: asOf } },
-    _sum: { gstAmount: true },
-  });
-  const gstPayable = gstAgg._sum.gstAmount ?? 0;
+  // 11. GST Payable (credit) — bills + invoices
+  const gstPayable = billGstCollected + invoiceGstCollected;
 
   type Account = { name: string; type: string; debit: number; credit: number };
   const accounts: Account[] = [
@@ -2488,7 +2509,9 @@ async function buildTrialBalance(brokerId: string, params: URLSearchParams): Pro
     { name: "Brokerage Income", type: "Income", debit: 0, credit: brokerageIncome },
     ...expenseAccounts.map((e) => ({ name: `${titleCase(e.category)} Expenses`, type: "Expense", debit: e.amount, credit: 0 })),
     { name: "Bank/Cash", type: "Asset", debit: bankIn, credit: bankOut },
+    { name: "Supplier Payable", type: "Liability", debit: 0, credit: supplierPayable },
     { name: "GST Payable", type: "Liability", debit: 0, credit: gstPayable },
+    { name: "Service Income", type: "Income", debit: 0, credit: serviceIncome },
   ];
 
   const totalDebit = accounts.reduce((s, a) => s + a.debit, 0);
