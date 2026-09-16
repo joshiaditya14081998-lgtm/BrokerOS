@@ -67,6 +67,7 @@ const DATE_FIELDS = new Set([
   "createdAt", "updatedAt", "plannedDate", "actualDate", "bookingDate",
   "expectedDispatchDate", "revisedDispatchDate", "dispatchDate",
   "date", "eligibleAt", "periodStart", "periodEnd", "paidAt", "dueDate",
+  "issueDate", // ACC4 — Invoice issue date
 ]);
 
 function hydrateDates(row: Record<string, unknown>): Record<string, unknown> {
