@@ -2437,17 +2437,33 @@ async function buildTrialBalance(brokerId: string, params: URLSearchParams): Pro
   // 1. Client Receivables (debit) — outstanding bills + pending invoices
   const bills = await db.bill.findMany({
     where: { brokerId, createdAt: { lte: asOf } },
-    select: { finalAmount: true, paidAmount: true, baseAmount: true, gstAmount: true },
+    select: { finalAmount: true, baseAmount: true, gstAmount: true },
   });
-  const billReceivables = bills.reduce((s, b) => s + (b.finalAmount - b.paidAmount), 0);
+  const billFinalTotal = bills.reduce((s, b) => s + b.finalAmount, 0);
   const supplierPayable = bills.reduce((s, b) => s + b.baseAmount, 0);
   const billGstCollected = bills.reduce((s, b) => s + b.gstAmount, 0);
 
-  const pendingInvoices = await db.invoice.findMany({
-    where: { brokerId, status: "pending", issueDate: { lte: asOf } },
-    select: { totalAmount: true, subtotal: true, gstAmount: true },
+  // Payments received up to asOf (for Bank/Cash + receivables computation)
+  const billPaymentsAgg = await db.payment.aggregate({
+    where: { brokerId, date: { lte: asOf } },
+    _sum: { amount: true },
   });
-  const invoiceReceivables = pendingInvoices.reduce((s, i) => s + i.totalAmount, 0);
+  const billPaymentsReceived = billPaymentsAgg._sum.amount ?? 0;
+  const billReceivables = billFinalTotal - billPaymentsReceived;
+
+  // ALL invoices issued <= asOf (accrual basis)
+  const allInvoices = await db.invoice.findMany({
+    where: { brokerId, status: { not: "cancelled" }, issueDate: { lte: asOf } },
+    select: { totalAmount: true, subtotal: true, gstAmount: true, status: true },
+  });
+  const serviceIncome = allInvoices.reduce((s, i) => s + i.subtotal, 0);
+  const invoiceGstCollected = allInvoices.reduce((s, i) => s + i.gstAmount, 0);
+  const invoiceReceivables = allInvoices
+    .filter((i) => i.status === "pending")
+    .reduce((s, i) => s + i.totalAmount, 0);
+  const invoicePaymentsReceived = allInvoices
+    .filter((i) => i.status === "paid")
+    .reduce((s, i) => s + i.totalAmount, 0);
   const clientReceivables = billReceivables + invoiceReceivables;
 
   // 2. Brokerage Receivable (debit) — eligible + unpaid
@@ -2476,20 +2492,6 @@ async function buildTrialBalance(brokerId: string, params: URLSearchParams): Pro
   const expenseAccounts = CATEGORIES.map((c) => ({ category: c, amount: expMap.get(c) ?? 0 }));
 
   // 10. Bank/Cash — bill payments + invoice payments + payouts in / expenses out
-  const billPaymentsAgg = await db.payment.aggregate({
-    where: { brokerId, date: { lte: asOf } },
-    _sum: { amount: true },
-  });
-  const billPaymentsReceived = billPaymentsAgg._sum.amount ?? 0;
-
-  const paidInvoicesAgg = await db.invoice.aggregate({
-    where: { brokerId, status: "paid", issueDate: { lte: asOf } },
-    _sum: { totalAmount: true, subtotal: true, gstAmount: true },
-  });
-  const invoicePaymentsReceived = paidInvoicesAgg._sum.totalAmount ?? 0;
-  const serviceIncome = paidInvoicesAgg._sum.subtotal ?? 0;
-  const invoiceGstCollected = paidInvoicesAgg._sum.gstAmount ?? 0;
-
   const payoutsAgg = await db.brokeragePayout.aggregate({
     where: { brokerId, status: "paid", paidAt: { lte: asOf } },
     _sum: { totalAmount: true },

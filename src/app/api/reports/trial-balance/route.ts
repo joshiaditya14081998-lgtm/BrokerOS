@@ -93,15 +93,16 @@ export const GET = withRateLimit(
 
       // ── 1. Client Receivables (Asset, debit) ──────────────────────────────
       // Outstanding bill balances + pending invoice totals, all created on or
-      // before asOf. Bills: sum(finalAmount - paidAmount). Invoices: sum of
-      // totalAmount where status = "pending" (cancelled invoices are written
-      // off, paid invoices have zero receivable).
+      // before asOf. Bills: sum(finalAmount) - payments received up to asOf.
+      // (Using payment history rather than the stored paidAmount keeps the
+      // books balanced when payments are back-dated or future-dated — the
+      // stored paidAmount is a running total that ignores the asOf cutoff.)
       const bills = await db.bill.findMany({
         where: { brokerId: broker.id, createdAt: { lte: asOf } },
-        select: { finalAmount: true, paidAmount: true, baseAmount: true, gstAmount: true },
+        select: { finalAmount: true, baseAmount: true, gstAmount: true },
       });
-      const billReceivables = round2(
-        bills.reduce((s, b) => s + (b.finalAmount - b.paidAmount), 0),
+      const billFinalTotal = round2(
+        bills.reduce((s, b) => s + b.finalAmount, 0),
       );
       // Supplier Payable = sum of bill base amounts (money owed to suppliers for
       // goods shipped on the broker's behalf). The broker is an agent — the
@@ -114,17 +115,43 @@ export const GET = withRateLimit(
         bills.reduce((s, b) => s + b.gstAmount, 0),
       );
 
-      // Pending invoices — these are receivables too (client owes for services).
-      const pendingInvoices = await db.invoice.findMany({
+      // Payments received up to asOf (used for both Bank/Cash debit AND
+      // receivables computation — keeps them in sync).
+      const billPaymentsAgg = await db.payment.aggregate({
+        where: { brokerId: broker.id, date: { lte: asOf } },
+        _sum: { amount: true },
+      });
+      const billPaymentsReceived = round2(billPaymentsAgg._sum.amount ?? 0);
+
+      const billReceivables = round2(billFinalTotal - billPaymentsReceived);
+
+      // ALL invoices issued <= asOf — for accrual-basis income recognition.
+      // Service Income + GST Payable are recognized when the invoice is issued,
+      // not when it's paid. Pending invoices contribute to Client Receivables;
+      // paid invoices contribute to Bank/Cash (cash already received).
+      const allInvoices = await db.invoice.findMany({
         where: {
           brokerId: broker.id,
-          status: "pending",
+          status: { not: "cancelled" },
           issueDate: { lte: asOf },
         },
-        select: { totalAmount: true, subtotal: true, gstAmount: true },
+        select: { totalAmount: true, subtotal: true, gstAmount: true, status: true },
       });
+      const serviceIncome = round2(
+        allInvoices.reduce((s, i) => s + i.subtotal, 0),
+      );
+      const invoiceGstCollected = round2(
+        allInvoices.reduce((s, i) => s + i.gstAmount, 0),
+      );
       const invoiceReceivables = round2(
-        pendingInvoices.reduce((s, i) => s + i.totalAmount, 0),
+        allInvoices
+          .filter((i) => i.status === "pending")
+          .reduce((s, i) => s + i.totalAmount, 0),
+      );
+      const invoicePaymentsReceived = round2(
+        allInvoices
+          .filter((i) => i.status === "paid")
+          .reduce((s, i) => s + i.totalAmount, 0),
       );
       const clientReceivables = round2(billReceivables + invoiceReceivables);
 
@@ -174,31 +201,7 @@ export const GET = withRateLimit(
       // ── 10. Bank/Cash (Asset, both) ───────────────────────────────────────
       //  debit  = bill payments received + invoice payments received + brokerage payouts paid
       //  credit = operating expenses paid
-      // Bill payments: sum of all Payment.amount where the bill was created <= asOf
-      // AND the payment date <= asOf. These are the cash the broker received
-      // from clients on behalf of suppliers + GST + brokerage.
-      const billPayments = await db.payment.aggregate({
-        where: { brokerId: broker.id, date: { lte: asOf } },
-        _sum: { amount: true },
-      });
-      const billPaymentsReceived = round2(billPayments._sum.amount ?? 0);
-
-      // Invoice payments: sum of Invoice.totalAmount where status="paid" AND
-      // issueDate <= asOf. (We don't track a separate paidAt on invoices — use
-      // issueDate as the best proxy for when cash was received.)
-      const paidInvoices = await db.invoice.aggregate({
-        where: {
-          brokerId: broker.id,
-          status: "paid",
-          issueDate: { lte: asOf },
-        },
-        _sum: { totalAmount: true, subtotal: true, gstAmount: true },
-      });
-      const invoicePaymentsReceived = round2(paidInvoices._sum.totalAmount ?? 0);
-      const serviceIncome = round2(paidInvoices._sum.subtotal ?? 0);
-      const invoiceGstCollected = round2(paidInvoices._sum.gstAmount ?? 0);
-
-      // Brokerage payouts actually paid out to the broker (cash in)
+      // (billPaymentsReceived + invoicePaymentsReceived computed above — reused here.)
       const paidPayouts = await db.brokeragePayout.aggregate({
         where: { brokerId: broker.id, status: "paid", paidAt: { lte: asOf } },
         _sum: { totalAmount: true },
