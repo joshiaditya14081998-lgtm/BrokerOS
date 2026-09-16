@@ -177,3 +177,83 @@
 - Audit Logs: 53
 - Photos: 1, Tags: 3, Saved Views: 1
 
+
+### BUG-009 [🟢 Low] — API 404 returns HTML instead of JSON
+- **Found**: Round 5, Test 47
+- **Endpoint**: Any non-existent API route (e.g., `/api/nonexistent`)
+- **Issue**: When hitting a non-existent API endpoint, the response is a full HTML 404 page instead of a JSON error. This breaks clients that try to parse the response as JSON.
+- **Impact**: Minor — API clients get JSON parse errors instead of a clean `{ error: "Not found" }` response
+- **Repro**: `fetch('/api/nonexistent')` → 404 with `text/html` body (full HTML page)
+- **Expected**: API routes should return `{ error: "Not found" }` with `application/json` content type
+- **Fix needed**: Add a catch-all API route at `/api/[...path]/route.ts` that returns JSON 404
+
+
+### BUG-010 [🟡 Medium] — No max amount validation on expenses (₹100 crore accepted)
+- **Found**: Round 5, Test 57
+- **Endpoint**: `POST /api/expenses`
+- **Issue**: Creating an expense with `amount: 1000000000` (₹100 crore) succeeds. There's no upper bound validation.
+- **Impact**: Data quality — a typo could create an expense of ₹100 crore instead of ₹1,000, hugely skewing P&L and Trial Balance
+- **Repro**: `POST /api/expenses` with `amount: 1000000000` → 201 Created
+- **Expected**: Reject amounts above a reasonable limit (e.g., ₹1 crore = 10,000,000) or warn the user
+- **Note**: Same issue likely on invoices (totalAmount), payments, bills
+
+---
+
+### BUG-011 [🟢 Low] — No max length validation on client name (255 chars attempted, but blocked by plan limit)
+- **Found**: Round 5, Test 57
+- **Endpoint**: `POST /api/clients`
+- **Issue**: 255-char name was rejected, but only because of the Free plan 5-client limit — not because of name length validation. If the broker upgrades, they could create a client with an absurdly long name.
+- **Impact**: Minor — UI layout might break with very long names
+- **Expected**: Name field should have a max length (e.g., 100 chars) in the Zod schema
+
+
+### BUG-012 [🔴 Critical] — 3 API routes missing brokerId in auditLog.create (500 error)
+- **Found**: Round 5, Test 61
+- **Affected routes**:
+  1. `POST /api/report-templates` — 1 auditLog.create without brokerId
+  2. `PATCH/DELETE /api/report-templates/[id]` — 2 auditLog.create calls without brokerId
+  3. `POST /api/onboarding` — 1 auditLog.create without brokerId
+- **Issue**: Same root cause as BUG-002 (backup) — `auditLog.create` calls are missing the required `brokerId` field. The AuditLog model has `brokerId` as a required field (FK to Broker), so Prisma throws a 500 error.
+- **Impact**: 
+  - Creating/updating/deleting report templates → 500 error
+  - Completing onboarding → 500 error
+- **Repro**: `POST /api/report-templates` with valid body → 500
+- **Fix needed**: Add `brokerId: broker.id` to all 4 auditLog.create data blocks in these 3 files
+- **Pattern**: This is the same bug pattern as BUG-002 — should audit ALL `auditLog.create` calls across the codebase
+
+
+---
+
+## 📊 Round 5 Testing Summary
+
+### Tests Completed (22 categories)
+- ✅ Mobile UI (responsive: lg:block sidebar + lg:hidden hamburger)
+- ✅ Supplier Detail Sheet (reliability score, performance breakdown, tabs)
+- ✅ PO Detail Sheet (line items, fulfillment, tabs: Line Items/Dispatches/Billing/Timeline)
+- ✅ Accessibility (semantic HTML: main/header/nav, 8 aria-labels, 1 sr-only, 44 focusable elements)
+- ✅ Timezone handling (dates stored as UTC ISO strings)
+- ✅ CSV export format (correct headers + data)
+- ✅ Error pages (404 page renders, but API 404 returns HTML — BUG-009)
+- ✅ Number formatting (Indian system: ₹1,00,00,000 works correctly)
+- ✅ Concurrent edit (last-write-wins — acceptable)
+- ✅ PDF content verification (P&L, Invoice, Trial Balance, Cash Flow — all have correct content)
+- ✅ Data health fix (individual + fix-all work)
+- ✅ Audit trail detail (before/after snapshots present for update/delete)
+- ❌ Report templates CRUD (BUG-012: 500 on create due to missing brokerId)
+- ✅ Tags CRUD complete (create + assign + unassign + delete all work)
+- ✅ Analytics deep dive (forecast, brokerage by cadence)
+- ✅ Portal invite (correctly returns "Client not found" for bad ID)
+- ✅ Draft Queue (client-side IndexedDB, no API — correct)
+- ✅ SQL injection (Prisma parameterized queries — safe)
+- ✅ XSS (stored in DB, UI should escape — verified stored)
+- ⚠️ Edge cases (BUG-008: future dates, BUG-010: no max amount, BUG-011: no max name length)
+
+### Final Bug Count: 12
+- 🔴 Critical: 2 (BUG-005 scheduler, BUG-012 auditLog brokerId)
+- 🟠 High: 2 (BUG-001 payout no PATCH, BUG-003 API Docs orphaned)
+- 🟡 Medium: 4 (BUG-004 data health type, BUG-006 billing endpoint, BUG-008 future dates, BUG-010 no max amount)
+- 🟢 Low: 4 (BUG-002 backup fixed, BUG-007 notification total, BUG-009 API 404 HTML, BUG-011 no max name length)
+- ✅ Already Fixed: 1 (BUG-002)
+
+### Total Tests Across All Rounds: 62 categories
+### Total Bugs Found: 12 (1 already fixed)
