@@ -164,40 +164,42 @@ export async function GET() {
   const broker = await getCurrentBroker();
   if (!broker) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const backup = await buildBackup();
-  const json = JSON.stringify(backup, null, 2);
-  const bytes = Buffer.byteLength(json, "utf-8");
+  try {
+    const backup = await buildBackup();
+    const json = JSON.stringify(backup, null, 2);
+    const bytes = Buffer.byteLength(json, "utf-8");
 
-  // Update `last_backup_at` so the UI can show "Last backup: just now".
-  await db.systemSetting.upsert({
-    where: { key: "last_backup_at" },
-    create: {
-      key: "last_backup_at",
-      value: backup.exportedAt,
-      notes: "ISO timestamp of last successful backup download.",
-    },
-    update: { value: backup.exportedAt },
-  });
+    // Update `last_backup_at` so the UI can show "Last backup: just now".
+    await db.systemSetting.upsert({
+      where: { key: "last_backup_at" },
+      create: {
+        key: "last_backup_at",
+        value: backup.exportedAt,
+        notes: "ISO timestamp of last successful backup download.",
+      },
+      update: { value: backup.exportedAt },
+    });
 
-  // Audit-log the export.
-  await db.auditLog.create({
-    data: {
-      entityType: "SystemSetting",
-      entityId: "backup",
-      action: "create",
-      after: JSON.stringify({
-        exportedAt: backup.exportedAt,
-        bytes,
-        rowCount: countRows(backup.tables),
-      }),
-      userName: "Broker",
-      reason: "Database backup exported (download).",
-    },
-  });
+    // Audit-log the export.
+    await db.auditLog.create({
+      data: {
+        brokerId: broker.id,
+        entityType: "SystemSetting",
+        entityId: "backup",
+        action: "create",
+        after: JSON.stringify({
+          exportedAt: backup.exportedAt,
+          bytes,
+          rowCount: countRows(backup.tables),
+        }),
+        userName: "Broker",
+        reason: "Database backup exported (download).",
+      },
+    });
 
-  const filename = `broker-os-backup-${todayStamp()}.json`;
-  return new NextResponse(json, {
-    status: 200,
+    const filename = `broker-os-backup-${todayStamp()}.json`;
+    return new NextResponse(json, {
+      status: 200,
     headers: {
       "Content-Type": "application/json; charset=utf-8",
       "Content-Disposition": `attachment; filename="${filename}"`,
@@ -205,6 +207,10 @@ export async function GET() {
       "Content-Length": String(bytes),
     },
   });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return NextResponse.json({ error: "Backup export failed", detail }, { status: 500 });
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
