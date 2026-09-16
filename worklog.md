@@ -5530,3 +5530,27 @@ Stage Summary:
 - 3 languages functional (EN/HI/GU)
 - Audit trail captures all 20 mutations
 - Production URL: https://my-project-self-three-23.vercel.app
+
+---
+Task ID: BUGFIX-TRIAL-BALANCE
+Agent: Main agent (bugfix)
+Task: Fix Trial Balance unbalanced bug — books now balance (Dr = Cr)
+
+Work Log:
+- Diagnosed root cause: Trial Balance was missing 4 critical accounts + had timing mismatch
+- Added "Supplier Payable" account (Liability, credit) = sum of bill base amounts owed to suppliers
+- Added "Service Income" account (Income, credit) = sum of ALL invoice subtotals (accrual basis)
+- Updated Bank/Cash debit to include: bill payments received + invoice payments received + brokerage payouts
+- Updated GST Payable to include: bill GST + invoice GST (both output GST sources)
+- Updated Client Receivables to include: outstanding bills + pending invoices
+- Fixed timing issue: computed receivables from payment history (not stored paidAmount) so back-dated/future-dated payments don't break the balance
+- Switched to accrual-basis income recognition: Service Income + GST Payable recognized when invoice is issued, not when paid
+- Updated both JSON API (trial-balance/route.ts) and PDF builder (reports/route.ts buildTrialBalance) to match
+- Verified on live production: Dr ₹98,304 = Cr ₹98,304 ✅ Balanced
+
+Stage Summary:
+- Trial Balance: 13 accounts (was 11), now BALANCED ✅
+- All 6 PDF reports: 200 OK
+- All 4 accounting reports return correct data
+- Commits: d24c9a2 (initial fix) + b29921e (timing fix)
+- No remaining bugs from live testing
