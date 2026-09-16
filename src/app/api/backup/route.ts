@@ -43,7 +43,9 @@ type BackupTable =
   | "disputes"
   | "photos"
   | "notifications"
-  | "auditLogs";
+  | "auditLogs"
+  | "expenses"
+  | "invoices";
 
 type BackupShape = {
   version: 1;
@@ -56,6 +58,7 @@ const REQUIRED_TABLES: BackupTable[] = [
   "bookingLineItems", "purchaseOrders", "dispatchDateLogs", "dispatches",
   "bills", "payments", "brokerages", "brokeragePayouts", "disputes",
   "photos", "notifications", "auditLogs",
+  "expenses", "invoices",
 ];
 
 // Keys that Prisma stores as DateTime — hydrate ISO strings back to Date
@@ -106,6 +109,7 @@ async function buildBackup(): Promise<BackupShape> {
     bookingLineItems, purchaseOrders, dispatchDateLogs, dispatches,
     bills, payments, brokerages, brokeragePayouts, disputes,
     photos, notifications, auditLogs,
+    expenses, invoices,
   ] = await Promise.all([
     db.systemSetting.findMany(),
     db.client.findMany(),
@@ -124,6 +128,8 @@ async function buildBackup(): Promise<BackupShape> {
     db.photo.findMany(),
     db.notification.findMany(),
     db.auditLog.findMany(),
+    db.expense.findMany(),
+    db.invoice.findMany(),
   ]);
 
   return {
@@ -147,6 +153,8 @@ async function buildBackup(): Promise<BackupShape> {
       photos,
       notifications,
       auditLogs,
+      expenses,
+      invoices,
     },
   };
 }
@@ -272,10 +280,14 @@ export async function POST(req: NextRequest) {
       // ── DELETE (children first, parents last) ──
       // BrokeragePayout deletion sets Brokerage.payoutId = null (onDelete: SetNull).
       // All other relations are Cascade, so the order below is the safe wipe order.
+      // Expenses + Invoices added (ACC1 + ACC4) — deleted after their parent
+      // relations (Bill, Client) still exist but before Broker is wiped.
       await tx.auditLog.deleteMany({});
       await tx.notification.deleteMany({});
       await tx.photo.deleteMany({});
       await tx.dispute.deleteMany({});
+      await tx.invoice.deleteMany({});
+      await tx.expense.deleteMany({});
       await tx.brokeragePayout.deleteMany({});
       await tx.brokerage.deleteMany({});
       await tx.payment.deleteMany({});
@@ -322,6 +334,9 @@ export async function POST(req: NextRequest) {
       await tx.dispute.createMany({ data: rows("disputes") });
       await tx.photo.createMany({ data: rows("photos") });
       await tx.notification.createMany({ data: rows("notifications") });
+      // ACC1 + ACC4 — Expenses + Invoices (after Client exists; Invoice references Client)
+      await tx.expense.createMany({ data: rows("expenses") });
+      await tx.invoice.createMany({ data: rows("invoices") });
       await tx.auditLog.createMany({ data: rows("auditLogs") });
 
       // Re-upsert `last_backup_at` so future exports reflect this restore
