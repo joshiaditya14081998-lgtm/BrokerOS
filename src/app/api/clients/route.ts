@@ -6,7 +6,7 @@ import { checkLimit } from "@/lib/usage-limits";
 import { withRateLimit } from "@/lib/api-middleware";
 
 const ClientSchema = z.object({
-  name: z.string().min(1),
+  name: z.string().min(1).max(100),
   contactPerson: z.string().optional().nullable(),
   phone: z.string().optional().nullable(),
   email: z.string().optional().nullable(),

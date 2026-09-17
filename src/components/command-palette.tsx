@@ -86,6 +86,7 @@ const NAV_ITEMS: NavItemDef[] = [
   { key: "notifications", label: "Notifications", icon: Bell },
   { key: "saved-views", label: "Saved Views", icon: Bookmark },
   { key: "report-builder", label: "Report Builder", icon: LayoutTemplate },
+  { key: "api-docs", label: "API Docs", icon: Code },
   { key: "settings", label: "Settings", icon: Settings },
   { key: "portal", label: "Portals", icon: Store },
 ];

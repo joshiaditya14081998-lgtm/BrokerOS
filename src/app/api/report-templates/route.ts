@@ -74,6 +74,7 @@ export async function POST(req: NextRequest) {
 
   await db.auditLog.create({
     data: {
+      brokerId: broker.id,
       entityType: "ReportTemplate",
       entityId: tpl.id,
       action: "create",

@@ -22,10 +22,17 @@ export type ExpenseCategory = (typeof EXPENSE_CATEGORIES)[number];
 
 const ExpenseSchema = z.object({
   category: z.enum(EXPENSE_CATEGORIES),
-  amount: z.number().min(0.01),
-  date: z.string(),
-  description: z.string().optional().nullable(),
-  vendor: z.string().optional().nullable(),
+  amount: z.number().min(0.01).max(10000000), // max ₹10 lakh — prevents typo-driven huge entries
+  date: z.string().refine((val) => {
+    const d = new Date(val);
+    if (Number.isNaN(d.getTime())) return false;
+    // Reject dates more than 1 year in the future
+    const oneYearFromNow = new Date();
+    oneYearFromNow.setFullYear(oneYearFromNow.getFullYear() + 1);
+    return d.getTime() <= oneYearFromNow.getTime();
+  }, "Date cannot be more than 1 year in the future"),
+  description: z.string().max(500).optional().nullable(),
+  vendor: z.string().max(200).optional().nullable(),
   receiptUrl: z.string().optional().nullable(),
 });
 

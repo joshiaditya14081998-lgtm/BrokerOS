@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getCurrentBroker } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;

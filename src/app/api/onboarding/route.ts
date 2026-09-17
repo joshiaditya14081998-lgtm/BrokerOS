@@ -119,6 +119,7 @@ export async function POST(req: NextRequest) {
   // Audit-log the onboarding state transition.
   await db.auditLog.create({
     data: {
+      brokerId: broker.id,
       entityType: "SystemSetting",
       entityId: ONBOARDING_KEY,
       action: action === "load_demo" ? "create" : "update",

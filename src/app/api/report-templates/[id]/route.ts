@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { getCurrentBroker } from "@/lib/auth";
 import { z } from "zod";
 import {
   isValidTemplateType,
@@ -17,6 +18,8 @@ export async function DELETE(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const broker = await getCurrentBroker();
+  if (!broker) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await params;
   const before = await db.reportTemplate.findUnique({ where: { id } });
   if (!before) {
@@ -25,6 +28,7 @@ export async function DELETE(
   await db.reportTemplate.delete({ where: { id } });
   await db.auditLog.create({
     data: {
+      brokerId: broker.id,
       entityType: "ReportTemplate",
       entityId: id,
       action: "delete",
@@ -56,6 +60,8 @@ export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const broker = await getCurrentBroker();
+  if (!broker) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await params;
   const body = await req.json();
   const parsed = PatchSchema.safeParse(body);
@@ -97,6 +103,7 @@ export async function PATCH(
   const tpl = await db.reportTemplate.update({ where: { id }, data });
   await db.auditLog.create({
     data: {
+      brokerId: broker.id,
       entityType: "ReportTemplate",
       entityId: id,
       action: "update",

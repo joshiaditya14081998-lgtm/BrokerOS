@@ -314,8 +314,12 @@ export async function POST(req: NextRequest) {
   });
   const emailEnabled = String(emailEnabledRow?.value ?? "false").toLowerCase() === "true";
 
+  // Count total notifications for this broker (for UI display)
+  const totalCount = await db.notification.count({ where: { brokerId: broker.id } });
+
   return NextResponse.json({
     generated: creates.length,
+    total: totalCount,
     skipped: false,
     details,
     emailEnabled,

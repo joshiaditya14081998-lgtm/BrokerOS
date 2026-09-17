@@ -46,6 +46,7 @@ const NAV: NavItem[] = [
   { key: "notifications", labelKey: "nav.notifications", icon: Bell, groupKey: "nav.system" },
   { key: "saved-views", labelKey: "nav.savedViews", icon: Bookmark, groupKey: "nav.system" },
   { key: "report-builder", labelKey: "nav.reportBuilder", icon: LayoutTemplate, groupKey: "nav.system" },
+  { key: "api-docs", labelKey: "nav.apiDocs", icon: Code, groupKey: "nav.system" },
   { key: "settings", labelKey: "nav.settings", icon: Settings, groupKey: "nav.system" },
 ];
 

@@ -37,6 +37,7 @@ import { NotificationsView } from "@/components/views/notifications-view";
 import { TagsView } from "@/components/views/tags-view";
 import { SavedViewsView } from "@/components/views/saved-views-view";
 import { ReportBuilderView } from "@/components/views/report-builder-view";
+import { ApiDocsView } from "@/components/views/api-docs-view";
 import { SettingsView } from "@/components/views/settings-view";
 import { PortalView } from "@/components/views/portal-view";
 import { DraftQueueView } from "@/components/views/draft-queue-view";
@@ -91,6 +92,7 @@ const VIEW_TITLE_KEYS: Record<string, { titleKey: string; subKey: string }> = {
   tags: { titleKey: "tags.title", subKey: "tags.subtitle" },
   "saved-views": { titleKey: "savedViews.title", subKey: "savedViews.subtitle" },
   "report-builder": { titleKey: "nav.reportBuilder", subKey: "reportBuilder.subtitle" },
+  "api-docs": { titleKey: "apiDocs.title", subKey: "apiDocs.subtitle" },
   settings: { titleKey: "settings.title", subKey: "settings.subtitle" },
   portal: { titleKey: "portals.title", subKey: "portals.subtitle" },
   "draft-queue": { titleKey: "draftQueue.title", subKey: "draftQueue.subtitle" },
@@ -532,6 +534,7 @@ function ViewRouter({ view }: { view: string }) {
     case "tags": return <TagsView />;
     case "saved-views": return <SavedViewsView />;
     case "report-builder": return <ReportBuilderView />;
+    case "api-docs": return <ApiDocsView />;
     case "settings": return <SettingsView />;
     case "portal": return <PortalView />;
     // Sprint 4 — Draft Queue. S4A's production view renders under both the
