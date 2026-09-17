@@ -560,6 +560,100 @@ export function DashboardView() {
       </div>
 
       {/* ───────────────────────────────────────────────────────────────────
+          Customize-mode toolbar — appears at the top when customizeMode is on.
+          Gives the broker clear actions: Done (exit), Reset (restore defaults),
+          and a live count of hidden cards. Without this, the only way to exit
+          customize mode was to click the grip on a card again — not obvious.
+          ─────────────────────────────────────────────────────────────── */}
+      {customizeMode && (
+        <GlassCard className="border-emerald-500/30 bg-emerald-500/5 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-2">
+              <Settings2 className="size-4 text-emerald-600 dark:text-emerald-400" />
+              <div>
+                <p className="text-sm font-semibold text-foreground">Customize dashboard layout</p>
+                <p className="text-xs text-muted-foreground">
+                  Drag cards to reorder · Click <EyeOff className="inline size-3" /> Hide to remove · {hiddenCards.length} hidden · {visibleCards.length} visible
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {customized && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleReset}
+                  className="gap-1.5"
+                >
+                  <RotateCcw className="size-3.5" />
+                  <span className="hidden sm:inline">Reset to default</span>
+                  <span className="sm:hidden">Reset</span>
+                </Button>
+              )}
+              {hiddenCards.length > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    hiddenCards.forEach((id) => toggleCard(id));
+                    toast.success("All cards restored");
+                  }}
+                  className="gap-1.5 border-emerald-500/30 text-emerald-700 hover:bg-emerald-500/15 dark:text-emerald-300"
+                >
+                  <Eye className="size-3.5" />
+                  <span className="hidden sm:inline">Show all cards</span>
+                  <span className="sm:hidden">Show all</span>
+                </Button>
+              )}
+              <Button
+                size="sm"
+                onClick={() => setCustomizeMode(false)}
+                className="gap-1.5 bg-emerald-600 text-white hover:bg-emerald-700"
+              >
+                <Check className="size-3.5" />
+                <span>Done</span>
+              </Button>
+            </div>
+          </div>
+        </GlassCard>
+      )}
+
+      {/* ───────────────────────────────────────────────────────────────────
+          Empty-state: all cards hidden but NOT in customize mode.
+          Shows a clear recovery panel with "Show all cards" + "Customize" buttons
+          so the broker can quickly restore their dashboard.
+          ─────────────────────────────────────────────────────────────── */}
+      {!customizeMode && visibleCards.length === 0 && hiddenCards.length > 0 && (
+        <GlassCard className="p-8">
+          <EmptyState
+            title="Your dashboard is empty"
+            hint="You've hidden all dashboard cards. Restore them to see your KPIs, charts, and reminders."
+            icon={<EyeOff className="size-5" />}
+          />
+          <div className="mt-4 flex flex-col items-center gap-2 sm:flex-row sm:justify-center">
+            <Button
+              onClick={() => {
+                hiddenCards.forEach((id) => toggleCard(id));
+                toast.success("All cards restored");
+              }}
+              className="gap-1.5 bg-emerald-600 text-white hover:bg-emerald-700"
+            >
+              <Eye className="size-4" />
+              Show all cards
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => setCustomizeMode(true)}
+              className="gap-1.5"
+            >
+              <Settings2 className="size-4" />
+              Customize layout
+            </Button>
+          </div>
+        </GlassCard>
+      )}
+
+      {/* ───────────────────────────────────────────────────────────────────
           Customize-mode body.
 
           On TOUCH devices (phones / tablets), we render the MobileReorderList
