@@ -5629,3 +5629,33 @@ Stage Summary:
 - All other features working: short shipment auto-adjustment, bulk ops, search, report builder, portal, concurrency, currency formatting
 - Commits: 43781b6 (backup fix) + issueDate addition
 - Production now has complete backup/restore for all 19 tables including accounting data
+
+---
+Task ID: DASHBOARD-UX-FIX
+Agent: Main agent (UX improvement)
+Task: Fix dashboard "cards disappeared" UX trap — add customize toolbar + empty-state recovery
+
+Work Log:
+- Diagnosed issue: Dashboard has a "Customize Layout" feature where clicking the grip icon on a card enters customize mode, then clicking "Hide" removes cards. When all cards are hidden, the dashboard becomes empty with no clear recovery path.
+- Root cause: No global toolbar in customize mode (only per-card Hide buttons), and no empty-state recovery panel when not in customize mode.
+- Fix applied to src/components/views/dashboard-view.tsx:
+  1. Added customize-mode toolbar (GlassCard at top) with:
+     - Live count: "X hidden · Y visible"
+     - "Show all cards" button (restores all hidden cards)
+     - "Reset to default" button (only when layout is customized)
+     - "Done" button (exits customize mode)
+  2. Added empty-state recovery panel when NOT in customize mode but all cards hidden:
+     - "Your dashboard is empty" message
+     - "Show all cards" button (one-click restore)
+     - "Customize layout" button (enters customize mode)
+- Verified on production:
+  - Empty state shows correctly when all cards hidden ✅
+  - "Show all cards" button restores all cards ✅
+  - Customize toolbar shows with Done/Reset/Show all buttons ✅
+  - Live count "0 hidden · 9 visible" works ✅
+- Commit: ed855ee
+
+Stage Summary:
+- UX trap fixed: brokers can now recover their dashboard with a single click
+- Customize mode has clear exit (Done button) + recovery (Show all cards)
+- Empty state has clear call-to-action buttons
