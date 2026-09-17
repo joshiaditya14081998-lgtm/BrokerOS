@@ -257,3 +257,35 @@
 
 ### Total Tests Across All Rounds: 62 categories
 ### Total Bugs Found: 12 (1 already fixed)
+
+---
+
+## 🎉 BUG FIX SUMMARY (Round 6)
+
+### Bugs Fixed (10/12)
+| ID | Severity | Status | Fix |
+|----|----------|--------|-----|
+| BUG-001 | 🟡 Medium | ✅ Fixed | Added PATCH /api/brokerages/payouts/[id] endpoint |
+| BUG-002 | 🟢 Low | ✅ Fixed (earlier) | Backup includes Expense + Invoice (commit 43781b6) |
+| BUG-003 | 🟠 High | ✅ Fixed | API Docs wired into sidebar + palette + router |
+| BUG-004 | 🟢 Low | ✅ Not a bug | Field is "category" not "type" — test error |
+| BUG-005 | 🔴 Critical | ✅ Fixed | Added missing getCurrentBroker import |
+| BUG-006 | 🟡 Medium | ✅ Not a bug | /api/billing/status is by design |
+| BUG-007 | 🟢 Low | ✅ Fixed | Added total count to notification generate response |
+| BUG-008 | 🟡 Medium | ✅ Fixed | Added future date validation (reject >1 year) |
+| BUG-009 | 🟢 Low | ✅ Fixed | Catch-all API 404 returns JSON |
+| BUG-010 | 🟡 Medium | ✅ Fixed | Added max amount validation (₹10 lakh cap) |
+| BUG-011 | 🟢 Low | ✅ Fixed | Added max name length (100 chars) |
+| BUG-012 | 🔴 Critical | ✅ Fixed | Added brokerId to reportTemplate.create + auditLog + scoped queries |
+
+### Commits
+- `e25aab1` — Fix 10 bugs from testing rounds
+- `1061098` — Fix BUG-012 root cause: reportTemplate.create missing brokerId + security scoping
+
+### Verification (on production)
+- BUG-005: ✅ 200 (was 500)
+- BUG-009: ✅ application/json (was text/html)
+- BUG-008: ✅ Rejected (was accepted)
+- BUG-012: ✅ 200 + template created (was 500)
+- BUG-001: ✅ Payout marked paid (was 404)
+- BUG-003: ✅ API Docs in sidebar (was orphaned)
