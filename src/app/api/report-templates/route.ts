@@ -20,6 +20,7 @@ export async function GET() {
   if (!broker) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const rows = await db.reportTemplate.findMany({
+    where: { brokerId: broker.id },
     orderBy: { createdAt: "desc" },
   });
   return NextResponse.json({ templates: rows.map(toReportTemplateDTO) });
@@ -65,6 +66,7 @@ export async function POST(req: NextRequest) {
 
   const tpl = await db.reportTemplate.create({
     data: {
+      brokerId: broker.id,
       name,
       description: parsed.data.description?.trim() || null,
       type,

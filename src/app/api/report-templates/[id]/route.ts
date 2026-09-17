@@ -21,7 +21,7 @@ export async function DELETE(
   const broker = await getCurrentBroker();
   if (!broker) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await params;
-  const before = await db.reportTemplate.findUnique({ where: { id } });
+  const before = await db.reportTemplate.findFirst({ where: { id, brokerId: broker.id } });
   if (!before) {
     return NextResponse.json({ error: "Report template not found" }, { status: 404 });
   }
@@ -69,7 +69,7 @@ export async function PATCH(
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
-  const before = await db.reportTemplate.findUnique({ where: { id } });
+  const before = await db.reportTemplate.findFirst({ where: { id, brokerId: broker.id } });
   if (!before) {
     return NextResponse.json({ error: "Report template not found" }, { status: 404 });
   }
