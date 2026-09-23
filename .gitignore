@@ -60,5 +60,4 @@ agent-ctx/
 .turbo/
 .vercel
 .env*
-vercel.json
 .vercel
