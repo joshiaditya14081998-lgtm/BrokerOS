@@ -17,6 +17,7 @@ import { Sidebar } from "@/components/sidebar";
 import { useUI } from "@/lib/ui-store";
 import { createClient } from "@/lib/supabase/client";
 import { CommandPalette } from "@/components/command-palette";
+import { UpgradeModal } from "@/components/upgrade-modal";
 import { useNotificationsSocket } from "@/hooks/use-notifications-socket";
 import { useTranslation } from "@/hooks/use-translation";
 import { LOCALE_OPTIONS } from "@/lib/i18n";
@@ -502,6 +503,7 @@ export default function Page() {
 
       {/* Global command palette (Cmd+K / Ctrl+K) */}
       <CommandPalette />
+      <UpgradeModal />
 
       {/* Keyboard shortcuts help overlay (toggled by "?" key) */}
       <ShortcutsOverlay />

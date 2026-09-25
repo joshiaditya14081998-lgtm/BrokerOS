@@ -225,7 +225,9 @@ function NewClientDialog({ onDone }: { onDone: () => void }) {
       await new Promise(r => setTimeout(r, 300));
       onDone();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed");
+      // Empty message = 402 limit reached → UpgradeModal handles the UX
+      const msg = e instanceof Error ? e.message : "Failed";
+      if (msg) toast.error(msg);
     } finally { setSaving(false); }
   };
 

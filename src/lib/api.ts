@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useUpgradeModal } from "@/lib/upgrade-store";
 
 // Locale key the client persists (matches src/lib/locale-store.ts). The value
 // is the Zustand persist shape: { state: { locale: "hi" }, version: 1 }.
@@ -49,6 +50,15 @@ function appendLocaleParam(path: string): string {
   return `${path}${sep}locale=${locale}`;
 }
 
+// Map API endpoint → upgrade resource type for the modal.
+function inferResource(path: string): "clients" | "suppliers" | "pos" | "photos" {
+  if (path.includes("/clients")) return "clients";
+  if (path.includes("/suppliers")) return "suppliers";
+  if (path.includes("/pos") || path.includes("/purchase-orders")) return "pos";
+  if (path.includes("/photos")) return "photos";
+  return "clients";
+}
+
 export async function api<T = unknown>(path: string, init?: RequestInit): Promise<T> {
   // Only GET requests (no body, default or explicit GET method) get the locale
   // param appended. POST/PATCH/DELETE typically carry the locale-irrelevant
@@ -63,6 +73,22 @@ export async function api<T = unknown>(path: string, init?: RequestInit): Promis
     headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
   });
   if (!res.ok) {
+    // ── 402 Payment Required → trigger upgrade modal instead of throwing ──
+    // When the broker hits a plan limit (clients/suppliers/POs/photos), the
+    // API returns 402 with { error, current, limit, planName }. Instead of
+    // showing a scary red toast, we open a friendly upgrade modal.
+    if (res.status === 402) {
+      const body = await res.json().catch(() => ({}));
+      useUpgradeModal.getState().triggerUpgrade({
+        resource: inferResource(path),
+        current: body.current ?? 0,
+        limit: body.limit ?? 0,
+        planName: body.planName ?? "Free",
+      });
+      // Throw a silent error — the modal handles the UX. The caller's
+      // catch block won't show a toast because the error message is empty.
+      throw new Error("");
+    }
     const txt = await res.text().catch(() => "");
     throw new Error(`API ${finalPath} → ${res.status}: ${txt}`);
   }
