@@ -60,12 +60,22 @@ export async function checkLimit(
   const { subscription, plans } = await getBrokerPlan(brokerId);
 
   // Past-due / canceled / paused → degrade to Free limits. Active / trialing
-  // → keep the subscribed plan's limits.
+  // → keep the subscribed plan's limits. During a Pro trial, the broker gets
+  // Pro plan limits (unlimited) — the trial is a plan-level upgrade, not just
+  // a time window.
   const isDowngraded =
     subscription.status === "past_due" ||
     subscription.status === "canceled" ||
     subscription.status === "paused";
-  const planRow = isDowngraded ? plans.free : plans[subscription.plan.name as keyof typeof plans] ?? plans.free;
+  const isTrialing = subscription.status === "trialing";
+  // During trial: use Pro plan limits (unlimited clients/suppliers/POs)
+  // After trial: use the subscribed plan's limits
+  // If downgraded: fall back to Free limits
+  const planRow = isDowngraded
+    ? plans.free
+    : isTrialing
+      ? plans.pro ?? plans.free
+      : plans[subscription.plan.name as keyof typeof plans] ?? plans.free;
 
   const limit = limitFor(planRow, resource);
   const current = await countUsage(brokerId, resource);
@@ -109,9 +119,13 @@ export async function getUsage(brokerId: string): Promise<UsageStats> {
     subscription.status === "past_due" ||
     subscription.status === "canceled" ||
     subscription.status === "paused";
+  const isTrialing = subscription.status === "trialing";
+  // During trial: use Pro plan limits (unlimited). After trial: subscribed plan.
   const planRow = isDowngraded
     ? plans.free
-    : plans[subscription.plan.name as keyof typeof plans] ?? plans.free;
+    : isTrialing
+      ? plans.pro ?? plans.free
+      : plans[subscription.plan.name as keyof typeof plans] ?? plans.free;
 
   const [clients, suppliers, pos, photos] = await Promise.all([
     db.client.count({ where: { brokerId } }),
