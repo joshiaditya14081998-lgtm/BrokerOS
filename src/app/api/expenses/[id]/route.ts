@@ -4,6 +4,7 @@ import { getCurrentBroker } from "@/lib/auth";
 import { withRateLimit, type RouteContext } from "@/lib/api-middleware";
 import { reportError } from "@/lib/error-report";
 import { z } from "zod";
+import { invalidateBrokerCache } from "@/lib/cache";
 import { EXPENSE_CATEGORIES } from "@/app/api/expenses/route";
 
 // PATCH — partial update of an expense. Verifies brokerId ownership before
@@ -63,7 +64,7 @@ export const PATCH = withRateLimit(
         },
       });
 
-      return NextResponse.json({ expense });
+      invalidateBrokerCache(broker.id); return NextResponse.json({ expense });
     } catch (error) {
       reportError(error, { path: "/api/expenses/[id]", method: "PATCH" });
       return NextResponse.json({ error: "Failed to update expense" }, { status: 500 });
@@ -102,7 +103,7 @@ export const DELETE = withRateLimit(
         },
       });
 
-      return NextResponse.json({ ok: true });
+      invalidateBrokerCache(broker.id); return NextResponse.json({ ok: true });
     } catch (error) {
       reportError(error, { path: "/api/expenses/[id]", method: "DELETE" });
       return NextResponse.json({ error: "Failed to delete expense" }, { status: 500 });

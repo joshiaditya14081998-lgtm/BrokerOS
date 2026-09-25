@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { getCurrentBroker } from "@/lib/auth";
 import { withRateLimit } from "@/lib/api-middleware";
 import { reportError } from "@/lib/error-report";
+import { invalidateBrokerCache } from "@/lib/cache";
 import { z } from "zod";
 
 export const dynamic = "force-dynamic";
@@ -196,7 +197,7 @@ export const POST = withRateLimit(
         },
       });
 
-      return NextResponse.json({ invoice }, { status: 201 });
+      invalidateBrokerCache(broker.id); return NextResponse.json({ invoice }, { status: 201 });
     } catch (error) {
       reportError(error, { path: "/api/invoices", method: "POST" });
       const detail = error instanceof Error ? error.message : String(error);

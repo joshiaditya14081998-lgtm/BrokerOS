@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { getCurrentBroker } from "@/lib/auth";
 import { withRateLimit } from "@/lib/api-middleware";
 import { reportError } from "@/lib/error-report";
+import { invalidateBrokerCache } from "@/lib/cache";
 import { z } from "zod";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -143,7 +144,7 @@ export const POST = withRateLimit(
         },
       });
 
-      return NextResponse.json({ expense });
+      invalidateBrokerCache(broker.id); return NextResponse.json({ expense });
     } catch (error) {
       reportError(error, { path: "/api/expenses", method: "POST" });
       return NextResponse.json({ error: "Failed to record expense" }, { status: 500 });

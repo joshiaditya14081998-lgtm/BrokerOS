@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { getCurrentBroker } from "@/lib/auth";
 import { withRateLimit, type RouteContext } from "@/lib/api-middleware";
 import { reportError } from "@/lib/error-report";
+import { invalidateBrokerCache } from "@/lib/cache";
 import { z } from "zod";
 import { INVOICE_STATUSES, type InvoiceStatus } from "@/app/api/invoices/route";
 
@@ -102,7 +103,7 @@ export const PATCH = withRateLimit(
         },
       });
 
-      return NextResponse.json({ invoice });
+      invalidateBrokerCache(broker.id); return NextResponse.json({ invoice });
     } catch (error) {
       reportError(error, { path: "/api/invoices/[id]", method: "PATCH" });
       return NextResponse.json({ error: "Failed to update invoice" }, { status: 500 });
@@ -151,7 +152,7 @@ export const DELETE = withRateLimit(
         },
       });
 
-      return NextResponse.json({ ok: true });
+      invalidateBrokerCache(broker.id); return NextResponse.json({ ok: true });
     } catch (error) {
       reportError(error, { path: "/api/invoices/[id]", method: "DELETE" });
       return NextResponse.json({ error: "Failed to delete invoice" }, { status: 500 });

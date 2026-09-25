@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { getCurrentBroker } from "@/lib/auth";
 import { withRateLimit } from "@/lib/api-middleware";
 import { reportError } from "@/lib/error-report";
+import { getCached, setCached, CACHE_TTL } from "@/lib/cache";
 
 export const dynamic = "force-dynamic";
 
@@ -165,6 +166,12 @@ export const GET = withRateLimit(
         searchParams.get("from"),
         searchParams.get("to"),
       );
+
+      // ── Cache check — 5 minute TTL for P&L report (data changes on mutations)
+      const cacheKey = `${broker.id}:pl:${range}:${searchParams.get("from") ?? ""}:${searchParams.get("to") ?? ""}`;
+      const cached = getCached(cacheKey);
+      if (cached) return NextResponse.json(cached);
+
       const prev = previousRange(start, end);
 
       const current = await computePL(broker.id, start, end);
@@ -186,7 +193,7 @@ export const GET = withRateLimit(
               ? `Q${Math.floor(start.getMonth() / 3) + 1} ${start.getFullYear()}`
               : `Year ${start.getFullYear()}`;
 
-      return NextResponse.json({
+      const response = {
         range: { start: start.toISOString(), end: end.toISOString(), label: rangeLabel },
         income: {
           brokerageEligible: current.brokerageEligible,
@@ -207,7 +214,12 @@ export const GET = withRateLimit(
           previousRangeProfit: previous.profit,
           changePercent,
         },
-      });
+      };
+
+      // Cache for 5 minutes — P&L is computationally expensive (4+ DB queries × 2 periods)
+      setCached(cacheKey, response, CACHE_TTL.REPORTS);
+
+      return NextResponse.json(response);
     } catch (error) {
       reportError(error, { path: "/api/reports/profit-loss", method: "GET" });
       return NextResponse.json({ error: "Failed to load P&L data" }, { status: 500 });

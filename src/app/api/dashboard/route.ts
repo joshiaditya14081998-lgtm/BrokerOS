@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getCurrentBroker } from "@/lib/auth";
+import { getCached, setCached, CACHE_TTL } from "@/lib/cache";
 
 type Range = "month" | "quarter" | "year" | "all";
 
@@ -91,6 +92,13 @@ export async function GET(req: NextRequest) {
   const range: Range = VALID_RANGES.includes(rawRange as Range)
     ? (rawRange as Range)
     : "all";
+
+  // ── Cache check — 1 minute TTL for dashboard data.
+  // On warm instances, rapid successive calls (dashboard loads → 5 APIs in 2s)
+  // will hit the cache instead of re-running 10+ DB queries.
+  const cacheKey = `${broker.id}:dashboard:${range}`;
+  const cached = getCached(cacheKey);
+  if (cached) return NextResponse.json(cached);
 
   const { start: rangeStart, end: rangeEnd } = getRangeBounds(range);
 
@@ -211,7 +219,7 @@ export async function GET(req: NextRequest) {
     value,
   }));
 
-  return NextResponse.json({
+  const response = {
     range,
     rangeStart: rangeStart ? rangeStart.toISOString() : null,
     rangeEnd: rangeEnd.toISOString(),
@@ -239,5 +247,11 @@ export async function GET(req: NextRequest) {
       payments: paymentsInRange,
       payouts: payoutsInRange,
     },
-  });
+  };
+
+  // Cache for 1 minute — subsequent dashboard loads in the same warm instance
+  // will hit the cache instead of re-running 10+ DB queries.
+  setCached(cacheKey, response, CACHE_TTL.DASHBOARD);
+
+  return NextResponse.json(response);
 }

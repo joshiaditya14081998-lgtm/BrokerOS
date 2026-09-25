@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { getCurrentBroker } from "@/lib/auth";
 import { z } from "zod";
 import { reportError } from "@/lib/error-report";
+import { invalidateBrokerCache } from "@/lib/cache";
 import { withRateLimit } from "@/lib/api-middleware";
 
 const PaymentSchema = z.object({
@@ -24,7 +25,7 @@ export async function GET(_req: NextRequest) {
     include: { bill: { select: { billNumber: true, po: { select: { poNumber: true } } } }, client: { select: { name: true } } },
     orderBy: { date: "desc" },
   });
-  return NextResponse.json({ payments });
+  invalidateBrokerCache(broker.id); return NextResponse.json({ payments });
 }
 
 // POST /api/payments — logs a payment, updates bill paidAmount + status, triggers brokerage eligibility on full payment.
@@ -110,7 +111,7 @@ export const POST = withRateLimit(
           reason: `Bill ${bill.billNumber} status → ${newStatus}.`,
         },
       });
-      return NextResponse.json({ payment, bill: updatedBill });
+      invalidateBrokerCache(broker.id); return NextResponse.json({ payment, bill: updatedBill });
     } catch (error) {
       reportError(error, { path: "/api/payments", method: "POST" });
       return NextResponse.json({ error: "Failed to record payment" }, { status: 500 });

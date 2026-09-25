@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getCurrentBroker } from "@/lib/auth";
+import { invalidateBrokerCache } from "@/lib/cache";
 
 // GET /api/bills
 export async function GET(_req: NextRequest) {
@@ -17,7 +18,7 @@ export async function GET(_req: NextRequest) {
     },
     orderBy: { createdAt: "desc" },
   });
-  return NextResponse.json({ bills });
+  invalidateBrokerCache(broker.id); return NextResponse.json({ bills });
 }
 
 // POST /api/bills — create a bill for a PO. Computes base (po - shortship - returns), GST, final.
@@ -77,5 +78,5 @@ export async function POST(req: NextRequest) {
       userName: "Broker", reason: `Bill generated from ${po.poNumber}.`,
     },
   });
-  return NextResponse.json({ bill });
+  invalidateBrokerCache(broker.id); return NextResponse.json({ bill });
 }
